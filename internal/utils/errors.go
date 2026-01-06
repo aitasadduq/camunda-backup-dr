@@ -35,4 +35,7 @@ var (
 	
 	// ErrFileStorageFailed is returned when file storage operation fails
 	ErrFileStorageFailed = errors.New("file storage operation failed")
+
+	// ErrInvalidCamundaInstance is returned when Camunda instance configuration is invalid
+	ErrInvalidCamundaInstance = errors.New("invalid camunda instance configuration")
 )

@@ -2,10 +2,8 @@ package models
 
 import (
 	"time"
-	"errors"
 	"encoding/json"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
-
 	"github.com/aitasadduq/camunda-backup-dr/pkg/types"
 )
 
@@ -109,25 +107,25 @@ func (ci *CamundaInstance) GetEnabledComponents() []string {
 // Validate validates the Camunda instance configuration
 func (ci *CamundaInstance) Validate() error {
 	if ci.ID == "" {
-		return ErrInvalidCamundaInstance
+		return utils.ErrInvalidCamundaInstance
 	}
 	if ci.Name == "" {
-		return ErrInvalidCamundaInstance
+		return utils.ErrInvalidCamundaInstance
 	}
 	if ci.BaseURL == "" {
-		return ErrInvalidCamundaInstance
+		return utils.ErrInvalidCamundaInstance
 	}
 	if ci.Schedule == "" {
-		return ErrInvalidCamundaInstance
+		return utils.ErrInvalidCamundaInstance
 	}
 	if ci.RetentionCount < 0 {
-		return ErrInvalidCamundaInstance
+		return utils.ErrInvalidCamundaInstance
 	}
 	if ci.SuccessHistoryCount < 0 {
-		return ErrInvalidCamundaInstance
+		return utils.ErrInvalidCamundaInstance
 	}
 	if ci.FailureHistoryCount < 0 {
-		return ErrInvalidCamundaInstance
+		return utils.ErrInvalidCamundaInstance
 	}
 
 	// Validate components
@@ -154,5 +152,3 @@ func (ci *CamundaInstance) ToJSON() ([]byte, error) {
 func (ci *CamundaInstance) FromJSON(data []byte) error {
 	return json.Unmarshal(data, ci)
 }
-// ErrInvalidCamundaInstance is returned when Camunda instance configuration is invalid
-var ErrInvalidCamundaInstance = errors.New("invalid camunda instance configuration")
