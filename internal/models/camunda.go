@@ -1,9 +1,10 @@
 package models
 
 import (
-	"encoding/json"
 	"time"
-\t"errors"
+	"errors"
+	"encoding/json"
+	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
 
 	"github.com/aitasadduq/camunda-backup-dr/pkg/types"
 )
@@ -131,7 +132,7 @@ func (ci *CamundaInstance) Validate() error {
 
 	// Validate components
 	if len(ci.Components) == 0 {
-		return ErrNoComponentsEnabled
+		return utils.ErrNoComponentsEnabled
 	}
 
 	return nil
