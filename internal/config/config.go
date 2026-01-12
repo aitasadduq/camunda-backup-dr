@@ -15,17 +15,17 @@ type Config struct {
 	DataDir  string
 
 	// Default Configuration
-	DefaultSchedule         string
-	DefaultRetentionCount   int
-	DefaultSuccessHistory   int
-	DefaultFailureHistory   int
+	DefaultSchedule       string
+	DefaultRetentionCount int
+	DefaultSuccessHistory int
+	DefaultFailureHistory int
 
 	// Default Elasticsearch
-	DefaultElasticsearchEndpoint  string
-	DefaultElasticsearchUsername  string
+	DefaultElasticsearchEndpoint string
+	DefaultElasticsearchUsername string
 
 	// Default S3
-	DefaultS3Endpoint string
+	DefaultS3Endpoint  string
 	DefaultS3AccessKey string
 }
 
@@ -38,17 +38,17 @@ func Load() (*Config, error) {
 		DataDir:  getEnv("DATA_DIR", "/data"),
 
 		// Defaults
-		DefaultSchedule:         getEnv("DEFAULT_SCHEDULE", "0 2 * * *"),
-		DefaultRetentionCount:   getEnvAsInt("DEFAULT_RETENTION_COUNT", 7),
-		DefaultSuccessHistory:   getEnvAsInt("DEFAULT_SUCCESS_HISTORY", 30),
-		DefaultFailureHistory:   getEnvAsInt("DEFAULT_FAILURE_HISTORY", 30),
+		DefaultSchedule:       getEnv("DEFAULT_SCHEDULE", "0 2 * * *"),
+		DefaultRetentionCount: getEnvAsInt("DEFAULT_RETENTION_COUNT", 7),
+		DefaultSuccessHistory: getEnvAsInt("DEFAULT_SUCCESS_HISTORY", 30),
+		DefaultFailureHistory: getEnvAsInt("DEFAULT_FAILURE_HISTORY", 30),
 
 		// Default Elasticsearch
 		DefaultElasticsearchEndpoint: getEnv("DEFAULT_ELASTICSEARCH_ENDPOINT", ""),
 		DefaultElasticsearchUsername: getEnv("DEFAULT_ELASTICSEARCH_USERNAME", ""),
 
 		// Default S3
-		DefaultS3Endpoint: getEnv("DEFAULT_S3_ENDPOINT", ""),
+		DefaultS3Endpoint:  getEnv("DEFAULT_S3_ENDPOINT", ""),
 		DefaultS3AccessKey: getEnv("DEFAULT_S3_ACCESSKEY", ""),
 	}
 

@@ -1,10 +1,10 @@
 package models
 
 import (
-	"time"
 	"encoding/json"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
 	"github.com/aitasadduq/camunda-backup-dr/pkg/types"
+	"time"
 )
 
 // CamundaComponentConfig represents a component configuration
@@ -15,14 +15,14 @@ type CamundaComponentConfig struct {
 
 // CamundaInstance represents a Camunda instance configuration
 type CamundaInstance struct {
-	ID                  string                    `json:"id"`
-	Name                string                    `json:"name"`
-	BaseURL             string                    `json:"base_url"`
-	Enabled             bool                      `json:"enabled"`
-	Schedule            string                    `json:"schedule"`
-	RetentionCount      int                       `json:"retention_count"`
-	SuccessHistoryCount int                       `json:"success_history_count"`
-	FailureHistoryCount int                       `json:"failure_history_count"`
+	ID                  string `json:"id"`
+	Name                string `json:"name"`
+	BaseURL             string `json:"base_url"`
+	Enabled             bool   `json:"enabled"`
+	Schedule            string `json:"schedule"`
+	RetentionCount      int    `json:"retention_count"`
+	SuccessHistoryCount int    `json:"success_history_count"`
+	FailureHistoryCount int    `json:"failure_history_count"`
 
 	// Backup Configuration
 	ZeebeBackupEndpoint    string `json:"zeebe_backup_endpoint"`
@@ -36,7 +36,7 @@ type CamundaInstance struct {
 
 	// Component Settings
 	Components        []CamundaComponentConfig `json:"components"`
-	ParallelExecution bool                    `json:"parallel_execution"`
+	ParallelExecution bool                     `json:"parallel_execution"`
 
 	// External Systems
 	ElasticsearchEndpoint string `json:"elasticsearch_endpoint"`
@@ -45,16 +45,16 @@ type CamundaInstance struct {
 	BackupIDS3AccessKey   string `json:"s3_accesskey"`
 
 	// Metadata
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
-	LastBackupAt    *time.Time `json:"last_backup_at,omitempty"`
-	LastBackupStatus string    `json:"last_backup_status"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+	LastBackupAt     *time.Time `json:"last_backup_at,omitempty"`
+	LastBackupStatus string     `json:"last_backup_status"`
 }
 
 // Configuration represents the main configuration file structure
 type Configuration struct {
-	Version          string             `json:"version"`
-	CamundaInstances []CamundaInstance  `json:"camunda_instances"`
+	Version          string            `json:"version"`
+	CamundaInstances []CamundaInstance `json:"camunda_instances"`
 }
 
 // NewCamundaInstance creates a new Camunda instance with defaults
@@ -76,10 +76,10 @@ func NewCamundaInstance(id, name, baseURL string) *CamundaInstance {
 			{Name: types.ComponentOptimize, Enabled: false},
 			{Name: types.ComponentElasticsearch, Enabled: true},
 		},
-		ParallelExecution:   false,
-		LastBackupStatus:   "NEVER_BACKED_UP",
-		CreatedAt:           now,
-		UpdatedAt:           now,
+		ParallelExecution: false,
+		LastBackupStatus:  "NEVER_BACKED_UP",
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 }
 

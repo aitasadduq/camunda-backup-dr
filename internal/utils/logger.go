@@ -17,7 +17,7 @@ type Logger struct {
 func NewLogger(logLevel string) *Logger {
 	infoLogger := log.New(os.Stdout, "INFO  ", log.Ldate|log.Ltime|log.Lshortfile)
 	errorLogger := log.New(os.Stderr, "ERROR ", log.Ldate|log.Ltime|log.Lshortfile)
-	
+
 	var debugWriter io.Writer = os.Stdout
 	// Set debug logger output based on log level
 	if logLevel != "debug" {
@@ -50,8 +50,8 @@ func (l *Logger) Debug(format string, v ...interface{}) {
 // WithBackupID adds a backup ID prefix to the log message
 func (l *Logger) WithBackupID(backupID string) *BackupLogger {
 	return &BackupLogger{
-		logger:    l,
-		backupID:  backupID,
+		logger:   l,
+		backupID: backupID,
 	}
 }
 
