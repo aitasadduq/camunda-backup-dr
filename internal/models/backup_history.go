@@ -14,7 +14,7 @@ type BackupHistoryManager struct {
 // NewBackupHistory creates a new backup history entry from a backup execution
 func NewBackupHistory(camundaInstanceID, camundaInstanceName, backupID string, triggerType types.TriggerType, executionMode, logFilePath, backupReason, controllerVersion, configVersion string) *BackupHistory {
 	now := time.Now()
-	
+
 	return &BackupHistory{
 		BackupID:            backupID,
 		CamundaInstanceID:   camundaInstanceID,
@@ -26,10 +26,10 @@ func NewBackupHistory(camundaInstanceID, camundaInstanceName, backupID string, t
 		TriggerType:         triggerType,
 		Components:          make(map[string]ComponentBackupInfo),
 		BackupStats: BackupStats{
-			TotalComponents:  0,
+			TotalComponents:      0,
 			SuccessfulComponents: 0,
-			FailedComponents: 0,
-			SkippedComponents: 0,
+			FailedComponents:     0,
+			SkippedComponents:    0,
 		},
 		Metadata: BackupMetadata{
 			ConfigVersion:     configVersion,
@@ -109,11 +109,11 @@ func (bh *BackupHistory) updateStats() {
 	}
 
 	bh.BackupStats = BackupStats{
-		TotalComponents:       total,
-		SuccessfulComponents:  successful,
-		FailedComponents:      failed,
-		SkippedComponents:     skipped,
-		RunningComponents:     running,
-		PendingComponents:     pending,
+		TotalComponents:      total,
+		SuccessfulComponents: successful,
+		FailedComponents:     failed,
+		SkippedComponents:    skipped,
+		RunningComponents:    running,
+		PendingComponents:    pending,
 	}
 }

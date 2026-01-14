@@ -36,7 +36,7 @@ func main() {
 	setupGracefulShutdown(logger)
 
 	logger.Info("Camunda Backup Controller started successfully")
-	
+
 	// Keep the main goroutine running
 	select {}
 }

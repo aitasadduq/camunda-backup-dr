@@ -42,10 +42,10 @@ const (
 
 // Component names
 const (
-	ComponentZeebe        = "zeebe"
-	ComponentOperate      = "operate"
-	ComponentTasklist     = "tasklist"
-	ComponentOptimize     = "optimize"
+	ComponentZeebe         = "zeebe"
+	ComponentOperate       = "operate"
+	ComponentTasklist      = "tasklist"
+	ComponentOptimize      = "optimize"
 	ComponentElasticsearch = "elasticsearch"
 )
 

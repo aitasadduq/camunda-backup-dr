@@ -1,8 +1,8 @@
 package config
 
 import (
-        "github.com/aitasadduq/camunda-backup-dr/internal/utils"
-        "github.com/aitasadduq/camunda-backup-dr/pkg/types"
+	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
+	"github.com/aitasadduq/camunda-backup-dr/pkg/types"
 )
 
 // GetDefaultComponents returns the default list of components for a new Camunda instance
