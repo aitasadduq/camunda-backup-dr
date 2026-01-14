@@ -133,6 +133,18 @@ func (ci *CamundaInstance) Validate() error {
 		return utils.ErrNoComponentsEnabled
 	}
 
+	// Ensure at least one component is enabled
+	hasEnabled := false
+	for _, comp := range ci.Components {
+		if comp.Enabled {
+			hasEnabled = true
+			break
+		}
+	}
+	if !hasEnabled {
+		return utils.ErrNoComponentsEnabled
+	}
+
 	return nil
 }
 
