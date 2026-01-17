@@ -5,6 +5,14 @@ import (
 	"github.com/aitasadduq/camunda-backup-dr/pkg/types"
 )
 
+// Version constants for the backup controller
+const (
+	// ConfigVersion is the version of the configuration schema
+	ConfigVersion = "1.0"
+	// ControllerVersion is the version of the backup controller application
+	ControllerVersion = "0.1.0"
+)
+
 // GetDefaultComponents returns the default list of components for a new Camunda instance
 func GetDefaultComponents() []map[string]interface{} {
 	return []map[string]interface{}{
