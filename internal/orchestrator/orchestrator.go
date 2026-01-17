@@ -18,11 +18,13 @@ import (
 
 // Orchestrator manages the backup workflow for Camunda instances
 type Orchestrator struct {
-	fileStorage storage.FileStorage
-	s3Storage   storage.S3Storage
-	httpClient  *camunda.HTTPClient
-	logger      *utils.Logger
-	mutex       sync.Mutex
+	fileStorage     storage.FileStorage
+	s3Storage       storage.S3Storage
+	httpClient      *camunda.HTTPClient
+	logger          *utils.Logger
+	mutex           sync.Mutex
+	pollInterval    time.Duration
+	maxPollAttempts int
 }
 
 // NewOrchestrator creates a new backup orchestrator
@@ -31,12 +33,16 @@ func NewOrchestrator(
 	s3Storage storage.S3Storage,
 	httpClient *camunda.HTTPClient,
 	logger *utils.Logger,
+	pollInterval time.Duration,
+	maxPollAttempts int,
 ) *Orchestrator {
 	return &Orchestrator{
-		fileStorage: fileStorage,
-		s3Storage:   s3Storage,
-		httpClient:  httpClient,
-		logger:      logger,
+		fileStorage:     fileStorage,
+		s3Storage:       s3Storage,
+		httpClient:      httpClient,
+		logger:          logger,
+		pollInterval:    pollInterval,
+		maxPollAttempts: maxPollAttempts,
 	}
 }
 
@@ -381,13 +387,11 @@ func (o *Orchestrator) executeElasticsearchBackup(ctx context.Context, instance 
 func (o *Orchestrator) pollBackupStatus(ctx context.Context, instance *models.CamundaInstance, backupID, statusEndpoint, componentName string) (types.ComponentStatus, error) {
 	o.writeLog(instance.ID, backupID, fmt.Sprintf("Polling %s backup status", componentName))
 
-	// Poll configuration
-	maxAttempts := 120 // 10 minutes with 5 second intervals
-	pollInterval := 5 * time.Second
-	ticker := time.NewTicker(pollInterval)
+	// Use configured poll settings
+	ticker := time.NewTicker(o.pollInterval)
 	defer ticker.Stop()
 
-	for attempt := 0; attempt < maxAttempts; attempt++ {
+	for attempt := 0; attempt < o.maxPollAttempts; attempt++ {
 		select {
 		case <-ctx.Done():
 			return types.ComponentStatusFailed, ctx.Err()
@@ -433,7 +437,7 @@ func (o *Orchestrator) pollBackupStatus(ctx context.Context, instance *models.Ca
 						return types.ComponentStatusFailed, fmt.Errorf("%s backup failed", componentName)
 					case "RUNNING", "IN_PROGRESS":
 						// Continue polling
-						o.writeLog(instance.ID, backupID, fmt.Sprintf("%s backup still running (attempt %d/%d)", componentName, attempt+1, maxAttempts))
+						o.writeLog(instance.ID, backupID, fmt.Sprintf("%s backup still running (attempt %d/%d)", componentName, attempt+1, o.maxPollAttempts))
 					}
 				} else {
 					// Log unexpected response format to aid debugging

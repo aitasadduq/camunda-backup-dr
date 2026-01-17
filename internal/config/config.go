@@ -20,6 +20,10 @@ type Config struct {
 	DefaultSuccessHistory int
 	DefaultFailureHistory int
 
+	// Backup Polling Configuration
+	DefaultBackupPollInterval int // in seconds
+	DefaultBackupMaxAttempts  int
+
 	// Default Elasticsearch
 	DefaultElasticsearchEndpoint string
 	DefaultElasticsearchUsername string
@@ -42,6 +46,10 @@ func Load() (*Config, error) {
 		DefaultRetentionCount: getEnvAsInt("DEFAULT_RETENTION_COUNT", 7),
 		DefaultSuccessHistory: getEnvAsInt("DEFAULT_SUCCESS_HISTORY", 30),
 		DefaultFailureHistory: getEnvAsInt("DEFAULT_FAILURE_HISTORY", 30),
+
+		// Backup Polling Configuration
+		DefaultBackupPollInterval: getEnvAsInt("DEFAULT_BACKUP_POLL_INTERVAL", 5),
+		DefaultBackupMaxAttempts:  getEnvAsInt("DEFAULT_BACKUP_MAX_ATTEMPTS", 120),
 
 		// Default Elasticsearch
 		DefaultElasticsearchEndpoint: getEnv("DEFAULT_ELASTICSEARCH_ENDPOINT", ""),
@@ -85,6 +93,14 @@ func (c *Config) Validate() error {
 	}
 
 	if c.DefaultFailureHistory < 0 {
+		return utils.ErrInvalidConfiguration
+	}
+
+	if c.DefaultBackupPollInterval <= 0 {
+		return utils.ErrInvalidConfiguration
+	}
+
+	if c.DefaultBackupMaxAttempts <= 0 {
 		return utils.ErrInvalidConfiguration
 	}
 

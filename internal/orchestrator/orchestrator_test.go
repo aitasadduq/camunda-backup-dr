@@ -234,7 +234,7 @@ func TestNewOrchestrator(t *testing.T) {
 	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
 	logger := utils.NewLogger("test")
 
-	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, logger)
+	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, logger, 100*time.Millisecond, 50)
 
 	if orchestrator == nil {
 		t.Fatal("Expected orchestrator to be created")
@@ -273,7 +273,7 @@ func TestExecuteBackup_SequentialMode_Success(t *testing.T) {
 	s3Storage := newMockS3Storage()
 	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
 	logger := utils.NewLogger("test")
-	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, logger)
+	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, logger, 100*time.Millisecond, 50)
 
 	// Create test instance with server URLs
 	instance := setupTestInstance("test-instance", "Test Instance")
@@ -367,7 +367,7 @@ func TestExecuteBackup_ParallelMode_Success(t *testing.T) {
 	s3Storage := newMockS3Storage()
 	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
 	logger := utils.NewLogger("test")
-	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, logger)
+	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, logger, 100*time.Millisecond, 50)
 
 	// Create test instance with server URLs
 	instance := setupTestInstance("test-instance", "Test Instance")
@@ -436,7 +436,7 @@ func TestExecuteBackup_ComponentFailure(t *testing.T) {
 	s3Storage := newMockS3Storage()
 	httpClient := camunda.NewHTTPClient(config, utils.NewLogger("test"))
 	logger := utils.NewLogger("test")
-	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, logger)
+	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, logger, 100*time.Millisecond, 50)
 
 	// Create test instance with server URLs
 	instance := setupTestInstance("test-instance", "Test Instance")
@@ -486,7 +486,7 @@ func TestExecuteBackup_SkippedComponents(t *testing.T) {
 	s3Storage := newMockS3Storage()
 	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
 	logger := utils.NewLogger("test")
-	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, logger)
+	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, logger, 100*time.Millisecond, 50)
 
 	// Create test instance with no endpoints configured
 	instance := setupTestInstance("test-instance", "Test Instance")
@@ -539,7 +539,7 @@ func TestExecuteBackup_LogsWrittenToFile(t *testing.T) {
 	s3Storage := newMockS3Storage()
 	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
 	logger := utils.NewLogger("test")
-	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, logger)
+	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, logger, 100*time.Millisecond, 50)
 
 	// Create test instance
 	instance := setupTestInstance("test-instance", "Test Instance")
@@ -590,7 +590,7 @@ func TestBackupStats_Calculation(t *testing.T) {
 	s3Storage := newMockS3Storage()
 	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
 	logger := utils.NewLogger("test")
-	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, logger)
+	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, logger, 100*time.Millisecond, 50)
 
 	// Create test execution
 	execution := &models.BackupExecution{
