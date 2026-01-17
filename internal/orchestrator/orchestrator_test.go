@@ -206,7 +206,7 @@ func (m *mockS3Storage) ListIncompleteBackups(camundaInstanceID string) ([]*mode
 }
 
 // Test helper functions
-func createTestInstance(id, name string) *models.CamundaInstance {
+func setupTestInstance(id, name string) *models.CamundaInstance {
 	return &models.CamundaInstance{
 		ID:                     id,
 		Name:                   name,
@@ -275,7 +275,7 @@ func TestExecuteBackup_SequentialMode_Success(t *testing.T) {
 	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, logger)
 
 	// Create test instance with server URLs
-	instance := createTestInstance("test-instance", "Test Instance")
+	instance := setupTestInstance("test-instance", "Test Instance")
 	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
 	instance.ZeebeStatusEndpoint = server.URL + "/zeebe/backup/status"
 	instance.OperateBackupEndpoint = server.URL + "/operate/backup"
@@ -369,7 +369,7 @@ func TestExecuteBackup_ParallelMode_Success(t *testing.T) {
 	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, logger)
 
 	// Create test instance with server URLs
-	instance := createTestInstance("test-instance", "Test Instance")
+	instance := setupTestInstance("test-instance", "Test Instance")
 	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
 	instance.ZeebeStatusEndpoint = server.URL + "/zeebe/backup/status"
 	instance.OperateBackupEndpoint = server.URL + "/operate/backup"
@@ -434,7 +434,7 @@ func TestExecuteBackup_ComponentFailure(t *testing.T) {
 	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, logger)
 
 	// Create test instance with server URLs
-	instance := createTestInstance("test-instance", "Test Instance")
+	instance := setupTestInstance("test-instance", "Test Instance")
 	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
 	instance.ZeebeStatusEndpoint = server.URL + "/zeebe/backup/status"
 	instance.OperateBackupEndpoint = server.URL + "/operate/backup"
@@ -484,7 +484,7 @@ func TestExecuteBackup_SkippedComponents(t *testing.T) {
 	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, logger)
 
 	// Create test instance with no endpoints configured
-	instance := createTestInstance("test-instance", "Test Instance")
+	instance := setupTestInstance("test-instance", "Test Instance")
 	instance.ZeebeBackupEndpoint = ""    // No endpoint
 	instance.OperateBackupEndpoint = ""  // No endpoint
 	instance.TasklistBackupEndpoint = "" // No endpoint
@@ -537,7 +537,7 @@ func TestExecuteBackup_LogsWrittenToFile(t *testing.T) {
 	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, logger)
 
 	// Create test instance
-	instance := createTestInstance("test-instance", "Test Instance")
+	instance := setupTestInstance("test-instance", "Test Instance")
 	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
 	instance.ZeebeStatusEndpoint = server.URL + "/zeebe/backup/status"
 
