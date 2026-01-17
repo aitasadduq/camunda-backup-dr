@@ -182,6 +182,8 @@ func (o *Orchestrator) executeComponentsSequential(ctx context.Context, instance
 		if err != nil {
 			o.writeLog(instance.ID, execution.BackupID, fmt.Sprintf("Component %s failed: %v", component, err))
 			// On failure, log the error and continue to the next component to allow partial backups
+		} else if status == types.ComponentStatusSkipped {
+			o.writeLog(instance.ID, execution.BackupID, fmt.Sprintf("Component %s was skipped", component))
 		} else {
 			o.writeLog(instance.ID, execution.BackupID, fmt.Sprintf("Component %s completed successfully", component))
 		}
@@ -252,7 +254,8 @@ func (o *Orchestrator) executeZeebeBackup(ctx context.Context, instance *models.
 // executeOperateBackup executes Operate backup
 func (o *Orchestrator) executeOperateBackup(ctx context.Context, instance *models.CamundaInstance, backupID string) (types.ComponentStatus, error) {
 	if instance.OperateBackupEndpoint == "" {
-		return types.ComponentStatusSkipped, fmt.Errorf("Operate backup endpoint not configured")
+		o.writeLog(instance.ID, backupID, "Skipping Operate backup: backup endpoint not configured")
+		return types.ComponentStatusSkipped, nil
 	}
 
 	// Trigger backup
@@ -289,7 +292,8 @@ func (o *Orchestrator) executeOperateBackup(ctx context.Context, instance *model
 // executeTasklistBackup executes Tasklist backup
 func (o *Orchestrator) executeTasklistBackup(ctx context.Context, instance *models.CamundaInstance, backupID string) (types.ComponentStatus, error) {
 	if instance.TasklistBackupEndpoint == "" {
-		return types.ComponentStatusSkipped, fmt.Errorf("Tasklist backup endpoint not configured")
+		o.writeLog(instance.ID, backupID, "Skipping Tasklist backup: backup endpoint not configured")
+		return types.ComponentStatusSkipped, nil
 	}
 
 	// Trigger backup
@@ -326,7 +330,8 @@ func (o *Orchestrator) executeTasklistBackup(ctx context.Context, instance *mode
 // executeOptimizeBackup executes Optimize backup
 func (o *Orchestrator) executeOptimizeBackup(ctx context.Context, instance *models.CamundaInstance, backupID string) (types.ComponentStatus, error) {
 	if instance.OptimizeBackupEndpoint == "" {
-		return types.ComponentStatusSkipped, fmt.Errorf("Optimize backup endpoint not configured")
+		o.writeLog(instance.ID, backupID, "Skipping Optimize backup: backup endpoint not configured")
+		return types.ComponentStatusSkipped, nil
 	}
 
 	// Trigger backup
@@ -360,7 +365,8 @@ func (o *Orchestrator) executeOptimizeBackup(ctx context.Context, instance *mode
 // executeElasticsearchBackup executes Elasticsearch snapshot backup
 func (o *Orchestrator) executeElasticsearchBackup(ctx context.Context, instance *models.CamundaInstance, backupID string) (types.ComponentStatus, error) {
 	if instance.ElasticsearchEndpoint == "" {
-		return types.ComponentStatusSkipped, fmt.Errorf("Elasticsearch endpoint not configured")
+		o.writeLog(instance.ID, backupID, "Skipping Elasticsearch backup: endpoint not configured")
+		return types.ComponentStatusSkipped, nil
 	}
 
 	// For now, this is a placeholder implementation
