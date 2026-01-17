@@ -479,6 +479,19 @@ func (o *Orchestrator) finalizeBackup(req BackupRequest, execution *models.Backu
 	now := time.Now()
 	execution.EndTime = &now
 
+	// Handle empty component status map
+	if len(execution.ComponentStatus) == 0 {
+		execution.Status = types.BackupStatusIncomplete
+		execution.ErrorMessage = "No components were executed"
+		o.writeLog(req.CamundaInstance.ID, execution.BackupID, "Backup incomplete: no components were executed")
+
+		// Update backup status in S3
+		if err := o.s3Storage.UpdateBackupStatus(req.CamundaInstance.ID, execution.BackupID, execution.Status); err != nil {
+			o.logger.Error("Failed to update backup status in S3: %v", err)
+		}
+		return
+	}
+
 	// Check component statuses to determine overall status
 	hasFailures := false
 	allCompleted := true
