@@ -545,6 +545,13 @@ func TestExecuteBackup_LogsWrittenToFile(t *testing.T) {
 	instance := setupTestInstance("test-instance", "Test Instance")
 	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
 	instance.ZeebeStatusEndpoint = server.URL + "/zeebe/backup/status"
+	// Disable other components to avoid failures due to missing endpoints
+	instance.OperateBackupEndpoint = ""
+	instance.TasklistBackupEndpoint = ""
+	// Only enable Zeebe for this test
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentZeebe, Enabled: true},
+	}
 
 	// Execute backup
 	ctx := context.Background()
@@ -562,25 +569,54 @@ func TestExecuteBackup_LogsWrittenToFile(t *testing.T) {
 		t.Fatal("Expected logs to be written to file")
 	}
 
-	// Check for specific log entries
+	// Build complete log content
 	logContent := ""
 	for _, log := range logs {
 		logContent += log
 	}
 
-	expectedLogs := []string{
+	// Define expected log sequence with their order
+	expectedLogSequence := []string{
 		"Backup started",
 		"Trigger type: SCHEDULED",
 		"Execution mode: sequential",
 		"Backup ID stored in S3",
+		"Starting sequential execution",
+		"Starting backup for component: zeebe",
 		"Executing backup for component: zeebe",
+		"Triggering Zeebe backup",
+		"Zeebe backup triggered successfully",
+		"Polling Zeebe backup status",
+		"Zeebe backup completed",
+		"Component zeebe completed successfully",
+		"All components completed in sequential mode",
+		"Backup completed successfully",
 		"Backup completed with status",
 	}
 
-	for _, expected := range expectedLogs {
+	// Verify each log entry exists
+	for _, expected := range expectedLogSequence {
 		if !strings.Contains(logContent, expected) {
 			t.Errorf("Expected log to contain '%s'", expected)
 		}
+	}
+
+	// Verify log entries appear in the correct order
+	lastIndex := -1
+	for i, expected := range expectedLogSequence {
+		index := strings.Index(logContent, expected)
+		if index == -1 {
+			continue // Already reported as missing above
+		}
+		if index < lastIndex {
+			t.Errorf("Log entry '%s' appears before expected. Expected order: %v", expected, expectedLogSequence[i-1:i+1])
+		}
+		lastIndex = index
+	}
+
+	// Verify minimum number of log entries (should have at least the expected sequence)
+	if len(logs) < len(expectedLogSequence) {
+		t.Errorf("Expected at least %d log entries, got %d", len(expectedLogSequence), len(logs))
 	}
 }
 
