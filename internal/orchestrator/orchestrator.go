@@ -153,6 +153,13 @@ func (o *Orchestrator) executeComponentsParallel(ctx context.Context, instance *
 	}
 
 	wg.Wait()
+
+	// If the context was cancelled, reflect that in the final log message.
+	// Note: in-flight component backups may have continued to completion even after cancellation.
+	if err := ctx.Err(); err != nil {
+		o.writeLog(instance.ID, execution.BackupID, fmt.Sprintf("Parallel execution cancelled: %v. In-flight component backups may have completed under cancellation.", err))
+		return
+	}
 	o.writeLog(instance.ID, execution.BackupID, "All components completed in parallel mode")
 }
 
