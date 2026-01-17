@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -396,8 +397,17 @@ func (o *Orchestrator) pollBackupStatus(ctx context.Context, instance *models.Ca
 		case <-ctx.Done():
 			return types.ComponentStatusFailed, ctx.Err()
 		case <-ticker.C:
-			// Check status
-			statusURL := fmt.Sprintf("%s?backupId=%s", statusEndpoint, backupID)
+			// Build status URL with properly encoded query parameters
+			parsedURL, err := url.Parse(statusEndpoint)
+			if err != nil {
+				o.writeLog(instance.ID, backupID, fmt.Sprintf("Invalid %s status endpoint URL: %v", componentName, err))
+				return types.ComponentStatusFailed, fmt.Errorf("invalid %s status endpoint URL: %w", componentName, err)
+			}
+			query := parsedURL.Query()
+			query.Set("backupId", backupID)
+			parsedURL.RawQuery = query.Encode()
+			statusURL := parsedURL.String()
+
 			resp, err := o.httpClient.Get(ctx, statusURL, nil)
 			if err != nil {
 				o.writeLog(instance.ID, backupID, fmt.Sprintf("%s status check failed: %v", componentName, err))
