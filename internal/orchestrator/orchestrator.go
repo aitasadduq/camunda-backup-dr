@@ -347,7 +347,10 @@ func (o *Orchestrator) executeOptimizeBackup(ctx context.Context, instance *mode
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		body, _ := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			o.writeLog(instance.ID, backupID, fmt.Sprintf("Failed to read Optimize backup error response body: %v", readErr))
+		}
 		return types.ComponentStatusFailed, fmt.Errorf("Optimize backup trigger failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
