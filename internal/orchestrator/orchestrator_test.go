@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/camunda"
 	"github.com/aitasadduq/camunda-backup-dr/internal/models"
@@ -427,9 +428,13 @@ func TestExecuteBackup_ComponentFailure(t *testing.T) {
 	defer server.Close()
 
 	// Set up orchestrator
+	config := camunda.DefaultHTTPClientConfig()
+	config.Timeout = 2 * time.Second // Short timeout for tests
+	config.MaxRetries = 0
+
 	fileStorage := newMockFileStorage()
 	s3Storage := newMockS3Storage()
-	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	httpClient := camunda.NewHTTPClient(config, utils.NewLogger("test"))
 	logger := utils.NewLogger("test")
 	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, logger)
 
