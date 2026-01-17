@@ -52,6 +52,9 @@ func (o *Orchestrator) ExecuteBackup(ctx context.Context, req BackupRequest) (*m
 	o.mutex.Lock()
 	defer o.mutex.Unlock()
 
+	if req.CamundaInstance == nil {
+		return nil, fmt.Errorf("camunda instance is nil")
+	}
 	// Generate backup ID
 	backupID := camunda.GenerateBackupID()
 	o.logger.Info("Starting backup for instance %s (ID: %s)", req.CamundaInstance.Name, backupID)
@@ -74,6 +77,11 @@ func (o *Orchestrator) ExecuteBackup(ctx context.Context, req BackupRequest) (*m
 		o.writeLog(req.CamundaInstance.ID, backupID, fmt.Sprintf("Failed to store backup ID in S3: %v", err))
 		execution.Status = types.BackupStatusFailed
 		execution.ErrorMessage = fmt.Sprintf("Failed to store backup ID in S3: %v", err)
+
+		// Best-effort cleanup of the log file created for this backup to avoid orphaned logs.
+		if cleanupErr := o.fileStorage.DeleteLogFile(req.CamundaInstance.ID, backupID); cleanupErr != nil {
+			o.logger.Error("failed to delete log file for backup %s (instance %s): %v", backupID, req.CamundaInstance.ID, cleanupErr)
+		}
 		return execution, err
 	}
 	o.writeLog(req.CamundaInstance.ID, backupID, "Backup ID stored in S3")
@@ -166,8 +174,7 @@ func (o *Orchestrator) executeComponentsSequential(ctx context.Context, instance
 
 		if err != nil {
 			o.writeLog(instance.ID, execution.BackupID, fmt.Sprintf("Component %s failed: %v", component, err))
-			// In sequential mode, continue to next component even on failure
-			// This allows partial backups
+			// On failure, log the error and continue to the next component to allow partial backups
 		} else {
 			o.writeLog(instance.ID, execution.BackupID, fmt.Sprintf("Component %s completed successfully", component))
 		}
@@ -200,7 +207,8 @@ func (o *Orchestrator) executeComponentBackup(ctx context.Context, instance *mod
 // executeZeebeBackup executes Zeebe backup
 func (o *Orchestrator) executeZeebeBackup(ctx context.Context, instance *models.CamundaInstance, backupID string) (types.ComponentStatus, error) {
 	if instance.ZeebeBackupEndpoint == "" {
-		return types.ComponentStatusSkipped, fmt.Errorf("Zeebe backup endpoint not configured")
+		o.writeLog(instance.ID, backupID, "Skipping Zeebe backup: backup endpoint not configured")
+		return types.ComponentStatusSkipped, nil
 	}
 
 	// Trigger backup
@@ -216,7 +224,10 @@ func (o *Orchestrator) executeZeebeBackup(ctx context.Context, instance *models.
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		body, _ := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			o.writeLog(instance.ID, backupID, fmt.Sprintf("failed to read Zeebe backup error response body: %v", readErr))
+		}
 		return types.ComponentStatusFailed, fmt.Errorf("Zeebe backup trigger failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -250,7 +261,10 @@ func (o *Orchestrator) executeOperateBackup(ctx context.Context, instance *model
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		body, _ := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			o.writeLog(instance.ID, backupID, fmt.Sprintf("Failed to read Operate backup error response body: %v", readErr))
+		}
 		return types.ComponentStatusFailed, fmt.Errorf("Operate backup trigger failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -284,7 +298,10 @@ func (o *Orchestrator) executeTasklistBackup(ctx context.Context, instance *mode
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		body, _ := io.ReadAll(resp.Body)
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return types.ComponentStatusFailed, fmt.Errorf("Tasklist backup trigger failed with status %d and could not read response body: %v", resp.StatusCode, readErr)
+		}
 		return types.ComponentStatusFailed, fmt.Errorf("Tasklist backup trigger failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -352,12 +369,14 @@ func (o *Orchestrator) pollBackupStatus(ctx context.Context, instance *models.Ca
 	// Poll configuration
 	maxAttempts := 120 // 10 minutes with 5 second intervals
 	pollInterval := 5 * time.Second
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		select {
 		case <-ctx.Done():
 			return types.ComponentStatusFailed, ctx.Err()
-		case <-time.After(pollInterval):
+		case <-ticker.C:
 			// Check status
 			statusURL := fmt.Sprintf("%s?backupId=%s", statusEndpoint, backupID)
 			resp, err := o.httpClient.Get(ctx, statusURL, nil)
@@ -366,7 +385,12 @@ func (o *Orchestrator) pollBackupStatus(ctx context.Context, instance *models.Ca
 				continue
 			}
 
-			body, _ := io.ReadAll(resp.Body)
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				o.writeLog(instance.ID, backupID, fmt.Sprintf("Failed to read %s status response body: %v", componentName, err))
+				resp.Body.Close()
+				continue
+			}
 			resp.Body.Close()
 
 			if resp.StatusCode == http.StatusOK {
@@ -396,7 +420,22 @@ func (o *Orchestrator) pollBackupStatus(ctx context.Context, instance *models.Ca
 						// Continue polling
 						o.writeLog(instance.ID, backupID, fmt.Sprintf("%s backup still running (attempt %d/%d)", componentName, attempt+1, maxAttempts))
 					}
+				} else {
+					// Log unexpected response format to aid debugging
+					o.writeLog(instance.ID, backupID, fmt.Sprintf("Unexpected %s status response: missing 'state'/'status' field. Raw body: %s", componentName, string(body)))
 				}
+			} else {
+				// Log non-OK status codes and handle certain errors as terminal
+				o.writeLog(instance.ID, backupID, fmt.Sprintf("%s status endpoint returned HTTP %d with body: %s", componentName, resp.StatusCode, string(body)))
+
+				// Treat 404 as a non-retryable error: backup/status not found
+				if resp.StatusCode == http.StatusNotFound {
+					o.writeLog(instance.ID, backupID, fmt.Sprintf("%s status endpoint returned 404 Not Found; stopping polling", componentName))
+					return types.ComponentStatusFailed, fmt.Errorf("%s status endpoint returned 404 Not Found", componentName)
+				}
+
+				// For other non-OK responses, continue polling (may be transient)
+				continue
 			}
 		}
 	}
