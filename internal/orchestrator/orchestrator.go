@@ -49,9 +49,6 @@ type BackupRequest struct {
 
 // ExecuteBackup orchestrates the complete backup workflow for a Camunda instance
 func (o *Orchestrator) ExecuteBackup(ctx context.Context, req BackupRequest) (*models.BackupExecution, error) {
-	o.mutex.Lock()
-	defer o.mutex.Unlock()
-
 	if req.CamundaInstance == nil {
 		return nil, fmt.Errorf("camunda instance is nil")
 	}
@@ -72,6 +69,8 @@ func (o *Orchestrator) ExecuteBackup(ctx context.Context, req BackupRequest) (*m
 	o.writeLog(req.CamundaInstance.ID, backupID, fmt.Sprintf("Trigger type: %s", req.TriggerType))
 	o.writeLog(req.CamundaInstance.ID, backupID, fmt.Sprintf("Execution mode: %s", o.getExecutionMode(req.CamundaInstance)))
 
+	o.mutex.Lock()
+	defer o.mutex.Unlock()
 	// Store backup ID in S3 before triggering components
 	if err := o.s3Storage.StoreLatestBackupID(req.CamundaInstance.ID, backupID); err != nil {
 		o.writeLog(req.CamundaInstance.ID, backupID, fmt.Sprintf("Failed to store backup ID in S3: %v", err))
