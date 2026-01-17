@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/camunda"
+	"github.com/aitasadduq/camunda-backup-dr/internal/config"
 	"github.com/aitasadduq/camunda-backup-dr/internal/models"
 	"github.com/aitasadduq/camunda-backup-dr/internal/storage"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
@@ -536,8 +537,8 @@ func (o *Orchestrator) createBackupHistory(req BackupRequest, execution *models.
 		Components:          make(map[string]models.ComponentBackupInfo),
 		ErrorMessage:        execution.ErrorMessage,
 		Metadata: models.BackupMetadata{
-			ConfigVersion:     "1.0",
-			ControllerVersion: "0.1.0",
+			ConfigVersion:     config.ConfigVersion,
+			ControllerVersion: config.ControllerVersion,
 			ExecutionMode:     o.getExecutionMode(req.CamundaInstance),
 			LogFilePath:       fmt.Sprintf("%s/%s.log", req.CamundaInstance.ID, execution.BackupID),
 			BackupReason:      req.BackupReason,
