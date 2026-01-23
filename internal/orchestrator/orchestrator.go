@@ -12,6 +12,7 @@ import (
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/camunda"
 	"github.com/aitasadduq/camunda-backup-dr/internal/config"
+	"github.com/aitasadduq/camunda-backup-dr/internal/elasticsearch"
 	"github.com/aitasadduq/camunda-backup-dr/internal/models"
 	"github.com/aitasadduq/camunda-backup-dr/internal/storage"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
@@ -23,6 +24,7 @@ type Orchestrator struct {
 	fileStorage     storage.FileStorage
 	s3Storage       storage.S3Storage
 	httpClient      *camunda.HTTPClient
+	cfg             *config.Config
 	logger          *utils.Logger
 	mutex           sync.Mutex
 	pollInterval    time.Duration
@@ -34,6 +36,7 @@ func NewOrchestrator(
 	fileStorage storage.FileStorage,
 	s3Storage storage.S3Storage,
 	httpClient *camunda.HTTPClient,
+	cfg *config.Config,
 	logger *utils.Logger,
 	pollInterval time.Duration,
 	maxPollAttempts int,
@@ -42,6 +45,7 @@ func NewOrchestrator(
 		fileStorage:     fileStorage,
 		s3Storage:       s3Storage,
 		httpClient:      httpClient,
+		cfg:             cfg,
 		logger:          logger,
 		pollInterval:    pollInterval,
 		maxPollAttempts: maxPollAttempts,
@@ -379,10 +383,95 @@ func (o *Orchestrator) executeElasticsearchBackup(ctx context.Context, instance 
 		return types.ComponentStatusSkipped, nil
 	}
 
-	// For now, this is a placeholder implementation
-	// In Phase 5, this will be fully implemented with ES snapshot API
-	o.writeLog(instance.ID, backupID, "Elasticsearch backup not yet implemented (Phase 5)")
-	return types.ComponentStatusSkipped, nil
+	if o.cfg == nil {
+		o.writeLog(instance.ID, backupID, "Elasticsearch backup failed: configuration not available")
+		return types.ComponentStatusFailed, fmt.Errorf("configuration not available for Elasticsearch backup")
+	}
+
+	// Get snapshot repository from config
+	repository := o.cfg.GetElasticsearchSnapshotRepository(instance.ID)
+	if repository == "" {
+		o.writeLog(instance.ID, backupID, "Elasticsearch backup failed: snapshot repository not configured")
+		return types.ComponentStatusFailed, fmt.Errorf("snapshot repository not configured")
+	}
+
+	// Build snapshot name with optional prefix
+	namePrefix := o.cfg.GetElasticsearchSnapshotNamePrefix(instance.ID)
+	snapshotName := backupID
+	if namePrefix != "" {
+		snapshotName = fmt.Sprintf("%s-%s", namePrefix, backupID)
+	}
+
+	// Get credentials
+	password := o.cfg.GetElasticsearchPassword(instance.ID)
+
+	// Create ES client
+	esClient := elasticsearch.NewClient(
+		instance.ElasticsearchEndpoint,
+		instance.ElasticsearchUsername,
+		password,
+		o.httpClient,
+		o.logger,
+	)
+
+	// Create snapshot
+	o.writeLog(instance.ID, backupID, fmt.Sprintf("Creating Elasticsearch snapshot: %s (repository: %s)", snapshotName, repository))
+	if err := esClient.CreateSnapshot(ctx, repository, snapshotName); err != nil {
+		errMsg := fmt.Sprintf("Failed to create Elasticsearch snapshot: %v", err)
+		o.writeLog(instance.ID, backupID, errMsg)
+		return types.ComponentStatusFailed, fmt.Errorf(errMsg)
+	}
+
+	o.writeLog(instance.ID, backupID, "Elasticsearch snapshot creation initiated, polling for status...")
+
+	// Poll for snapshot completion
+	status, err := o.pollElasticsearchSnapshot(ctx, instance, backupID, esClient, repository, snapshotName)
+	if err != nil {
+		return types.ComponentStatusFailed, err
+	}
+
+	return status, nil
+}
+
+// pollElasticsearchSnapshot polls the Elasticsearch snapshot status until completion or failure
+func (o *Orchestrator) pollElasticsearchSnapshot(ctx context.Context, instance *models.CamundaInstance, backupID string, client *elasticsearch.Client, repository, snapshotName string) (types.ComponentStatus, error) {
+	o.writeLog(instance.ID, backupID, fmt.Sprintf("Polling Elasticsearch snapshot status for %s", snapshotName))
+
+	ticker := time.NewTicker(o.pollInterval)
+	defer ticker.Stop()
+
+	for attempt := 0; attempt < o.maxPollAttempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			o.writeLog(instance.ID, backupID, "Elasticsearch snapshot polling cancelled")
+			return types.ComponentStatusFailed, ctx.Err()
+		case <-ticker.C:
+			state, err := client.GetSnapshotStatus(ctx, repository, snapshotName)
+			if err != nil {
+				o.writeLog(instance.ID, backupID, fmt.Sprintf("Elasticsearch snapshot status check failed: %v", err))
+				continue
+			}
+
+			switch state {
+			case elasticsearch.SnapshotStateSuccess:
+				o.writeLog(instance.ID, backupID, "Elasticsearch snapshot completed successfully")
+				return types.ComponentStatusCompleted, nil
+			case elasticsearch.SnapshotStateFailed:
+				o.writeLog(instance.ID, backupID, "Elasticsearch snapshot failed")
+				return types.ComponentStatusFailed, fmt.Errorf("elasticsearch snapshot failed")
+			case elasticsearch.SnapshotStatePartial:
+				o.writeLog(instance.ID, backupID, "Elasticsearch snapshot completed partially (some shards failed)")
+				return types.ComponentStatusFailed, fmt.Errorf("elasticsearch snapshot completed partially")
+			case elasticsearch.SnapshotStateInProgress:
+				o.writeLog(instance.ID, backupID, fmt.Sprintf("Elasticsearch snapshot still running (attempt %d/%d)", attempt+1, o.maxPollAttempts))
+			default:
+				o.writeLog(instance.ID, backupID, fmt.Sprintf("Elasticsearch snapshot in unknown state (attempt %d/%d)", attempt+1, o.maxPollAttempts))
+			}
+		}
+	}
+
+	o.writeLog(instance.ID, backupID, "Elasticsearch snapshot timed out")
+	return types.ComponentStatusFailed, fmt.Errorf("elasticsearch snapshot timed out after %d attempts", o.maxPollAttempts)
 }
 
 // pollBackupStatus polls the status endpoint until backup is completed or fails
