@@ -419,7 +419,7 @@ func (o *Orchestrator) executeElasticsearchBackup(ctx context.Context, instance 
 	if err := esClient.CreateSnapshot(ctx, repository, snapshotName); err != nil {
 		errMsg := fmt.Sprintf("Failed to create Elasticsearch snapshot: %v", err)
 		o.writeLog(instance.ID, backupID, errMsg)
-		return types.ComponentStatusFailed, fmt.Errorf(errMsg)
+		return types.ComponentStatusFailed, fmt.Errorf("failed to create Elasticsearch snapshot: %w", err)
 	}
 
 	o.writeLog(instance.ID, backupID, "Elasticsearch snapshot creation initiated, polling for status...")
