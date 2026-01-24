@@ -147,6 +147,66 @@ go fmt ./...
 rm -rf build/
 ```
 
+### Running Integration Tests
+
+The project includes integration tests for Elasticsearch that require a running Elasticsearch instance. These tests use Go build tags and are excluded from regular test runs.
+
+#### Prerequisites for Elasticsearch Integration Tests
+
+1. **Running Elasticsearch instance** at `localhost:9200`
+2. **Snapshot repository** named `camunda-backup` configured in Elasticsearch
+3. **Credentials**: username `elastic` with password `localelastic12345` (or update the constants in `internal/elasticsearch/client_integration_test.go`)
+
+#### Setting Up Elasticsearch for Integration Tests
+
+```bash
+# Start Elasticsearch with Docker (example)
+docker run -d --name elasticsearch \
+  -p 9200:9200 \
+  -e "discovery.type=single-node" \
+  -e "ELASTIC_PASSWORD=localelastic12345" \
+  -e "xpack.security.enabled=true" \
+  elasticsearch:8.11.0
+
+# Create the snapshot repository (using a filesystem repository for testing)
+curl -X PUT "localhost:9200/_snapshot/camunda-backup" \
+  -u elastic:localelastic12345 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "fs",
+    "settings": {
+      "location": "/usr/share/elasticsearch/backup"
+    }
+  }'
+```
+
+> **Note**: For filesystem repositories, ensure the `path.repo` setting is configured in `elasticsearch.yml` to include the backup location.
+
+#### Running Integration Tests
+
+```bash
+# Run only Elasticsearch integration tests
+go test -tags=integration ./internal/elasticsearch/...
+
+# Run integration tests with verbose output
+go test -v -tags=integration ./internal/elasticsearch/...
+
+# Run a specific integration test
+go test -v -tags=integration -run TestIntegration_FullSnapshotLifecycle ./internal/elasticsearch/...
+```
+
+#### Configuring VS Code for Integration Tests
+
+If you're using VS Code with gopls and want IntelliSense support for integration test files, add the following to your `.vscode/settings.json`:
+
+```json
+{
+  "gopls": {
+    "buildFlags": ["-tags=integration"]
+  }
+}
+```
+
 ## Implementation Phases
 
 This project is being implemented in phases:
