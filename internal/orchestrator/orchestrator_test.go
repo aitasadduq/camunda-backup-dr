@@ -1608,3 +1608,622 @@ func TestPollBackupStatus_InvalidJSON(t *testing.T) {
 		t.Errorf("Expected status COMPLETED after JSON error recovery, got: %s", execution.Status)
 	}
 }
+
+// =============================================================================
+// Elasticsearch Backup Tests
+// =============================================================================
+
+// mockElasticsearchServer creates a mock Elasticsearch server for testing
+func mockElasticsearchServer(t *testing.T, snapshotBehavior string) *httptest.Server {
+	callCount := 0
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Handle snapshot creation: PUT /_snapshot/{repo}/{snapshot}
+		if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/_snapshot/") {
+			switch snapshotBehavior {
+			case "success", "immediate-success", "polling-success":
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"accepted": true,
+				})
+			case "create-failure":
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"error": map[string]interface{}{
+						"type":   "repository_exception",
+						"reason": "Could not create snapshot",
+					},
+				})
+			case "repo-not-found":
+				w.WriteHeader(http.StatusNotFound)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"error": map[string]interface{}{
+						"type":   "repository_missing_exception",
+						"reason": "Repository not found",
+					},
+				})
+			default:
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]interface{}{"accepted": true})
+			}
+			return
+		}
+
+		// Handle snapshot status: GET /_snapshot/{repo}/{snapshot}
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/_snapshot/") {
+			callCount++
+			switch snapshotBehavior {
+			case "immediate-success":
+				// Return SUCCESS immediately
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"snapshots": []map[string]interface{}{
+						{"state": "SUCCESS"},
+					},
+				})
+			case "polling-success":
+				// First few calls return IN_PROGRESS, then SUCCESS
+				w.WriteHeader(http.StatusOK)
+				state := "IN_PROGRESS"
+				if callCount >= 3 {
+					state = "SUCCESS"
+				}
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"snapshots": []map[string]interface{}{
+						{"state": state},
+					},
+				})
+			case "snapshot-failed":
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"snapshots": []map[string]interface{}{
+						{"state": "FAILED"},
+					},
+				})
+			case "snapshot-partial":
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"snapshots": []map[string]interface{}{
+						{"state": "PARTIAL"},
+					},
+				})
+			case "always-in-progress":
+				// Always return IN_PROGRESS (for timeout testing)
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"snapshots": []map[string]interface{}{
+						{"state": "IN_PROGRESS"},
+					},
+				})
+			default:
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"snapshots": []map[string]interface{}{
+						{"state": "SUCCESS"},
+					},
+				})
+			}
+			return
+		}
+
+		// Default: return 404
+		w.WriteHeader(http.StatusNotFound)
+	}))
+}
+
+func TestExecuteElasticsearchBackup_Success(t *testing.T) {
+	// Create mock Elasticsearch server
+	server := mockElasticsearchServer(t, "polling-success")
+	defer server.Close()
+
+	// Set up orchestrator with proper config
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+
+	cfg := setupTestConfig()
+	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, cfg, logger, 50*time.Millisecond, 10)
+
+	// Create test instance with only Elasticsearch enabled
+	instance := setupTestInstance("test-instance", "Test Instance")
+	instance.ElasticsearchEndpoint = server.URL
+	instance.ElasticsearchUsername = "elastic"
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentElasticsearch, Enabled: true},
+	}
+
+	// Execute backup
+	ctx := context.Background()
+	req := BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+		BackupReason:    "Test Elasticsearch backup",
+	}
+
+	execution, err := orchestrator.ExecuteBackup(ctx, req)
+
+	// Verify results
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if execution.Status != types.BackupStatusCompleted {
+		t.Errorf("Expected status COMPLETED, got: %s", execution.Status)
+	}
+	if execution.ComponentStatus[types.ComponentElasticsearch] != types.ComponentStatusCompleted {
+		t.Errorf("Expected Elasticsearch to be COMPLETED, got: %s", execution.ComponentStatus[types.ComponentElasticsearch])
+	}
+}
+
+func TestExecuteElasticsearchBackup_ImmediateSuccess(t *testing.T) {
+	// Create mock Elasticsearch server that returns SUCCESS immediately
+	server := mockElasticsearchServer(t, "immediate-success")
+	defer server.Close()
+
+	// Set up orchestrator
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+
+	cfg := setupTestConfig()
+	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, cfg, logger, 50*time.Millisecond, 10)
+
+	// Create test instance
+	instance := setupTestInstance("test-instance", "Test Instance")
+	instance.ElasticsearchEndpoint = server.URL
+	instance.ElasticsearchUsername = "elastic"
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentElasticsearch, Enabled: true},
+	}
+
+	// Execute backup
+	ctx := context.Background()
+	req := BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+		BackupReason:    "Test immediate Elasticsearch success",
+	}
+
+	execution, err := orchestrator.ExecuteBackup(ctx, req)
+
+	// Verify results - should complete quickly without waiting for ticker
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if execution.Status != types.BackupStatusCompleted {
+		t.Errorf("Expected status COMPLETED, got: %s", execution.Status)
+	}
+	if execution.ComponentStatus[types.ComponentElasticsearch] != types.ComponentStatusCompleted {
+		t.Errorf("Expected Elasticsearch to be COMPLETED, got: %s", execution.ComponentStatus[types.ComponentElasticsearch])
+	}
+}
+
+func TestExecuteElasticsearchBackup_Skipped_NoEndpoint(t *testing.T) {
+	// Set up orchestrator
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+
+	cfg := setupTestConfig()
+	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, cfg, logger, 50*time.Millisecond, 10)
+
+	// Create test instance with Elasticsearch enabled but no endpoint
+	instance := setupTestInstance("test-instance", "Test Instance")
+	instance.ElasticsearchEndpoint = "" // No endpoint configured
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentElasticsearch, Enabled: true},
+	}
+
+	// Execute backup
+	ctx := context.Background()
+	req := BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+		BackupReason:    "Test Elasticsearch skipped",
+	}
+
+	execution, err := orchestrator.ExecuteBackup(ctx, req)
+
+	// Verify results
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if execution.ComponentStatus[types.ComponentElasticsearch] != types.ComponentStatusSkipped {
+		t.Errorf("Expected Elasticsearch to be SKIPPED, got: %s", execution.ComponentStatus[types.ComponentElasticsearch])
+	}
+}
+
+func TestExecuteElasticsearchBackup_Failed_NoConfig(t *testing.T) {
+	// Create mock Elasticsearch server
+	server := mockElasticsearchServer(t, "success")
+	defer server.Close()
+
+	// Set up orchestrator WITHOUT config (nil)
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+
+	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, nil, logger, 50*time.Millisecond, 10)
+
+	// Create test instance with Elasticsearch
+	instance := setupTestInstance("test-instance", "Test Instance")
+	instance.ElasticsearchEndpoint = server.URL
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentElasticsearch, Enabled: true},
+	}
+
+	// Execute backup
+	ctx := context.Background()
+	req := BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+		BackupReason:    "Test Elasticsearch no config",
+	}
+
+	execution, err := orchestrator.ExecuteBackup(ctx, req)
+
+	// Verify results - should fail due to missing config
+	if err != nil {
+		t.Fatalf("Expected no error from ExecuteBackup, got: %v", err)
+	}
+	if execution.Status != types.BackupStatusFailed {
+		t.Errorf("Expected status FAILED, got: %s", execution.Status)
+	}
+	if execution.ComponentStatus[types.ComponentElasticsearch] != types.ComponentStatusFailed {
+		t.Errorf("Expected Elasticsearch to be FAILED, got: %s", execution.ComponentStatus[types.ComponentElasticsearch])
+	}
+}
+
+func TestExecuteElasticsearchBackup_Failed_NoRepository(t *testing.T) {
+	// Create mock Elasticsearch server
+	server := mockElasticsearchServer(t, "success")
+	defer server.Close()
+
+	// Set up orchestrator with config that has empty repository
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+
+	cfg := &config.Config{
+		DefaultElasticsearchSnapshotRepository: "", // Empty repository
+		DefaultElasticsearchSnapshotNamePrefix: "",
+	}
+	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, cfg, logger, 50*time.Millisecond, 10)
+
+	// Create test instance with Elasticsearch
+	instance := setupTestInstance("test-instance", "Test Instance")
+	instance.ElasticsearchEndpoint = server.URL
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentElasticsearch, Enabled: true},
+	}
+
+	// Execute backup
+	ctx := context.Background()
+	req := BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+		BackupReason:    "Test Elasticsearch no repository",
+	}
+
+	execution, err := orchestrator.ExecuteBackup(ctx, req)
+
+	// Verify results - should fail due to missing repository
+	if err != nil {
+		t.Fatalf("Expected no error from ExecuteBackup, got: %v", err)
+	}
+	if execution.Status != types.BackupStatusFailed {
+		t.Errorf("Expected status FAILED, got: %s", execution.Status)
+	}
+	if execution.ComponentStatus[types.ComponentElasticsearch] != types.ComponentStatusFailed {
+		t.Errorf("Expected Elasticsearch to be FAILED, got: %s", execution.ComponentStatus[types.ComponentElasticsearch])
+	}
+}
+
+func TestExecuteElasticsearchBackup_CreateSnapshotFailure(t *testing.T) {
+	// Create mock Elasticsearch server that fails on snapshot creation
+	server := mockElasticsearchServer(t, "create-failure")
+	defer server.Close()
+
+	// Set up orchestrator
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+
+	cfg := setupTestConfig()
+	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, cfg, logger, 50*time.Millisecond, 10)
+
+	// Create test instance with Elasticsearch
+	instance := setupTestInstance("test-instance", "Test Instance")
+	instance.ElasticsearchEndpoint = server.URL
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentElasticsearch, Enabled: true},
+	}
+
+	// Execute backup
+	ctx := context.Background()
+	req := BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+		BackupReason:    "Test Elasticsearch create failure",
+	}
+
+	execution, err := orchestrator.ExecuteBackup(ctx, req)
+
+	// Verify results - should fail due to snapshot creation error
+	if err != nil {
+		t.Fatalf("Expected no error from ExecuteBackup, got: %v", err)
+	}
+	if execution.Status != types.BackupStatusFailed {
+		t.Errorf("Expected status FAILED, got: %s", execution.Status)
+	}
+	if execution.ComponentStatus[types.ComponentElasticsearch] != types.ComponentStatusFailed {
+		t.Errorf("Expected Elasticsearch to be FAILED, got: %s", execution.ComponentStatus[types.ComponentElasticsearch])
+	}
+}
+
+func TestExecuteElasticsearchBackup_SnapshotFailed(t *testing.T) {
+	// Create mock Elasticsearch server that returns FAILED state
+	server := mockElasticsearchServer(t, "snapshot-failed")
+	defer server.Close()
+
+	// Set up orchestrator
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+
+	cfg := setupTestConfig()
+	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, cfg, logger, 50*time.Millisecond, 10)
+
+	// Create test instance with Elasticsearch
+	instance := setupTestInstance("test-instance", "Test Instance")
+	instance.ElasticsearchEndpoint = server.URL
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentElasticsearch, Enabled: true},
+	}
+
+	// Execute backup
+	ctx := context.Background()
+	req := BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+		BackupReason:    "Test Elasticsearch snapshot failed",
+	}
+
+	execution, err := orchestrator.ExecuteBackup(ctx, req)
+
+	// Verify results - should fail due to snapshot failure
+	if err != nil {
+		t.Fatalf("Expected no error from ExecuteBackup, got: %v", err)
+	}
+	if execution.Status != types.BackupStatusFailed {
+		t.Errorf("Expected status FAILED, got: %s", execution.Status)
+	}
+	if execution.ComponentStatus[types.ComponentElasticsearch] != types.ComponentStatusFailed {
+		t.Errorf("Expected Elasticsearch to be FAILED, got: %s", execution.ComponentStatus[types.ComponentElasticsearch])
+	}
+}
+
+func TestExecuteElasticsearchBackup_SnapshotPartial(t *testing.T) {
+	// Create mock Elasticsearch server that returns PARTIAL state
+	server := mockElasticsearchServer(t, "snapshot-partial")
+	defer server.Close()
+
+	// Set up orchestrator
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+
+	cfg := setupTestConfig()
+	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, cfg, logger, 50*time.Millisecond, 10)
+
+	// Create test instance with Elasticsearch
+	instance := setupTestInstance("test-instance", "Test Instance")
+	instance.ElasticsearchEndpoint = server.URL
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentElasticsearch, Enabled: true},
+	}
+
+	// Execute backup
+	ctx := context.Background()
+	req := BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+		BackupReason:    "Test Elasticsearch partial snapshot",
+	}
+
+	execution, err := orchestrator.ExecuteBackup(ctx, req)
+
+	// Verify results - should fail due to partial snapshot
+	if err != nil {
+		t.Fatalf("Expected no error from ExecuteBackup, got: %v", err)
+	}
+	if execution.Status != types.BackupStatusFailed {
+		t.Errorf("Expected status FAILED, got: %s", execution.Status)
+	}
+	if execution.ComponentStatus[types.ComponentElasticsearch] != types.ComponentStatusFailed {
+		t.Errorf("Expected Elasticsearch to be FAILED, got: %s", execution.ComponentStatus[types.ComponentElasticsearch])
+	}
+}
+
+func TestExecuteElasticsearchBackup_PollingTimeout(t *testing.T) {
+	// Create mock Elasticsearch server that always returns IN_PROGRESS
+	server := mockElasticsearchServer(t, "always-in-progress")
+	defer server.Close()
+
+	// Set up orchestrator with very limited polling attempts
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+
+	cfg := setupTestConfig()
+	// Only 3 poll attempts with 50ms interval = fast timeout
+	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, cfg, logger, 50*time.Millisecond, 3)
+
+	// Create test instance with Elasticsearch
+	instance := setupTestInstance("test-instance", "Test Instance")
+	instance.ElasticsearchEndpoint = server.URL
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentElasticsearch, Enabled: true},
+	}
+
+	// Execute backup
+	ctx := context.Background()
+	req := BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+		BackupReason:    "Test Elasticsearch polling timeout",
+	}
+
+	execution, err := orchestrator.ExecuteBackup(ctx, req)
+
+	// Verify results - should fail due to timeout
+	if err != nil {
+		t.Fatalf("Expected no error from ExecuteBackup, got: %v", err)
+	}
+	if execution.Status != types.BackupStatusFailed {
+		t.Errorf("Expected status FAILED, got: %s", execution.Status)
+	}
+	if execution.ComponentStatus[types.ComponentElasticsearch] != types.ComponentStatusFailed {
+		t.Errorf("Expected Elasticsearch to be FAILED due to timeout, got: %s", execution.ComponentStatus[types.ComponentElasticsearch])
+	}
+}
+
+func TestExecuteElasticsearchBackup_ContextCancellation(t *testing.T) {
+	// Create mock Elasticsearch server that delays response
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"accepted": true})
+			return
+		}
+		if r.Method == http.MethodGet {
+			// Delay before returning IN_PROGRESS
+			time.Sleep(200 * time.Millisecond)
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"snapshots": []map[string]interface{}{
+					{"state": "IN_PROGRESS"},
+				},
+			})
+		}
+	}))
+	defer server.Close()
+
+	// Set up orchestrator
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+
+	cfg := setupTestConfig()
+	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, cfg, logger, 50*time.Millisecond, 100)
+
+	// Create test instance with Elasticsearch
+	instance := setupTestInstance("test-instance", "Test Instance")
+	instance.ElasticsearchEndpoint = server.URL
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentElasticsearch, Enabled: true},
+	}
+
+	// Create context that will be cancelled
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Cancel context after a short delay
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	req := BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+		BackupReason:    "Test Elasticsearch context cancellation",
+	}
+
+	execution, err := orchestrator.ExecuteBackup(ctx, req)
+
+	// Verify results - should handle cancellation gracefully
+	if err != nil {
+		t.Fatalf("Expected no error from ExecuteBackup, got: %v", err)
+	}
+	// The backup should fail because the context was cancelled during polling
+	if execution.Status != types.BackupStatusFailed {
+		t.Errorf("Expected status FAILED due to cancellation, got: %s", execution.Status)
+	}
+}
+
+func TestExecuteElasticsearchBackup_WithSnapshotNamePrefix(t *testing.T) {
+	// Track the snapshot name used in the request
+	var capturedSnapshotName string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/_snapshot/") {
+			// Extract snapshot name from path: /_snapshot/{repo}/{snapshot}
+			parts := strings.Split(r.URL.Path, "/")
+			if len(parts) >= 4 {
+				capturedSnapshotName = parts[3]
+			}
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"accepted": true})
+			return
+		}
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"snapshots": []map[string]interface{}{
+					{"state": "SUCCESS"},
+				},
+			})
+		}
+	}))
+	defer server.Close()
+
+	// Set up orchestrator with a snapshot name prefix
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+
+	cfg := &config.Config{
+		DefaultElasticsearchSnapshotRepository: "camunda-backup",
+		DefaultElasticsearchSnapshotNamePrefix: "my-prefix",
+	}
+	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, cfg, logger, 50*time.Millisecond, 10)
+
+	// Create test instance with Elasticsearch
+	instance := setupTestInstance("test-instance", "Test Instance")
+	instance.ElasticsearchEndpoint = server.URL
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentElasticsearch, Enabled: true},
+	}
+
+	// Execute backup
+	ctx := context.Background()
+	req := BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+		BackupReason:    "Test Elasticsearch with prefix",
+	}
+
+	execution, err := orchestrator.ExecuteBackup(ctx, req)
+
+	// Verify results
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if execution.Status != types.BackupStatusCompleted {
+		t.Errorf("Expected status COMPLETED, got: %s", execution.Status)
+	}
+
+	// Verify the snapshot name includes the prefix
+	if !strings.HasPrefix(capturedSnapshotName, "my-prefix-") {
+		t.Errorf("Expected snapshot name to start with 'my-prefix-', got: %s", capturedSnapshotName)
+	}
+}

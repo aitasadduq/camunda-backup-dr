@@ -437,35 +437,53 @@ func (o *Orchestrator) executeElasticsearchBackup(ctx context.Context, instance 
 func (o *Orchestrator) pollElasticsearchSnapshot(ctx context.Context, instance *models.CamundaInstance, backupID string, client *elasticsearch.Client, repository, snapshotName string) (types.ComponentStatus, error) {
 	o.writeLog(instance.ID, backupID, fmt.Sprintf("Polling Elasticsearch snapshot status for %s", snapshotName))
 
+	// checkSnapshotState checks the current snapshot state and returns the component status if terminal,
+	// or nil if polling should continue
+	checkSnapshotState := func(attempt int) (*types.ComponentStatus, error) {
+		state, err := client.GetSnapshotStatus(ctx, repository, snapshotName)
+		if err != nil {
+			o.writeLog(instance.ID, backupID, fmt.Sprintf("Elasticsearch snapshot status check failed: %v", err))
+			return nil, nil // Continue polling
+		}
+
+		switch state {
+		case elasticsearch.SnapshotStateSuccess:
+			o.writeLog(instance.ID, backupID, "Elasticsearch snapshot completed successfully")
+			status := types.ComponentStatusCompleted
+			return &status, nil
+		case elasticsearch.SnapshotStateFailed:
+			o.writeLog(instance.ID, backupID, "Elasticsearch snapshot failed")
+			status := types.ComponentStatusFailed
+			return &status, fmt.Errorf("elasticsearch snapshot failed")
+		case elasticsearch.SnapshotStatePartial:
+			o.writeLog(instance.ID, backupID, "Elasticsearch snapshot completed partially (some shards failed)")
+			status := types.ComponentStatusFailed
+			return &status, fmt.Errorf("elasticsearch snapshot completed partially")
+		case elasticsearch.SnapshotStateInProgress:
+			o.writeLog(instance.ID, backupID, fmt.Sprintf("Elasticsearch snapshot still running (attempt %d/%d)", attempt+1, o.maxPollAttempts))
+		default:
+			o.writeLog(instance.ID, backupID, fmt.Sprintf("Elasticsearch snapshot in unknown state (attempt %d/%d)", attempt+1, o.maxPollAttempts))
+		}
+		return nil, nil // Continue polling
+	}
+
+	// Check status immediately before entering the ticker loop to avoid unnecessary delay
+	// for fast-completing snapshots
+	if status, err := checkSnapshotState(0); status != nil {
+		return *status, err
+	}
+
 	ticker := time.NewTicker(o.pollInterval)
 	defer ticker.Stop()
 
-	for attempt := 0; attempt < o.maxPollAttempts; attempt++ {
+	for attempt := 1; attempt < o.maxPollAttempts; attempt++ {
 		select {
 		case <-ctx.Done():
 			o.writeLog(instance.ID, backupID, "Elasticsearch snapshot polling cancelled")
 			return types.ComponentStatusFailed, ctx.Err()
 		case <-ticker.C:
-			state, err := client.GetSnapshotStatus(ctx, repository, snapshotName)
-			if err != nil {
-				o.writeLog(instance.ID, backupID, fmt.Sprintf("Elasticsearch snapshot status check failed: %v", err))
-				continue
-			}
-
-			switch state {
-			case elasticsearch.SnapshotStateSuccess:
-				o.writeLog(instance.ID, backupID, "Elasticsearch snapshot completed successfully")
-				return types.ComponentStatusCompleted, nil
-			case elasticsearch.SnapshotStateFailed:
-				o.writeLog(instance.ID, backupID, "Elasticsearch snapshot failed")
-				return types.ComponentStatusFailed, fmt.Errorf("elasticsearch snapshot failed")
-			case elasticsearch.SnapshotStatePartial:
-				o.writeLog(instance.ID, backupID, "Elasticsearch snapshot completed partially (some shards failed)")
-				return types.ComponentStatusFailed, fmt.Errorf("elasticsearch snapshot completed partially")
-			case elasticsearch.SnapshotStateInProgress:
-				o.writeLog(instance.ID, backupID, fmt.Sprintf("Elasticsearch snapshot still running (attempt %d/%d)", attempt+1, o.maxPollAttempts))
-			default:
-				o.writeLog(instance.ID, backupID, fmt.Sprintf("Elasticsearch snapshot in unknown state (attempt %d/%d)", attempt+1, o.maxPollAttempts))
+			if status, err := checkSnapshotState(attempt); status != nil {
+				return *status, err
 			}
 		}
 	}
