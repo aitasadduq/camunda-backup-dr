@@ -9,6 +9,7 @@ import (
 // Logger wraps the standard logger for structured logging
 type Logger struct {
 	infoLogger  *log.Logger
+	warnLogger  *log.Logger
 	errorLogger *log.Logger
 	debugLogger *log.Logger
 }
@@ -16,6 +17,7 @@ type Logger struct {
 // NewLogger creates a new logger instance
 func NewLogger(logLevel string) *Logger {
 	infoLogger := log.New(os.Stdout, "INFO  ", log.Ldate|log.Ltime|log.Lshortfile)
+	warnLogger := log.New(os.Stdout, "WARN  ", log.Ldate|log.Ltime|log.Lshortfile)
 	errorLogger := log.New(os.Stderr, "ERROR ", log.Ldate|log.Ltime|log.Lshortfile)
 
 	var debugWriter io.Writer = os.Stdout
@@ -27,6 +29,7 @@ func NewLogger(logLevel string) *Logger {
 
 	return &Logger{
 		infoLogger:  infoLogger,
+		warnLogger:  warnLogger,
 		errorLogger: errorLogger,
 		debugLogger: debugLogger,
 	}
@@ -35,6 +38,11 @@ func NewLogger(logLevel string) *Logger {
 // Info logs an info message
 func (l *Logger) Info(format string, v ...interface{}) {
 	l.infoLogger.Printf(format, v...)
+}
+
+// Warn logs a warning message
+func (l *Logger) Warn(format string, v ...interface{}) {
+	l.warnLogger.Printf(format, v...)
 }
 
 // Error logs an error message
@@ -64,6 +72,11 @@ type BackupLogger struct {
 // Info logs an info message with backup ID
 func (bl *BackupLogger) Info(format string, v ...interface{}) {
 	bl.logger.Info("[BACKUP_ID: %s] "+format, append([]interface{}{bl.backupID}, v...)...)
+}
+
+// Warn logs a warning message with backup ID
+func (bl *BackupLogger) Warn(format string, v ...interface{}) {
+	bl.logger.Warn("[BACKUP_ID: %s] "+format, append([]interface{}{bl.backupID}, v...)...)
 }
 
 // Error logs an error message with backup ID
