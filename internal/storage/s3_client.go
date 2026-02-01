@@ -127,31 +127,38 @@ func NewS3Client(cfg S3Config, logger *utils.Logger) (*S3Client, error) {
 	}, nil
 }
 
-// SetRetryConfig allows customization of retry behavior
+// SetRetryConfig allows customization of retry behavior.
+// This method is safe to call concurrently with S3 operations.
 func (c *S3Client) SetRetryConfig(cfg RetryConfig) {
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 	c.retryConfig = cfg
 }
 
 // withRetry executes an operation with retry logic
 func (c *S3Client) withRetry(ctx context.Context, operation string, fn func() error) error {
-	var lastErr error
-	delay := c.retryConfig.InitialDelay
+	c.mutex.RLock()
+	retryConfig := c.retryConfig
+	c.mutex.RUnlock()
 
-	for attempt := 1; attempt <= c.retryConfig.MaxAttempts; attempt++ {
+	var lastErr error
+	delay := retryConfig.InitialDelay
+
+	for attempt := 1; attempt <= retryConfig.MaxAttempts; attempt++ {
 		if err := fn(); err != nil {
 			lastErr = err
 			c.logger.Warn("S3 operation '%s' failed (attempt %d/%d): %v",
 				operation, attempt, c.retryConfig.MaxAttempts, err)
 
-			if attempt < c.retryConfig.MaxAttempts {
+			if attempt < retryConfig.MaxAttempts {
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
 				case <-time.After(delay):
 					// Exponential backoff with max delay
 					delay *= 2
-					if delay > c.retryConfig.MaxDelay {
-						delay = c.retryConfig.MaxDelay
+					if delay > retryConfig.MaxDelay {
+						delay = retryConfig.MaxDelay
 					}
 				}
 			}
@@ -160,7 +167,7 @@ func (c *S3Client) withRetry(ctx context.Context, operation string, fn func() er
 		}
 	}
 
-	return fmt.Errorf("%s failed after %d attempts: %w", operation, c.retryConfig.MaxAttempts, lastErr)
+	return fmt.Errorf("%s failed after %d attempts: %w", operation, retryConfig.MaxAttempts, lastErr)
 }
 
 // buildKey constructs an S3 key with the configured prefix
@@ -203,6 +210,10 @@ func (c *S3Client) GetLatestBackupID(camundaInstanceID string) (string, error) {
 	ctx := context.Background()
 	key := c.buildKey(camundaInstanceID, latestBackupIDFile)
 
+	c.mutex.RLock()
+	retryConfig := c.retryConfig
+	c.mutex.RUnlock()
+
 	result, err := c.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(c.bucket),
 		Key:    aws.String(key),
@@ -215,7 +226,7 @@ func (c *S3Client) GetLatestBackupID(camundaInstanceID string) (string, error) {
 		}
 		// For other errors, apply retry logic
 		var lastErr error
-		for attempt := 1; attempt <= c.retryConfig.MaxAttempts; attempt++ {
+		for attempt := 1; attempt <= retryConfig.MaxAttempts; attempt++ {
 			result, err = c.client.GetObject(ctx, &s3.GetObjectInput{
 				Bucket: aws.String(c.bucket),
 				Key:    aws.String(key),
@@ -228,9 +239,9 @@ func (c *S3Client) GetLatestBackupID(camundaInstanceID string) (string, error) {
 			}
 			lastErr = err
 			c.logger.Warn("S3 operation 'GetLatestBackupID' failed (attempt %d/%d): %v",
-				attempt, c.retryConfig.MaxAttempts, err)
-			if attempt < c.retryConfig.MaxAttempts {
-				time.Sleep(c.retryConfig.InitialDelay * time.Duration(1<<(attempt-1)))
+				attempt, retryConfig.MaxAttempts, err)
+			if attempt < retryConfig.MaxAttempts {
+				time.Sleep(retryConfig.InitialDelay * time.Duration(1<<(attempt-1)))
 			}
 		}
 		if err != nil {
