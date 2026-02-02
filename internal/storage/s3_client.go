@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"path"
@@ -17,6 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/models"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
@@ -151,7 +153,7 @@ func (c *S3Client) withRetry(ctx context.Context, operation string, fn func() er
 		if err := fn(); err != nil {
 			lastErr = err
 			c.logger.Warn("S3 operation '%s' failed (attempt %d/%d): %v",
-				operation, attempt, c.retryConfig.MaxAttempts, err)
+				operation, attempt, retryConfig.MaxAttempts, err)
 
 			if attempt < retryConfig.MaxAttempts {
 				select {
@@ -213,52 +215,38 @@ func (c *S3Client) GetLatestBackupID(camundaInstanceID string) (string, error) {
 	ctx := context.Background()
 	key := c.buildKey(camundaInstanceID, latestBackupIDFile)
 
-	c.mutex.RLock()
-	retryConfig := c.retryConfig
-	c.mutex.RUnlock()
-
-	result, err := c.client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(c.bucket),
-		Key:    aws.String(key),
-	})
-	if err != nil {
-		// Check if the object doesn't exist
-		var nsk *types.NoSuchKey
-		if ok := isNoSuchKey(err, &nsk); ok {
-			return "", utils.ErrBackupNotFound
-		}
-		// For other errors, apply retry logic
-		var lastErr error
-		for attempt := 1; attempt <= retryConfig.MaxAttempts; attempt++ {
-			result, err = c.client.GetObject(ctx, &s3.GetObjectInput{
-				Bucket: aws.String(c.bucket),
-				Key:    aws.String(key),
-			})
-			if err == nil {
-				break
-			}
-			if ok := isNoSuchKey(err, &nsk); ok {
-				return "", utils.ErrBackupNotFound
-			}
-			lastErr = err
-			c.logger.Warn("S3 operation 'GetLatestBackupID' failed (attempt %d/%d): %v",
-				attempt, retryConfig.MaxAttempts, err)
-			if attempt < retryConfig.MaxAttempts {
-				time.Sleep(retryConfig.InitialDelay * time.Duration(1<<(attempt-1)))
-			}
-		}
+	var backupID string
+	err := c.withRetry(ctx, "GetLatestBackupID", func() error {
+		result, err := c.client.GetObject(ctx, &s3.GetObjectInput{
+			Bucket: aws.String(c.bucket),
+			Key:    aws.String(key),
+		})
 		if err != nil {
-			return "", fmt.Errorf("failed to get latest backup ID: %w", lastErr)
+			if isNoSuchKey(err) {
+				return utils.ErrBackupNotFound
+			}
+			return fmt.Errorf("failed to get object: %w", err)
 		}
-	}
-	defer result.Body.Close()
+		defer result.Body.Close()
 
-	data, err := io.ReadAll(result.Body)
+		data, err := io.ReadAll(result.Body)
+		if err != nil {
+			return fmt.Errorf("failed to read latest backup ID: %w", err)
+		}
+
+		backupID = strings.TrimSpace(string(data))
+		return nil
+	})
+
+	// Don't wrap ErrBackupNotFound - return it directly
+	if errors.Is(err, utils.ErrBackupNotFound) {
+		return "", utils.ErrBackupNotFound
+	}
 	if err != nil {
-		return "", fmt.Errorf("failed to read latest backup ID: %w", err)
+		return "", fmt.Errorf("failed to get latest backup ID: %w", err)
 	}
 
-	return strings.TrimSpace(string(data)), nil
+	return backupID, nil
 }
 
 // StoreBackupHistory stores a backup history entry
@@ -314,7 +302,11 @@ func (c *S3Client) GetBackupHistory(camundaInstanceID, backupID string) (*models
 		if err == nil {
 			return history, nil
 		}
-		// Continue searching if not found in this directory
+		// Only continue searching if backup was not found in this directory
+		// For other errors (permission, network, etc.), return the error immediately
+		if !errors.Is(err, utils.ErrBackupNotFound) {
+			return nil, fmt.Errorf("error searching in %s directory: %w", dir, err)
+		}
 	}
 
 	return nil, utils.ErrBackupNotFound
@@ -459,14 +451,33 @@ func (c *S3Client) UpdateBackupStatus(camundaInstanceID, backupID string, status
 	return c.StoreBackupHistory(history)
 }
 
-// deleteBackupFromAllDirs attempts to delete a backup from all directories
+// deleteBackupFromAllDirs attempts to delete a backup from all directories where it exists.
+// This ensures no duplicates are left behind if a backup exists in multiple directories
+// (e.g., due to partial moves or errors).
 func (c *S3Client) deleteBackupFromAllDirs(ctx context.Context, camundaInstanceID, backupID string) error {
 	dirs := []string{historyDir, incompleteDir, orphanedDir}
 
+	var deletedFromAny bool
+	var lastErr error
+
 	for _, dir := range dirs {
-		if err := c.deleteBackupFromDir(ctx, camundaInstanceID, backupID, dir); err == nil {
-			return nil
+		err := c.deleteBackupFromDir(ctx, camundaInstanceID, backupID, dir)
+		if err == nil {
+			deletedFromAny = true
+		} else if !errors.Is(err, utils.ErrBackupNotFound) {
+			// Track non-NotFound errors (e.g., permission, network errors)
+			lastErr = err
+			c.logger.Warn("Failed to delete backup from %s: %v", dir, err)
 		}
+		// If ErrBackupNotFound, just continue to next directory
+	}
+
+	if deletedFromAny {
+		return nil
+	}
+
+	if lastErr != nil {
+		return fmt.Errorf("failed to delete backup from any directory: %w", lastErr)
 	}
 
 	return utils.ErrBackupNotFound
@@ -654,14 +665,25 @@ func (c *S3Client) HealthCheck() error {
 	return nil
 }
 
-// isNoSuchKey checks if the error is a NoSuchKey error
-func isNoSuchKey(err error, target **types.NoSuchKey) bool {
+// isNoSuchKey checks if the error is a NoSuchKey error using proper AWS SDK error handling
+func isNoSuchKey(err error) bool {
 	if err == nil {
 		return false
 	}
-	// Check for both NoSuchKey and general "not found" errors
-	if strings.Contains(err.Error(), "NoSuchKey") || strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "404") {
+
+	// Check for the specific S3 NoSuchKey error type
+	var noSuchKey *types.NoSuchKey
+	if errors.As(err, &noSuchKey) {
 		return true
 	}
+
+	// Check for smithy API errors with NoSuchKey code
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.ErrorCode() == "NoSuchKey" || apiErr.ErrorCode() == "NotFound" {
+			return true
+		}
+	}
+
 	return false
 }
