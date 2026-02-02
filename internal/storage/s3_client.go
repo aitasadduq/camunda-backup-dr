@@ -109,9 +109,12 @@ func NewS3Client(cfg S3Config, logger *utils.Logger) (*S3Client, error) {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
-	// Create S3 client with path-style addressing (required for MinIO)
+	// Create S3 client with configurable path-style addressing
+	// Path-style is required for MinIO and some S3-compatible storage systems
+	// Default to true for backward compatibility with MinIO setups
+	usePathStyle := cfg.UsePathStyle
 	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
-		o.UsePathStyle = true
+		o.UsePathStyle = usePathStyle
 	})
 
 	return &S3Client{
