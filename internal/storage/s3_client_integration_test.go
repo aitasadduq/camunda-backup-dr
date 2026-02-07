@@ -635,21 +635,26 @@ func TestIntegration_ConcurrentOperations(t *testing.T) {
 
 	camundaInstanceID := "camunda-test-concurrent"
 	numGoroutines := 5
-	done := make(chan error, numGoroutines)
+	type opResult struct {
+		id  int
+		err error
+	}
+	done := make(chan opResult, numGoroutines)
 
 	for i := 0; i < numGoroutines; i++ {
 		go func(id int) {
 			backupID := time.Now().Add(time.Duration(id) * time.Second).Format("20060102-150405")
 			history := createTestBackupHistoryForIntegration(camundaInstanceID, backupID, types.BackupStatusCompleted)
 			err := client.StoreBackupHistory(history)
-			done <- err
+			done <- opResult{id: id, err: err}
 		}(i)
 	}
 
 	// Wait for all goroutines and check for errors
 	for i := 0; i < numGoroutines; i++ {
-		if err := <-done; err != nil {
-			t.Errorf("Goroutine %d failed: %v", i, err)
+		res := <-done
+		if res.err != nil {
+			t.Errorf("Goroutine %d failed: %v", res.id, res.err)
 		}
 	}
 

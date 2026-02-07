@@ -494,12 +494,37 @@ func (c *S3Client) deleteBackupFromAllDirs(ctx context.Context, camundaInstanceI
 
 	if deletedFromAny {
 		return nil
+	var (
+		deleted  bool
+		firstErr error
+	)
+
+	for _, dir := range dirs {
+		err := c.deleteBackupFromDir(ctx, camundaInstanceID, backupID, dir)
+		if err == nil {
+			// Successfully deleted from this directory; continue to ensure there are no duplicates
+			deleted = true
+			continue
+		}
+
+		// Ignore "not found" in this directory and continue checking others
+		if err == utils.ErrBackupNotFound {
+			continue
+		}
+
+		// Record the first non-not-found error, but keep trying other directories
+		if firstErr == nil {
+			firstErr = err
+		}
 	}
 
-	if lastErr != nil {
-		return fmt.Errorf("failed to delete backup from any directory: %w", lastErr)
+	if deleted {
+		return nil
 	}
 
+	if firstErr != nil {
+		return firstErr
+	}
 	return utils.ErrBackupNotFound
 }
 
