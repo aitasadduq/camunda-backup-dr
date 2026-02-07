@@ -477,23 +477,6 @@ func (c *S3Client) UpdateBackupStatus(camundaInstanceID, backupID string, status
 func (c *S3Client) deleteBackupFromAllDirs(ctx context.Context, camundaInstanceID, backupID string) error {
 	dirs := []string{historyDir, incompleteDir, orphanedDir}
 
-	var deletedFromAny bool
-	var lastErr error
-
-	for _, dir := range dirs {
-		err := c.deleteBackupFromDir(ctx, camundaInstanceID, backupID, dir)
-		if err == nil {
-			deletedFromAny = true
-		} else if !errors.Is(err, utils.ErrBackupNotFound) {
-			// Track non-NotFound errors (e.g., permission, network errors)
-			lastErr = err
-			c.logger.Warn("Failed to delete backup from %s: %v", dir, err)
-		}
-		// If ErrBackupNotFound, just continue to next directory
-	}
-
-	if deletedFromAny {
-		return nil
 	var (
 		deleted  bool
 		firstErr error
@@ -508,13 +491,14 @@ func (c *S3Client) deleteBackupFromAllDirs(ctx context.Context, camundaInstanceI
 		}
 
 		// Ignore "not found" in this directory and continue checking others
-		if err == utils.ErrBackupNotFound {
+		if errors.Is(err, utils.ErrBackupNotFound) {
 			continue
 		}
 
 		// Record the first non-not-found error, but keep trying other directories
 		if firstErr == nil {
 			firstErr = err
+			c.logger.Warn("Failed to delete backup from %s: %v", dir, err)
 		}
 	}
 
