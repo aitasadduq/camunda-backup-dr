@@ -140,7 +140,22 @@ func (c *S3Client) SetRetryConfig(cfg RetryConfig) {
 	c.retryConfig = cfg
 }
 
-// withRetry executes an operation with retry logic
+// isRetryableError determines if an error should be retried.
+// Logical errors like ErrBackupNotFound should not be retried.
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Don't retry on logical "not found" errors - these are expected outcomes
+	if errors.Is(err, utils.ErrBackupNotFound) {
+		return false
+	}
+	// All other errors (network, permission, etc.) should be retried
+	return true
+}
+
+// withRetry executes an operation with retry logic.
+// Non-retryable errors (like ErrBackupNotFound) are returned immediately without retrying.
 func (c *S3Client) withRetry(ctx context.Context, operation string, fn func() error) error {
 	c.mutex.RLock()
 	retryConfig := c.retryConfig
@@ -151,6 +166,11 @@ func (c *S3Client) withRetry(ctx context.Context, operation string, fn func() er
 
 	for attempt := 1; attempt <= retryConfig.MaxAttempts; attempt++ {
 		if err := fn(); err != nil {
+			// Don't retry non-retryable errors
+			if !isRetryableError(err) {
+				return err
+			}
+
 			lastErr = err
 			c.logger.Warn("S3 operation '%s' failed (attempt %d/%d): %v",
 				operation, attempt, retryConfig.MaxAttempts, err)
