@@ -72,7 +72,7 @@ backup-controller/
 
 ### Prerequisites
 
-- Go 1.19 or higher
+- Go 1.23 or higher (required by AWS SDK v2 dependencies)
 - Access to S3-compatible object storage (for Phase 2+)
 - Access to Camunda instances (for Phase 3+)
 - Access to Elasticsearch (for Phase 5+)
