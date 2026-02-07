@@ -51,6 +51,8 @@ func TestParseCronExpression_Invalid(t *testing.T) {
 		{"invalid weekday", "* * * * 8"},
 		{"non-numeric", "a * * * *"},
 		{"invalid range", "5-2 * * * *"},
+		{"invalid step start", "a/5 * * * *"},
+		{"invalid step start in hour", "* x/2 * * *"},
 	}
 
 	for _, tt := range tests {
@@ -101,11 +103,62 @@ func TestCronExpression_NextTime(t *testing.T) {
 				t.Fatalf("Failed to parse expression: %v", err)
 			}
 
-			next := cron.NextTime(baseTime)
+			next, found := cron.NextTime(baseTime)
+			if !found {
+				t.Fatal("NextTime() did not find a match")
+			}
 			if !next.Equal(tt.expected) {
 				t.Errorf("NextTime() = %v, expected %v", next, tt.expected)
 			}
 		})
+	}
+}
+
+func TestCronExpression_NextTime_NoMatch(t *testing.T) {
+	// Test impossible combinations that will never match
+	// Feb 30 and Feb 31 never exist
+	tests := []struct {
+		name string
+		expr string
+	}{
+		{"Feb 30", "0 0 30 2 *"}, // Feb 30 never exists
+		{"Feb 31", "0 0 31 2 *"}, // Feb 31 never exists
+	}
+
+	baseTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cron, err := ParseCronExpression(tt.expr)
+			if err != nil {
+				t.Fatalf("Failed to parse expression: %v", err)
+			}
+
+			_, found := cron.NextTime(baseTime)
+			if found {
+				t.Errorf("NextTime() should not find a match for impossible date %q", tt.expr)
+			}
+		})
+	}
+}
+
+func TestCronExpression_NextTime_LeapYear(t *testing.T) {
+	// Test Feb 29 which only exists in leap years
+	// Starting from 2023 (not a leap year), should find Feb 29, 2024
+	baseTime := time.Date(2023, 3, 1, 0, 0, 0, 0, time.UTC)
+	expectedTime := time.Date(2024, 2, 29, 0, 0, 0, 0, time.UTC)
+
+	cron, err := ParseCronExpression("0 0 29 2 *")
+	if err != nil {
+		t.Fatalf("Failed to parse expression: %v", err)
+	}
+
+	next, found := cron.NextTime(baseTime)
+	if !found {
+		t.Fatal("NextTime() should find Feb 29 in next leap year")
+	}
+	if !next.Equal(expectedTime) {
+		t.Errorf("NextTime() = %v, expected %v", next, expectedTime)
 	}
 }
 
@@ -277,7 +330,11 @@ func TestCronExpression_RealWorldSchedules(t *testing.T) {
 
 			// Verify we can calculate next run time
 			now := time.Now()
-			next := cron.NextTime(now)
+			next, found := cron.NextTime(now)
+			if !found {
+				t.Errorf("NextTime() did not find a match for %q", schedule)
+				return
+			}
 			if next.Before(now) || next.Equal(now) {
 				t.Errorf("Next run time %v should be after now %v", next, now)
 			}

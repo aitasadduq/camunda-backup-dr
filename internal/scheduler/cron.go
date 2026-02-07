@@ -114,7 +114,11 @@ func parseField(field string, min, max int) (CronField, error) {
 					return cf, fmt.Errorf("invalid range end: %s", rangeParts[1])
 				}
 			} else {
-				rangeMin, _ = strconv.Atoi(stepParts[0])
+				var err error
+				rangeMin, err = strconv.Atoi(stepParts[0])
+				if err != nil {
+					return cf, fmt.Errorf("invalid step start value: %s", stepParts[0])
+				}
 				rangeMax = max
 			}
 
@@ -169,25 +173,28 @@ func parseField(field string, min, max int) (CronField, error) {
 	return cf, nil
 }
 
-// NextTime calculates the next time the cron expression will trigger after the given time
-func (c *CronExpression) NextTime(after time.Time) time.Time {
+// NextTime calculates the next time the cron expression will trigger after the given time.
+// Returns the next matching time and true if found, or zero time and false if no match
+// is found within a 4-year search window (to account for leap years like Feb 29).
+func (c *CronExpression) NextTime(after time.Time) (time.Time, bool) {
 	// Start from the next minute
 	t := after.Add(time.Minute).Truncate(time.Minute)
 
-	// Limit search to prevent infinite loops
-	maxIterations := 366 * 24 * 60 // One year of minutes
+	// Search up to 4 years to handle leap year edge cases (e.g., Feb 29)
+	// 4 years = 1461 days (including one leap year)
+	maxIterations := 1461 * 24 * 60 // 4 years of minutes
 	for i := 0; i < maxIterations; i++ {
 		// Check if all fields match
 		if c.matches(t) {
-			return t
+			return t, true
 		}
 
 		// Advance time
 		t = t.Add(time.Minute)
 	}
 
-	// Fallback: return time one day from now
-	return after.Add(24 * time.Hour)
+	// No match found within the search window
+	return time.Time{}, false
 }
 
 // matches checks if the given time matches the cron expression
@@ -227,7 +234,10 @@ func (s *Scheduler) calculateNextRun(schedule string) (*time.Time, error) {
 		return nil, err
 	}
 
-	nextRun := cron.NextTime(time.Now())
+	nextRun, found := cron.NextTime(time.Now())
+	if !found {
+		return nil, fmt.Errorf("no matching time found for schedule %q within 4-year window", schedule)
+	}
 	return &nextRun, nil
 }
 
