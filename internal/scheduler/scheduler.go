@@ -140,13 +140,8 @@ func (s *Scheduler) Stop(ctx context.Context) error {
 
 	s.logger.Info("Scheduler stopping...")
 
-	// Signal the main loop to stop
+	// Signal the main loop to stop (prevents new jobs from starting)
 	close(s.stopChan)
-
-	// Cancel the internal context to interrupt running jobs
-	if cancelFunc != nil {
-		cancelFunc()
-	}
 
 	// Create a timeout context for shutdown
 	shutdownCtx, cancel := context.WithTimeout(ctx, s.shutdownTimeout)
@@ -161,9 +156,17 @@ func (s *Scheduler) Stop(ctx context.Context) error {
 
 	select {
 	case <-done:
+		// All jobs completed gracefully
+		if cancelFunc != nil {
+			cancelFunc() // Clean up the context
+		}
 		s.logger.Info("Scheduler stopped gracefully")
 		return nil
 	case <-shutdownCtx.Done():
+		// Timeout reached, force cancel any remaining jobs
+		if cancelFunc != nil {
+			cancelFunc()
+		}
 		s.logger.Warn("Scheduler shutdown timed out, some jobs may still be running")
 		return fmt.Errorf("scheduler shutdown timed out")
 	}

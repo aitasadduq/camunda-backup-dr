@@ -451,36 +451,81 @@ func TestScheduler_InvalidSchedule(t *testing.T) {
 }
 
 func TestScheduler_GracefulShutdownWithRunningJob(t *testing.T) {
+	jobDuration := 500 * time.Millisecond
 	executor := NewMockBackupExecutor()
-	executor.delay = 2 * time.Second // Job takes 2 seconds
+	executor.delay = jobDuration
 
 	provider := NewMockInstanceProvider()
-	provider.AddInstance(createTestInstance("instance-1", "Instance 1", "* * * * *", true))
+	provider.AddInstance(createTestInstance("instance-1", "Instance 1", "0 0 * * *", true))
 
 	logger := utils.NewLogger("error")
 
 	cfg := Config{
-		TickInterval:    100 * time.Millisecond,
+		TickInterval:    50 * time.Millisecond,
 		ShutdownTimeout: 5 * time.Second,
 	}
 	scheduler := NewScheduler(executor, provider, logger, cfg)
 
 	ctx := context.Background()
-	scheduler.Start(ctx)
+	err := scheduler.Start(ctx)
+	if err != nil {
+		t.Fatalf("Failed to start scheduler: %v", err)
+	}
 
-	// Wait for job to start
-	time.Sleep(200 * time.Millisecond)
+	// Register the job and force NextRun into the past so it triggers immediately
+	err = scheduler.RegisterJob("instance-1", "0 0 * * *", true)
+	if err != nil {
+		t.Fatalf("Failed to register job: %v", err)
+	}
 
-	// Stop should wait for job to complete
+	// Manually set NextRun to the past to trigger the job on next tick
+	scheduler.jobsMutex.Lock()
+	pastTime := time.Now().Add(-1 * time.Hour)
+	scheduler.jobs["instance-1"].NextRun = &pastTime
+	scheduler.jobsMutex.Unlock()
+
+	// Wait for the job to start running (scheduler will pick it up on next tick)
+	var jobStarted bool
+	for i := 0; i < 20; i++ {
+		time.Sleep(50 * time.Millisecond)
+		if executor.executionCount.Load() > 0 {
+			jobStarted = true
+			break
+		}
+	}
+
+	if !jobStarted {
+		t.Fatal("Job did not start within expected time")
+	}
+
+	// Verify job is running
+	job, _ := scheduler.GetJob("instance-1")
+	if job == nil || !job.Running {
+		t.Fatal("Expected job to be in running state")
+	}
+
+	// Stop should wait for the running job to complete
 	start := time.Now()
-	err := scheduler.Stop(ctx)
+	err = scheduler.Stop(ctx)
 	elapsed := time.Since(start)
 
 	if err != nil {
 		t.Errorf("Unexpected error during shutdown: %v", err)
 	}
 
-	// Should have waited at least some time for the job (if it started)
-	// Note: Job might not have started depending on timing
-	t.Logf("Shutdown took %v", elapsed)
+	// Stop should have blocked until the job completed (or close to it)
+	// The job takes 500ms, and we called Stop shortly after it started,
+	// so Stop should have waited at least 200ms (accounting for timing variance)
+	minExpectedWait := jobDuration / 3
+	if elapsed < minExpectedWait {
+		t.Errorf("Stop returned too quickly (%v), expected to wait at least %v for running job", elapsed, minExpectedWait)
+	}
+
+	// Verify the job completed (was added to ExecutedBackups)
+	executedBackups := executor.GetExecutedBackups()
+	if len(executedBackups) != 1 || executedBackups[0] != "instance-1" {
+		t.Errorf("Expected job to complete, got executed backups: %v", executedBackups)
+	}
+
+	t.Logf("Shutdown took %v (job duration: %v)", elapsed, jobDuration)
 }
