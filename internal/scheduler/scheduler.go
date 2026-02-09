@@ -623,3 +623,33 @@ func (s *Scheduler) IsRunning() bool {
 	defer s.runningMutex.RUnlock()
 	return s.running
 }
+
+// GetJobsCount returns the total number of jobs
+func (s *Scheduler) GetJobsCount() int {
+	s.jobsMutex.RLock()
+	defer s.jobsMutex.RUnlock()
+	return len(s.jobs)
+}
+
+// GetEnabledJobsCount returns the number of enabled jobs
+func (s *Scheduler) GetEnabledJobsCount() int {
+	s.jobsMutex.RLock()
+	defer s.jobsMutex.RUnlock()
+	count := 0
+	for _, job := range s.jobs {
+		if job.Enabled {
+			count++
+		}
+	}
+	return count
+}
+
+// TryAcquireBackupLock attempts to acquire the backup lock for an instance (public method)
+func (s *Scheduler) TryAcquireBackupLock(instanceID string) bool {
+	return s.tryAcquireBackupLock(instanceID)
+}
+
+// ReleaseBackupLock releases the backup lock (public method)
+func (s *Scheduler) ReleaseBackupLock() {
+	s.releaseBackupLock()
+}

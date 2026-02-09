@@ -29,6 +29,7 @@ type Orchestrator struct {
 	mutex           sync.Mutex
 	pollInterval    time.Duration
 	maxPollAttempts int
+	backupRunning   bool
 }
 
 // NewOrchestrator creates a new backup orchestrator
@@ -82,7 +83,11 @@ func (o *Orchestrator) ExecuteBackup(ctx context.Context, req BackupRequest) (*m
 	o.writeLog(req.CamundaInstance.ID, backupID, fmt.Sprintf("Execution mode: %s", o.getExecutionMode(req.CamundaInstance)))
 
 	o.mutex.Lock()
-	defer o.mutex.Unlock()
+	o.backupRunning = true
+	defer func() {
+		o.backupRunning = false
+		o.mutex.Unlock()
+	}()
 	// Store backup ID in S3 before triggering components
 	if err := o.s3Storage.StoreLatestBackupID(req.CamundaInstance.ID, backupID); err != nil {
 		o.writeLog(req.CamundaInstance.ID, backupID, fmt.Sprintf("Failed to store backup ID in S3: %v", err))
@@ -715,4 +720,11 @@ func (o *Orchestrator) writeLog(camundaInstanceID, backupID, message string) {
 
 	// Also log to main logger
 	o.logger.Info("[%s/%s] %s", camundaInstanceID, backupID, message)
+}
+
+// IsBackupRunning returns true if a backup is currently running
+func (o *Orchestrator) IsBackupRunning() bool {
+	o.mutex.Lock()
+	defer o.mutex.Unlock()
+	return o.backupRunning
 }
