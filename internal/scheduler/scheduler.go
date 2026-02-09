@@ -50,6 +50,7 @@ type Scheduler struct {
 	running      bool
 	runningMutex sync.RWMutex
 	stopChan     chan struct{}
+	cancelFunc   context.CancelFunc // Cancel function to stop running jobs
 	wg           sync.WaitGroup
 
 	// Configuration
@@ -105,6 +106,9 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	}
 	s.running = true
 	s.stopChan = make(chan struct{})
+	// Create internal context that can be cancelled during Stop
+	var internalCtx context.Context
+	internalCtx, s.cancelFunc = context.WithCancel(ctx)
 	s.runningMutex.Unlock()
 
 	s.logger.Info("Scheduler starting...")
@@ -116,7 +120,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 
 	// Start the main scheduling loop
 	s.wg.Add(1)
-	go s.run(ctx)
+	go s.run(internalCtx)
 
 	s.logger.Info("Scheduler started successfully")
 	return nil
@@ -130,12 +134,19 @@ func (s *Scheduler) Stop(ctx context.Context) error {
 		return nil
 	}
 	s.running = false
+	cancelFunc := s.cancelFunc
+	s.cancelFunc = nil
 	s.runningMutex.Unlock()
 
 	s.logger.Info("Scheduler stopping...")
 
 	// Signal the main loop to stop
 	close(s.stopChan)
+
+	// Cancel the internal context to interrupt running jobs
+	if cancelFunc != nil {
+		cancelFunc()
+	}
 
 	// Create a timeout context for shutdown
 	shutdownCtx, cancel := context.WithTimeout(ctx, s.shutdownTimeout)
@@ -207,15 +218,31 @@ func (s *Scheduler) checkAndExecuteDueJobs(ctx context.Context) {
 
 // executeJob executes a single scheduled job
 func (s *Scheduler) executeJob(ctx context.Context, job *Job) {
+	instanceID := job.CamundaInstanceID
+	schedule := job.Schedule
+
 	// Try to acquire the backup lock
-	if !s.tryAcquireBackupLock(job.CamundaInstanceID) {
-		s.logger.Debug("Skipping job for instance %s: another backup is in progress", job.CamundaInstanceID)
+	if !s.tryAcquireBackupLock(instanceID) {
+		s.logger.Debug("Skipping job for instance %s: another backup is in progress", instanceID)
 		return
 	}
 
-	// Mark job as running
+	// Re-check job still exists and is enabled under lock to prevent race with deregistration
 	s.jobsMutex.Lock()
-	job.Running = true
+	currentJob, exists := s.jobs[instanceID]
+	if !exists || !currentJob.Enabled || currentJob.Running {
+		s.jobsMutex.Unlock()
+		s.releaseBackupLock()
+		if !exists {
+			s.logger.Debug("Skipping job for instance %s: job was deregistered", instanceID)
+		} else if currentJob.Running {
+			s.logger.Debug("Skipping job for instance %s: job is already running", instanceID)
+		} else {
+			s.logger.Debug("Skipping job for instance %s: job was disabled", instanceID)
+		}
+		return
+	}
+	currentJob.Running = true
 	s.jobsMutex.Unlock()
 
 	// Execute in goroutine to not block the scheduler loop
@@ -224,21 +251,24 @@ func (s *Scheduler) executeJob(ctx context.Context, job *Job) {
 		defer s.wg.Done()
 		defer s.releaseBackupLock()
 		defer func() {
+			// Update state by looking up job by ID to handle ReloadJobs replacing the map
 			s.jobsMutex.Lock()
-			job.Running = false
-			now := time.Now()
-			job.LastRun = &now
-			// Calculate next run time
-			if nextRun, err := s.calculateNextRun(job.Schedule); err == nil {
-				job.NextRun = nextRun
+			if j, exists := s.jobs[instanceID]; exists {
+				j.Running = false
+				now := time.Now()
+				j.LastRun = &now
+				// Calculate next run time
+				if nextRun, err := s.calculateNextRun(schedule); err == nil {
+					j.NextRun = nextRun
+				}
 			}
 			s.jobsMutex.Unlock()
 		}()
 
 		// Get the instance
-		instance, err := s.instanceProvider.GetInstance(job.CamundaInstanceID)
+		instance, err := s.instanceProvider.GetInstance(instanceID)
 		if err != nil {
-			s.logger.Error("Failed to get instance %s for scheduled backup: %v", job.CamundaInstanceID, err)
+			s.logger.Error("Failed to get instance %s for scheduled backup: %v", instanceID, err)
 			return
 		}
 
@@ -387,9 +417,8 @@ func (s *Scheduler) GetJob(instanceID string) (*Job, error) {
 		return nil, fmt.Errorf("job not found for instance: %s", instanceID)
 	}
 
-	// Return a copy to avoid race conditions
-	jobCopy := *job
-	return &jobCopy, nil
+	// Return a deep copy to avoid race conditions and external mutation
+	return deepCopyJob(job), nil
 }
 
 // ListJobs returns all registered jobs
@@ -399,10 +428,30 @@ func (s *Scheduler) ListJobs() []*Job {
 
 	jobs := make([]*Job, 0, len(s.jobs))
 	for _, job := range s.jobs {
-		jobCopy := *job
-		jobs = append(jobs, &jobCopy)
+		// Deep copy to avoid race conditions and external mutation
+		jobs = append(jobs, deepCopyJob(job))
 	}
 	return jobs
+}
+
+// deepCopyJob creates a deep copy of a Job, including time.Time pointers
+func deepCopyJob(job *Job) *Job {
+	jobCopy := &Job{
+		ID:                job.ID,
+		CamundaInstanceID: job.CamundaInstanceID,
+		Schedule:          job.Schedule,
+		Enabled:           job.Enabled,
+		Running:           job.Running,
+	}
+	if job.LastRun != nil {
+		lastRunCopy := *job.LastRun
+		jobCopy.LastRun = &lastRunCopy
+	}
+	if job.NextRun != nil {
+		nextRunCopy := *job.NextRun
+		jobCopy.NextRun = &nextRunCopy
+	}
+	return jobCopy
 }
 
 // tryAcquireBackupLock attempts to acquire the backup lock for an instance
