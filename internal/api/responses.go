@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 )
 
@@ -62,12 +63,31 @@ type BackupTriggerResponse struct {
 	Status   string `json:"status"`
 }
 
-// writeJSON writes a JSON response
+// writeJSON writes a JSON response with proper error handling.
+// It pre-encodes to a buffer before writing headers to ensure
+// we can return a 500 error if encoding fails.
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
+
+	if data == nil {
+		w.WriteHeader(status)
+		return
+	}
+
+	// Pre-encode to buffer before writing headers
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("ERROR: Failed to encode JSON response: %v", err)
+		// Write a fallback 500 error response
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error":"internal_error","message":"Failed to encode response","code":500}`))
+		return
+	}
+
 	w.WriteHeader(status)
-	if data != nil {
-		json.NewEncoder(w).Encode(data)
+	if _, err := w.Write(jsonData); err != nil {
+		// Headers already sent, can only log the error
+		log.Printf("ERROR: Failed to write JSON response: %v", err)
 	}
 }
 
