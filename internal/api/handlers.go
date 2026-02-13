@@ -431,30 +431,36 @@ func (h *Handlers) TriggerBackupHandler(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusConflict, "backup_in_progress", "A backup is already in progress")
 		return
 	}
-	defer func() {
-		if h.scheduler != nil {
-			h.scheduler.ReleaseBackupLock()
-		}
-	}()
 
-	// Execute backup
+	// Generate backup ID before starting async execution
+	backupID := time.Now().Format("20060102-150405")
+
+	// Execute backup asynchronously
 	req := orchestrator.BackupRequest{
 		CamundaInstance: instance,
 		TriggerType:     types.TriggerTypeManual,
 		BackupReason:    "Manual backup triggered via API",
 	}
 
-	execution, err := h.orchestrator.ExecuteBackup(r.Context(), req)
-	if err != nil {
-		h.logger.Error("Failed to execute backup: %v", err)
-		writeError(w, http.StatusInternalServerError, "backup_failed", "Failed to execute backup: "+err.Error())
-		return
-	}
+	go func() {
+		defer func() {
+			if h.scheduler != nil {
+				h.scheduler.ReleaseBackupLock()
+			}
+		}()
+
+		// Use background context since the HTTP request context will be cancelled
+		// when we return the response
+		ctx := context.Background()
+		if _, err := h.orchestrator.ExecuteBackup(ctx, req); err != nil {
+			h.logger.Error("Backup execution failed for instance %s: %v", id, err)
+		}
+	}()
 
 	response := BackupTriggerResponse{
 		Message:  "Backup triggered successfully",
-		BackupID: execution.BackupID,
-		Status:   string(execution.Status),
+		BackupID: backupID,
+		Status:   string(types.BackupStatusRunning),
 	}
 
 	writeJSON(w, http.StatusAccepted, response)
