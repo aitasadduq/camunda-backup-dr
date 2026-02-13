@@ -300,7 +300,7 @@ func TestScheduler_ConcurrencyControl(t *testing.T) {
 	scheduler := NewScheduler(executor, provider, logger, DefaultConfig())
 
 	// Try to acquire lock for manual backup
-	if !scheduler.TryAcquireManualBackupLock("instance-1") {
+	if !scheduler.TryAcquireBackupLock("instance-1") {
 		t.Error("Should be able to acquire lock when no backup is running")
 	}
 
@@ -313,22 +313,22 @@ func TestScheduler_ConcurrencyControl(t *testing.T) {
 	}
 
 	// Try to acquire another lock (should fail)
-	if scheduler.TryAcquireManualBackupLock("instance-2") {
+	if scheduler.TryAcquireBackupLock("instance-2") {
 		t.Error("Should not be able to acquire lock when backup is in progress")
 	}
 
 	// Release the lock
-	scheduler.ReleaseManualBackupLock()
+	scheduler.ReleaseBackupLock()
 
 	if scheduler.IsBackupInProgress() {
 		t.Error("Backup should not be in progress after releasing lock")
 	}
 
 	// Should be able to acquire lock again
-	if !scheduler.TryAcquireManualBackupLock("instance-2") {
+	if !scheduler.TryAcquireBackupLock("instance-2") {
 		t.Error("Should be able to acquire lock after release")
 	}
-	scheduler.ReleaseManualBackupLock()
+	scheduler.ReleaseBackupLock()
 }
 
 func TestScheduler_HealthCheck(t *testing.T) {

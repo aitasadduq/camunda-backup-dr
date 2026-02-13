@@ -478,17 +478,6 @@ func (s *Scheduler) releaseBackupLock() {
 	s.activeBackup = nil
 }
 
-// TryAcquireManualBackupLock attempts to acquire the backup lock for a manual backup
-// This is called by the API layer to prevent concurrent manual and scheduled backups
-func (s *Scheduler) TryAcquireManualBackupLock(instanceID string) bool {
-	return s.tryAcquireBackupLock(instanceID)
-}
-
-// ReleaseManualBackupLock releases the backup lock after a manual backup
-func (s *Scheduler) ReleaseManualBackupLock() {
-	s.releaseBackupLock()
-}
-
 // IsBackupInProgress returns true if a backup is currently in progress
 func (s *Scheduler) IsBackupInProgress() bool {
 	s.backupMutex.Lock()
