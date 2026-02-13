@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/camunda"
@@ -26,10 +27,10 @@ type Orchestrator struct {
 	httpClient      *camunda.HTTPClient
 	cfg             *config.Config
 	logger          *utils.Logger
-	mutex           sync.Mutex
+	backupMutex     sync.Mutex  // serializes backup start operations
+	backupRunning   atomic.Bool // non-blocking status flag
 	pollInterval    time.Duration
 	maxPollAttempts int
-	backupRunning   bool
 }
 
 // NewOrchestrator creates a new backup orchestrator
@@ -82,12 +83,18 @@ func (o *Orchestrator) ExecuteBackup(ctx context.Context, req BackupRequest) (*m
 	o.writeLog(req.CamundaInstance.ID, backupID, fmt.Sprintf("Trigger type: %s", req.TriggerType))
 	o.writeLog(req.CamundaInstance.ID, backupID, fmt.Sprintf("Execution mode: %s", o.getExecutionMode(req.CamundaInstance)))
 
-	o.mutex.Lock()
-	o.backupRunning = true
-	defer func() {
-		o.backupRunning = false
-		o.mutex.Unlock()
-	}()
+	// Use mutex only to serialize backup starts and prevent concurrent backups
+	o.backupMutex.Lock()
+	if o.backupRunning.Load() {
+		o.backupMutex.Unlock()
+		return nil, fmt.Errorf("backup already in progress")
+	}
+	o.backupRunning.Store(true)
+	o.backupMutex.Unlock()
+
+	// Ensure we clear the running flag when done (mutex not held during backup)
+	defer o.backupRunning.Store(false)
+
 	// Store backup ID in S3 before triggering components
 	if err := o.s3Storage.StoreLatestBackupID(req.CamundaInstance.ID, backupID); err != nil {
 		o.writeLog(req.CamundaInstance.ID, backupID, fmt.Sprintf("Failed to store backup ID in S3: %v", err))
@@ -722,9 +729,8 @@ func (o *Orchestrator) writeLog(camundaInstanceID, backupID, message string) {
 	o.logger.Info("[%s/%s] %s", camundaInstanceID, backupID, message)
 }
 
-// IsBackupRunning returns true if a backup is currently running
+// IsBackupRunning returns true if a backup is currently running.
+// This is non-blocking and safe to call from status/health endpoints.
 func (o *Orchestrator) IsBackupRunning() bool {
-	o.mutex.Lock()
-	defer o.mutex.Unlock()
-	return o.backupRunning
+	return o.backupRunning.Load()
 }
