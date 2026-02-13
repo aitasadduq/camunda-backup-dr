@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 // Server represents the HTTP server
 type Server struct {
 	server   *http.Server
+	listener net.Listener
 	handlers *Handlers
 	router   *Router
 	logger   *utils.Logger
@@ -57,9 +59,16 @@ func NewServer(
 func (s *Server) Start() error {
 	s.logger.Info("Starting HTTP server on port %d", s.port)
 
-	// Start server in background
+	// Bind the socket synchronously to detect port conflicts immediately
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", s.port))
+	if err != nil {
+		return fmt.Errorf("failed to bind to port %d: %w", s.port, err)
+	}
+	s.listener = listener
+
+	// Start serving in background
 	go func() {
-		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := s.server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			s.logger.Error("HTTP server error: %v", err)
 		}
 	}()
