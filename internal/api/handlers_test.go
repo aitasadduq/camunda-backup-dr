@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -196,18 +197,53 @@ func (m *mockScheduler) UpdateJob(instanceID, schedule string, enabled bool) err
 	return nil
 }
 
-func newTestHandlers() (*Handlers, *mockCamundaManager, *mockOrchestrator, *mockHistoryProvider, *mockScheduler) {
+// mockRetentionManager implements RetentionManager for testing
+type mockRetentionManager struct {
+	orphaned   []*models.BackupHistory
+	incomplete []*models.BackupHistory
+	failed     []*models.BackupHistory
+	deleteErr  error
+	listErr    error
+}
+
+func (m *mockRetentionManager) DeleteBackup(camundaInstanceID, backupID string) error {
+	return m.deleteErr
+}
+
+func (m *mockRetentionManager) ListOrphanedBackups(camundaInstanceID string) ([]*models.BackupHistory, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	return m.orphaned, nil
+}
+
+func (m *mockRetentionManager) ListIncompleteBackups(camundaInstanceID string) ([]*models.BackupHistory, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	return m.incomplete, nil
+}
+
+func (m *mockRetentionManager) ListFailedBackups(camundaInstanceID string) ([]*models.BackupHistory, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	return m.failed, nil
+}
+
+func newTestHandlers() (*Handlers, *mockCamundaManager, *mockOrchestrator, *mockHistoryProvider, *mockScheduler, *mockRetentionManager) {
 	logger := utils.NewLogger("error")
 	cm := &mockCamundaManager{instances: []models.CamundaInstance{}}
 	orch := &mockOrchestrator{}
 	hist := &mockHistoryProvider{history: []*models.BackupHistory{}}
 	sched := &mockScheduler{running: true}
-	handlers := NewHandlers(cm, orch, hist, sched, logger)
-	return handlers, cm, orch, hist, sched
+	ret := &mockRetentionManager{}
+	handlers := NewHandlers(cm, orch, hist, sched, ret, logger)
+	return handlers, cm, orch, hist, sched, ret
 }
 
 func TestHealthzHandler(t *testing.T) {
-	handlers, _, _, _, _ := newTestHandlers()
+	handlers, _, _, _, _, _ := newTestHandlers()
 
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	w := httptest.NewRecorder()
@@ -229,7 +265,7 @@ func TestHealthzHandler(t *testing.T) {
 }
 
 func TestReadyzHandler(t *testing.T) {
-	handlers, _, _, _, _ := newTestHandlers()
+	handlers, _, _, _, _, _ := newTestHandlers()
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	w := httptest.NewRecorder()
@@ -251,7 +287,7 @@ func TestReadyzHandler(t *testing.T) {
 }
 
 func TestSystemStatusHandler(t *testing.T) {
-	handlers, cm, _, _, sched := newTestHandlers()
+	handlers, cm, _, _, sched, _ := newTestHandlers()
 
 	cm.instances = []models.CamundaInstance{
 		{ID: "test-1", Name: "Test Instance", Enabled: true},
@@ -285,7 +321,7 @@ func TestSystemStatusHandler(t *testing.T) {
 }
 
 func TestListCamundaInstancesHandler(t *testing.T) {
-	handlers, cm, _, _, _ := newTestHandlers()
+	handlers, cm, _, _, _, _ := newTestHandlers()
 
 	cm.instances = []models.CamundaInstance{
 		{ID: "test-1", Name: "Test Instance 1"},
@@ -312,7 +348,7 @@ func TestListCamundaInstancesHandler(t *testing.T) {
 }
 
 func TestCreateCamundaInstanceHandler(t *testing.T) {
-	handlers, _, _, _, _ := newTestHandlers()
+	handlers, _, _, _, _, _ := newTestHandlers()
 
 	instance := models.CamundaInstance{
 		ID:      "new-instance",
@@ -333,7 +369,7 @@ func TestCreateCamundaInstanceHandler(t *testing.T) {
 }
 
 func TestCreateCamundaInstanceHandler_MissingID(t *testing.T) {
-	handlers, _, _, _, _ := newTestHandlers()
+	handlers, _, _, _, _, _ := newTestHandlers()
 
 	instance := models.CamundaInstance{
 		Name:    "New Instance",
@@ -353,7 +389,7 @@ func TestCreateCamundaInstanceHandler_MissingID(t *testing.T) {
 }
 
 func TestGetCamundaInstanceHandler(t *testing.T) {
-	handlers, cm, _, _, _ := newTestHandlers()
+	handlers, cm, _, _, _, _ := newTestHandlers()
 
 	cm.instances = []models.CamundaInstance{
 		{ID: "test-1", Name: "Test Instance 1"},
@@ -379,7 +415,7 @@ func TestGetCamundaInstanceHandler(t *testing.T) {
 }
 
 func TestGetCamundaInstanceHandler_NotFound(t *testing.T) {
-	handlers, _, _, _, _ := newTestHandlers()
+	handlers, _, _, _, _, _ := newTestHandlers()
 
 	req := httptest.NewRequest(http.MethodGet, "/api/camundas/non-existent", nil)
 	w := httptest.NewRecorder()
@@ -392,7 +428,7 @@ func TestGetCamundaInstanceHandler_NotFound(t *testing.T) {
 }
 
 func TestDeleteCamundaInstanceHandler(t *testing.T) {
-	handlers, cm, _, _, _ := newTestHandlers()
+	handlers, cm, _, _, _, _ := newTestHandlers()
 
 	cm.instances = []models.CamundaInstance{
 		{ID: "test-1", Name: "Test Instance 1"},
@@ -413,7 +449,7 @@ func TestDeleteCamundaInstanceHandler(t *testing.T) {
 }
 
 func TestEnableCamundaInstanceHandler(t *testing.T) {
-	handlers, cm, _, _, _ := newTestHandlers()
+	handlers, cm, _, _, _, _ := newTestHandlers()
 
 	cm.instances = []models.CamundaInstance{
 		{ID: "test-1", Name: "Test Instance 1", Enabled: false},
@@ -434,7 +470,7 @@ func TestEnableCamundaInstanceHandler(t *testing.T) {
 }
 
 func TestDisableCamundaInstanceHandler(t *testing.T) {
-	handlers, cm, _, _, _ := newTestHandlers()
+	handlers, cm, _, _, _, _ := newTestHandlers()
 
 	cm.instances = []models.CamundaInstance{
 		{ID: "test-1", Name: "Test Instance 1", Enabled: true},
@@ -455,7 +491,7 @@ func TestDisableCamundaInstanceHandler(t *testing.T) {
 }
 
 func TestTriggerBackupHandler(t *testing.T) {
-	handlers, cm, _, _, _ := newTestHandlers()
+	handlers, cm, _, _, _, _ := newTestHandlers()
 
 	cm.instances = []models.CamundaInstance{
 		{ID: "test-1", Name: "Test Instance 1", Enabled: true},
@@ -481,7 +517,7 @@ func TestTriggerBackupHandler(t *testing.T) {
 }
 
 func TestTriggerBackupHandler_NotFound(t *testing.T) {
-	handlers, _, _, _, _ := newTestHandlers()
+	handlers, _, _, _, _, _ := newTestHandlers()
 
 	req := httptest.NewRequest(http.MethodPost, "/api/camundas/non-existent/backup", nil)
 	w := httptest.NewRecorder()
@@ -494,7 +530,7 @@ func TestTriggerBackupHandler_NotFound(t *testing.T) {
 }
 
 func TestTriggerBackupHandler_BackupInProgress(t *testing.T) {
-	handlers, cm, _, _, sched := newTestHandlers()
+	handlers, cm, _, _, sched, _ := newTestHandlers()
 
 	cm.instances = []models.CamundaInstance{
 		{ID: "test-1", Name: "Test Instance 1", Enabled: true},
@@ -512,7 +548,7 @@ func TestTriggerBackupHandler_BackupInProgress(t *testing.T) {
 }
 
 func TestListBackupHistoryHandler(t *testing.T) {
-	handlers, cm, _, hist, _ := newTestHandlers()
+	handlers, cm, _, hist, _, _ := newTestHandlers()
 
 	cm.instances = []models.CamundaInstance{
 		{ID: "test-1", Name: "Test Instance 1"},
@@ -543,7 +579,7 @@ func TestListBackupHistoryHandler(t *testing.T) {
 }
 
 func TestGetBackupDetailsHandler(t *testing.T) {
-	handlers, cm, _, hist, _ := newTestHandlers()
+	handlers, cm, _, hist, _, _ := newTestHandlers()
 
 	cm.instances = []models.CamundaInstance{
 		{ID: "test-1", Name: "Test Instance 1"},
@@ -573,7 +609,7 @@ func TestGetBackupDetailsHandler(t *testing.T) {
 }
 
 func TestGetBackupDetailsHandler_NotFound(t *testing.T) {
-	handlers, cm, _, _, _ := newTestHandlers()
+	handlers, cm, _, _, _, _ := newTestHandlers()
 
 	cm.instances = []models.CamundaInstance{
 		{ID: "test-1", Name: "Test Instance 1"},
@@ -583,6 +619,175 @@ func TestGetBackupDetailsHandler_NotFound(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	handlers.GetBackupDetailsHandler(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected status %d, got %d", http.StatusNotFound, w.Code)
+	}
+}
+
+// --- Retention Handler Tests ---
+
+func TestDeleteBackupHandler_Success(t *testing.T) {
+	handlers, cm, _, _, _, ret := newTestHandlers()
+
+	cm.instances = []models.CamundaInstance{
+		{ID: "test-1", Name: "Test Instance 1"},
+	}
+	ret.deleteErr = nil
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/camundas/test-1/backups/backup-1", nil)
+	w := httptest.NewRecorder()
+
+	handlers.DeleteBackupHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
+	}
+}
+
+func TestDeleteBackupHandler_NotFound(t *testing.T) {
+	handlers, cm, _, _, _, ret := newTestHandlers()
+
+	cm.instances = []models.CamundaInstance{
+		{ID: "test-1", Name: "Test Instance 1"},
+	}
+	ret.deleteErr = utils.ErrBackupNotFound
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/camundas/test-1/backups/backup-1", nil)
+	w := httptest.NewRecorder()
+
+	handlers.DeleteBackupHandler(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected status %d, got %d: %s", http.StatusNotFound, w.Code, w.Body.String())
+	}
+}
+
+func TestDeleteBackupHandler_SafetyRefusal(t *testing.T) {
+	handlers, cm, _, _, _, ret := newTestHandlers()
+
+	cm.instances = []models.CamundaInstance{
+		{ID: "test-1", Name: "Test Instance 1"},
+	}
+	ret.deleteErr = fmt.Errorf("cannot delete the most recent successful backup (backup-1)")
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/camundas/test-1/backups/backup-1", nil)
+	w := httptest.NewRecorder()
+
+	handlers.DeleteBackupHandler(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Errorf("expected status %d, got %d: %s", http.StatusConflict, w.Code, w.Body.String())
+	}
+}
+
+func TestDeleteBackupHandler_InstanceNotFound(t *testing.T) {
+	handlers, _, _, _, _, _ := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/camundas/non-existent/backups/backup-1", nil)
+	w := httptest.NewRecorder()
+
+	handlers.DeleteBackupHandler(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected status %d, got %d: %s", http.StatusNotFound, w.Code, w.Body.String())
+	}
+}
+
+func TestListOrphanedBackupsHandler(t *testing.T) {
+	handlers, cm, _, _, _, ret := newTestHandlers()
+
+	cm.instances = []models.CamundaInstance{
+		{ID: "test-1", Name: "Test Instance 1"},
+	}
+	ret.orphaned = []*models.BackupHistory{
+		{BackupID: "orphaned-1", CamundaInstanceID: "test-1", Status: types.BackupStatusCompleted},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/camundas/test-1/backups/orphaned", nil)
+	w := httptest.NewRecorder()
+
+	handlers.ListOrphanedBackupsHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	var result []*models.BackupHistory
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if len(result) != 1 {
+		t.Errorf("expected 1 orphaned backup, got %d", len(result))
+	}
+}
+
+func TestListIncompleteBackupsHandler(t *testing.T) {
+	handlers, cm, _, _, _, ret := newTestHandlers()
+
+	cm.instances = []models.CamundaInstance{
+		{ID: "test-1", Name: "Test Instance 1"},
+	}
+	ret.incomplete = []*models.BackupHistory{
+		{BackupID: "incomplete-1", CamundaInstanceID: "test-1", Status: types.BackupStatusIncomplete},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/camundas/test-1/backups/incomplete", nil)
+	w := httptest.NewRecorder()
+
+	handlers.ListIncompleteBackupsHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	var result []*models.BackupHistory
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if len(result) != 1 {
+		t.Errorf("expected 1 incomplete backup, got %d", len(result))
+	}
+}
+
+func TestListFailedBackupsHandler(t *testing.T) {
+	handlers, cm, _, _, _, ret := newTestHandlers()
+
+	cm.instances = []models.CamundaInstance{
+		{ID: "test-1", Name: "Test Instance 1"},
+	}
+	ret.failed = []*models.BackupHistory{
+		{BackupID: "failed-1", CamundaInstanceID: "test-1", Status: types.BackupStatusFailed},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/camundas/test-1/backups/failed", nil)
+	w := httptest.NewRecorder()
+
+	handlers.ListFailedBackupsHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
+	}
+
+	var result []*models.BackupHistory
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+
+	if len(result) != 1 {
+		t.Errorf("expected 1 failed backup, got %d", len(result))
+	}
+}
+
+func TestListOrphanedBackupsHandler_InstanceNotFound(t *testing.T) {
+	handlers, _, _, _, _, _ := newTestHandlers()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/camundas/non-existent/backups/orphaned", nil)
+	w := httptest.NewRecorder()
+
+	handlers.ListOrphanedBackupsHandler(w, req)
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected status %d, got %d", http.StatusNotFound, w.Code)

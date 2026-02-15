@@ -77,13 +77,40 @@ func (r *Router) camundaResourceHandler() http.HandlerFunc {
 			}
 			r.handlers.TriggerBackupHandler(w, req)
 
-		// GET /api/camundas/{id}/backups/{backupId}
-		case strings.Contains(path, "/backups/"):
+		// GET /api/camundas/{id}/backups/orphaned
+		case strings.HasSuffix(path, "/backups/orphaned"):
 			if req.Method != http.MethodGet {
 				r.methodNotAllowed(w, req)
 				return
 			}
-			r.handlers.GetBackupDetailsHandler(w, req)
+			r.handlers.ListOrphanedBackupsHandler(w, req)
+
+		// GET /api/camundas/{id}/backups/incomplete
+		case strings.HasSuffix(path, "/backups/incomplete"):
+			if req.Method != http.MethodGet {
+				r.methodNotAllowed(w, req)
+				return
+			}
+			r.handlers.ListIncompleteBackupsHandler(w, req)
+
+		// GET /api/camundas/{id}/backups/failed
+		case strings.HasSuffix(path, "/backups/failed"):
+			if req.Method != http.MethodGet {
+				r.methodNotAllowed(w, req)
+				return
+			}
+			r.handlers.ListFailedBackupsHandler(w, req)
+
+		// GET/DELETE /api/camundas/{id}/backups/{backupId}
+		case strings.Contains(path, "/backups/"):
+			switch req.Method {
+			case http.MethodGet:
+				r.handlers.GetBackupDetailsHandler(w, req)
+			case http.MethodDelete:
+				r.handlers.DeleteBackupHandler(w, req)
+			default:
+				r.methodNotAllowed(w, req)
+			}
 
 		// GET /api/camundas/{id}/backups
 		case strings.HasSuffix(path, "/backups"):
