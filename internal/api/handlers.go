@@ -48,13 +48,22 @@ type SchedulerInterface interface {
 	UpdateJob(instanceID, schedule string, enabled bool) error
 }
 
+// RetentionManager defines the interface for retention operations
+type RetentionManager interface {
+	DeleteBackup(camundaInstanceID, backupID string) error
+	ListOrphanedBackups(camundaInstanceID string) ([]*models.BackupHistory, error)
+	ListIncompleteBackups(camundaInstanceID string) ([]*models.BackupHistory, error)
+	ListFailedBackups(camundaInstanceID string) ([]*models.BackupHistory, error)
+}
+
 // Handlers contains HTTP request handlers
 type Handlers struct {
-	camundaManager  CamundaManager
-	orchestrator    BackupOrchestrator
-	historyProvider BackupHistoryProvider
-	scheduler       SchedulerInterface
-	logger          *utils.Logger
+	camundaManager   CamundaManager
+	orchestrator     BackupOrchestrator
+	historyProvider  BackupHistoryProvider
+	scheduler        SchedulerInterface
+	retentionManager RetentionManager
+	logger           *utils.Logger
 }
 
 // NewHandlers creates a new handlers instance
@@ -63,14 +72,16 @@ func NewHandlers(
 	orchestrator BackupOrchestrator,
 	historyProvider BackupHistoryProvider,
 	scheduler SchedulerInterface,
+	retentionManager RetentionManager,
 	logger *utils.Logger,
 ) *Handlers {
 	return &Handlers{
-		camundaManager:  camundaManager,
-		orchestrator:    orchestrator,
-		historyProvider: historyProvider,
-		scheduler:       scheduler,
-		logger:          logger,
+		camundaManager:   camundaManager,
+		orchestrator:     orchestrator,
+		historyProvider:  historyProvider,
+		scheduler:        scheduler,
+		retentionManager: retentionManager,
+		logger:           logger,
 	}
 }
 
@@ -542,6 +553,165 @@ func (h *Handlers) GetBackupDetailsHandler(w http.ResponseWriter, r *http.Reques
 	}
 
 	writeJSON(w, http.StatusOK, history)
+}
+
+// DeleteBackupHandler handles deleting a specific backup
+func (h *Handlers) DeleteBackupHandler(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	// Extract instance ID and backup ID from path like /api/camundas/{id}/backups/{backupId}
+	parts := strings.Split(strings.TrimPrefix(path, "/api/camundas/"), "/")
+	if len(parts) < 3 || parts[1] != "backups" || parts[2] == "" {
+		writeError(w, http.StatusBadRequest, "validation_error", "Instance ID and Backup ID are required")
+		return
+	}
+
+	instanceID := parts[0]
+	backupID := parts[2]
+
+	// Verify instance exists
+	_, err := h.camundaManager.GetInstance(instanceID)
+	if err != nil {
+		if err == utils.ErrCamundaInstanceNotFound {
+			writeError(w, http.StatusNotFound, "not_found", "Camunda instance not found")
+			return
+		}
+		h.logger.Error("Failed to get Camunda instance: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to get Camunda instance")
+		return
+	}
+
+	if h.retentionManager == nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Retention manager not configured")
+		return
+	}
+
+	if err := h.retentionManager.DeleteBackup(instanceID, backupID); err != nil {
+		if err == utils.ErrBackupNotFound {
+			writeError(w, http.StatusNotFound, "not_found", "Backup not found")
+			return
+		}
+		// Check if it's a safety refusal (most recent backup)
+		if strings.Contains(err.Error(), "cannot delete the most recent") {
+			writeError(w, http.StatusConflict, "safety_refusal", err.Error())
+			return
+		}
+		h.logger.Error("Failed to delete backup: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to delete backup")
+		return
+	}
+
+	writeSuccess(w, http.StatusOK, "Backup deleted successfully", nil)
+}
+
+// ListOrphanedBackupsHandler handles listing orphaned backups for a Camunda instance
+func (h *Handlers) ListOrphanedBackupsHandler(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	id := extractIDFromPath(path, "/api/camundas/")
+	id = strings.TrimSuffix(id, "/backups/orphaned")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "validation_error", "Instance ID is required")
+		return
+	}
+
+	// Verify instance exists
+	_, err := h.camundaManager.GetInstance(id)
+	if err != nil {
+		if err == utils.ErrCamundaInstanceNotFound {
+			writeError(w, http.StatusNotFound, "not_found", "Camunda instance not found")
+			return
+		}
+		h.logger.Error("Failed to get Camunda instance: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to get Camunda instance")
+		return
+	}
+
+	if h.retentionManager == nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Retention manager not configured")
+		return
+	}
+
+	orphaned, err := h.retentionManager.ListOrphanedBackups(id)
+	if err != nil {
+		h.logger.Error("Failed to list orphaned backups: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to list orphaned backups")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, orphaned)
+}
+
+// ListIncompleteBackupsHandler handles listing incomplete backups for a Camunda instance
+func (h *Handlers) ListIncompleteBackupsHandler(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	id := extractIDFromPath(path, "/api/camundas/")
+	id = strings.TrimSuffix(id, "/backups/incomplete")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "validation_error", "Instance ID is required")
+		return
+	}
+
+	// Verify instance exists
+	_, err := h.camundaManager.GetInstance(id)
+	if err != nil {
+		if err == utils.ErrCamundaInstanceNotFound {
+			writeError(w, http.StatusNotFound, "not_found", "Camunda instance not found")
+			return
+		}
+		h.logger.Error("Failed to get Camunda instance: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to get Camunda instance")
+		return
+	}
+
+	if h.retentionManager == nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Retention manager not configured")
+		return
+	}
+
+	incomplete, err := h.retentionManager.ListIncompleteBackups(id)
+	if err != nil {
+		h.logger.Error("Failed to list incomplete backups: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to list incomplete backups")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, incomplete)
+}
+
+// ListFailedBackupsHandler handles listing failed backups for a Camunda instance
+func (h *Handlers) ListFailedBackupsHandler(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	id := extractIDFromPath(path, "/api/camundas/")
+	id = strings.TrimSuffix(id, "/backups/failed")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "validation_error", "Instance ID is required")
+		return
+	}
+
+	// Verify instance exists
+	_, err := h.camundaManager.GetInstance(id)
+	if err != nil {
+		if err == utils.ErrCamundaInstanceNotFound {
+			writeError(w, http.StatusNotFound, "not_found", "Camunda instance not found")
+			return
+		}
+		h.logger.Error("Failed to get Camunda instance: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to get Camunda instance")
+		return
+	}
+
+	if h.retentionManager == nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Retention manager not configured")
+		return
+	}
+
+	failed, err := h.retentionManager.ListFailedBackups(id)
+	if err != nil {
+		h.logger.Error("Failed to list failed backups: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to list failed backups")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, failed)
 }
 
 // extractIDFromPath extracts an ID from a URL path
