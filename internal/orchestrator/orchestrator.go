@@ -151,10 +151,23 @@ func (o *Orchestrator) ExecuteBackup(ctx context.Context, req BackupRequest) (*m
 
 	o.writeLog(req.CamundaInstance.ID, backupID, fmt.Sprintf("Backup completed with status: %s", execution.Status))
 
-	// Apply retention after a successful backup
+	// Apply retention asynchronously after a successful backup so that
+	// potentially slow retention operations (listing, moving, deleting) don't
+	// block backup completion or hold the backupRunning flag.
 	if execution.Status == types.BackupStatusCompleted && o.retentionFunc != nil {
-		o.writeLog(req.CamundaInstance.ID, backupID, "Applying retention policy")
-		o.retentionFunc(req.CamundaInstance.ID, req.CamundaInstance.RetentionCount)
+		o.writeLog(req.CamundaInstance.ID, backupID, "Scheduling asynchronous retention policy")
+		retentionFunc := o.retentionFunc
+		instanceID := req.CamundaInstance.ID
+		retentionCount := req.CamundaInstance.RetentionCount
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					o.logger.Error("Panic during retention for instance %s: %v", instanceID, r)
+				}
+			}()
+			retentionFunc(instanceID, retentionCount)
+			o.writeLog(instanceID, backupID, "Retention policy applied successfully")
+		}()
 	}
 
 	return execution, nil
