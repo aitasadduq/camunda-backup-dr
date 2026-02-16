@@ -18,7 +18,8 @@ func newTestRouter() (*Router, *mockCamundaManager, *mockOrchestrator, *mockHist
 	hist := &mockHistoryProvider{history: []*models.BackupHistory{}}
 	sched := &mockScheduler{running: true}
 	ret := &mockRetentionManager{}
-	handlers := NewHandlers(cm, orch, hist, sched, ret, logger)
+	lfr := &mockLogFileReader{logs: make(map[string]string)}
+	handlers := NewHandlers(cm, orch, hist, sched, ret, lfr, logger)
 	router := NewRouter(handlers)
 	return router, cm, orch, hist, sched, ret
 }
@@ -295,6 +296,41 @@ func TestRouter_DeleteBackup_MethodNotAllowed(t *testing.T) {
 
 	// POST on a specific backup path should not be allowed
 	req := httptest.NewRequest(http.MethodPost, "/api/camundas/test-1/backups/backup-1", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected status %d, got %d: %s", http.StatusMethodNotAllowed, w.Code, w.Body.String())
+	}
+}
+
+func TestRouter_GetBackupLogs(t *testing.T) {
+	router, cm, _, _, _, _ := newTestRouter()
+
+	cm.instances = []models.CamundaInstance{
+		{ID: "test-1", Name: "Test 1"},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/camundas/test-1/backups/backup-1/logs", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	// Should route to GetBackupLogsHandler; log not found is expected (returns 404)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected status %d, got %d: %s", http.StatusNotFound, w.Code, w.Body.String())
+	}
+}
+
+func TestRouter_GetBackupLogs_MethodNotAllowed(t *testing.T) {
+	router, cm, _, _, _, _ := newTestRouter()
+
+	cm.instances = []models.CamundaInstance{
+		{ID: "test-1", Name: "Test 1"},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/camundas/test-1/backups/backup-1/logs", nil)
 	w := httptest.NewRecorder()
 
 	router.ServeHTTP(w, req)
