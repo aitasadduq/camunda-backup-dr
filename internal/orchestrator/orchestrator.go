@@ -20,6 +20,10 @@ import (
 	"github.com/aitasadduq/camunda-backup-dr/pkg/types"
 )
 
+// RetentionFunc is a callback invoked after a successful backup to apply
+// retention policies.  It is wired by the caller (e.g. main.go).
+type RetentionFunc func(camundaInstanceID string, retentionCount int)
+
 // Orchestrator manages the backup workflow for Camunda instances
 type Orchestrator struct {
 	fileStorage     storage.FileStorage
@@ -31,6 +35,7 @@ type Orchestrator struct {
 	backupRunning   atomic.Bool // non-blocking status flag
 	pollInterval    time.Duration
 	maxPollAttempts int
+	retentionFunc   RetentionFunc
 }
 
 // NewOrchestrator creates a new backup orchestrator
@@ -52,6 +57,11 @@ func NewOrchestrator(
 		pollInterval:    pollInterval,
 		maxPollAttempts: maxPollAttempts,
 	}
+}
+
+// SetRetentionFunc sets the callback invoked after a successful backup.
+func (o *Orchestrator) SetRetentionFunc(fn RetentionFunc) {
+	o.retentionFunc = fn
 }
 
 // BackupRequest represents a backup request
@@ -140,6 +150,25 @@ func (o *Orchestrator) ExecuteBackup(ctx context.Context, req BackupRequest) (*m
 	}
 
 	o.writeLog(req.CamundaInstance.ID, backupID, fmt.Sprintf("Backup completed with status: %s", execution.Status))
+
+	// Apply retention asynchronously after a successful backup so that
+	// potentially slow retention operations (listing, moving, deleting) don't
+	// block backup completion or hold the backupRunning flag.
+	if execution.Status == types.BackupStatusCompleted && o.retentionFunc != nil {
+		o.writeLog(req.CamundaInstance.ID, backupID, "Scheduling asynchronous retention policy")
+		retentionFunc := o.retentionFunc
+		instanceID := req.CamundaInstance.ID
+		retentionCount := req.CamundaInstance.RetentionCount
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					o.logger.Error("Panic during retention for instance %s: %v", instanceID, r)
+				}
+			}()
+			retentionFunc(instanceID, retentionCount)
+			o.writeLog(instanceID, backupID, "Retention policy applied successfully")
+		}()
+	}
 
 	return execution, nil
 }

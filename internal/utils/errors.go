@@ -38,4 +38,7 @@ var (
 
 	// ErrInvalidCamundaInstance is returned when Camunda instance configuration is invalid
 	ErrInvalidCamundaInstance = errors.New("invalid camunda instance configuration")
+
+	// ErrCannotDeleteMostRecentBackup is returned when attempting to delete the most recent successful backup
+	ErrCannotDeleteMostRecentBackup = errors.New("cannot delete the most recent successful backup")
 )

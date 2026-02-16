@@ -13,6 +13,7 @@ import (
 	"github.com/aitasadduq/camunda-backup-dr/internal/config"
 	"github.com/aitasadduq/camunda-backup-dr/internal/models"
 	"github.com/aitasadduq/camunda-backup-dr/internal/orchestrator"
+	"github.com/aitasadduq/camunda-backup-dr/internal/retention"
 	"github.com/aitasadduq/camunda-backup-dr/internal/scheduler"
 	"github.com/aitasadduq/camunda-backup-dr/internal/storage"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
@@ -89,6 +90,13 @@ func main() {
 	)
 	logger.Info("Backup orchestrator initialized successfully")
 
+	// Wire up retention manager to orchestrator
+	retentionManager := retention.NewManager(s3Storage, fileStorage, logger)
+	backupOrchestrator.SetRetentionFunc(func(camundaInstanceID string, retentionCount int) {
+		retentionManager.ApplyRetention(camundaInstanceID, retentionCount)
+	})
+	logger.Info("Retention manager initialized and wired to orchestrator")
+
 	// Create backup executor adapter for scheduler
 	backupExecutor := &backupExecutorAdapter{orchestrator: backupOrchestrator}
 
@@ -112,6 +120,7 @@ func main() {
 		backupOrchestrator,
 		s3Storage,
 		sched,
+		retentionManager,
 		logger,
 	)
 
