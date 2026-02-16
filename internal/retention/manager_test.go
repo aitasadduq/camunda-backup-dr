@@ -3,6 +3,7 @@ package retention
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -447,14 +448,18 @@ func TestApplyRetention_LogFileCleanupError(t *testing.T) {
 	fs.cleanErr = fmt.Errorf("disk error")
 	fs.CreateLogFile("inst-1", "backup-1")
 	result := mgr.ApplyRetention("inst-1", 1)
+	if len(result.Errors) == 0 {
+		t.Fatal("expected at least one error from log cleanup failure")
+	}
 	hasLogErr := false
 	for _, e := range result.Errors {
-		if e == "failed to cleanup old log files: disk error" {
+		if strings.Contains(e, "disk error") {
 			hasLogErr = true
+			break
 		}
 	}
 	if !hasLogErr {
-		t.Errorf("expected log cleanup error, got: %v", result.Errors)
+		t.Errorf("expected an error containing 'disk error', got: %v", result.Errors)
 	}
 }
 

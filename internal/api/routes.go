@@ -78,7 +78,7 @@ func (r *Router) camundaResourceHandler() http.HandlerFunc {
 			r.handlers.TriggerBackupHandler(w, req)
 
 		// GET /api/camundas/{id}/backups/orphaned
-		case strings.HasSuffix(path, "/backups/orphaned"):
+		case strings.HasSuffix(path, "/backups/orphaned"): // Reserved sub-paths only respond to GET for listing
 			if req.Method != http.MethodGet {
 				r.methodNotAllowed(w, req)
 				return
