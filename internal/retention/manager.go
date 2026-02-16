@@ -199,7 +199,7 @@ func (m *Manager) DeleteBackup(camundaInstanceID, backupID string) error {
 			}
 		}
 		if mostRecent.BackupID == backupID {
-			return fmt.Errorf("cannot delete the most recent successful backup (%s)", backupID)
+			return fmt.Errorf("%w (%s)", utils.ErrCannotDeleteMostRecentBackup, backupID)
 		}
 	}
 

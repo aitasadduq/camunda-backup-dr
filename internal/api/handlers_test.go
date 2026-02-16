@@ -669,7 +669,7 @@ func TestDeleteBackupHandler_SafetyRefusal(t *testing.T) {
 	cm.instances = []models.CamundaInstance{
 		{ID: "test-1", Name: "Test Instance 1"},
 	}
-	ret.deleteErr = fmt.Errorf("cannot delete the most recent successful backup (backup-1)")
+	ret.deleteErr = fmt.Errorf("%w (backup-1)", utils.ErrCannotDeleteMostRecentBackup)
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/camundas/test-1/backups/backup-1", nil)
 	w := httptest.NewRecorder()

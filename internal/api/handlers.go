@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -590,8 +591,7 @@ func (h *Handlers) DeleteBackupHandler(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "not_found", "Backup not found")
 			return
 		}
-		// Check if it's a safety refusal (most recent backup)
-		if strings.Contains(err.Error(), "cannot delete the most recent") {
+		if errors.Is(err, utils.ErrCannotDeleteMostRecentBackup) {
 			writeError(w, http.StatusConflict, "safety_refusal", err.Error())
 			return
 		}
