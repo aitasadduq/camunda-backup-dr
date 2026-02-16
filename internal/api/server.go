@@ -28,9 +28,10 @@ func NewServer(
 	historyProvider BackupHistoryProvider,
 	scheduler SchedulerInterface,
 	retentionManager RetentionManager,
+	logFileReader LogFileReader,
 	logger *utils.Logger,
 ) *Server {
-	handlers := NewHandlers(camundaManager, orchestrator, historyProvider, scheduler, retentionManager, logger)
+	handlers := NewHandlers(camundaManager, orchestrator, historyProvider, scheduler, retentionManager, logFileReader, logger)
 	router := NewRouter(handlers)
 
 	// Apply middleware chain

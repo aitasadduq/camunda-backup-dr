@@ -121,6 +121,7 @@ func main() {
 		s3Storage,
 		sched,
 		retentionManager,
+		fileStorage,
 		logger,
 	)
 

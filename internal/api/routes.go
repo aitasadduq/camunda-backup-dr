@@ -101,6 +101,14 @@ func (r *Router) camundaResourceHandler() http.HandlerFunc {
 			}
 			r.handlers.ListFailedBackupsHandler(w, req)
 
+		// GET /api/camundas/{id}/backups/{backupId}/logs
+		case strings.HasSuffix(path, "/logs") && strings.Contains(path, "/backups/"):
+			if req.Method != http.MethodGet {
+				r.methodNotAllowed(w, req)
+				return
+			}
+			r.handlers.GetBackupLogsHandler(w, req)
+
 		// GET/DELETE /api/camundas/{id}/backups/{backupId}
 		case strings.Contains(path, "/backups/"):
 			switch req.Method {
