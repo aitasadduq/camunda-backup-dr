@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"time"
@@ -30,9 +31,10 @@ func NewServer(
 	retentionManager RetentionManager,
 	logFileReader LogFileReader,
 	logger *utils.Logger,
+	webFS fs.FS,
 ) *Server {
 	handlers := NewHandlers(camundaManager, orchestrator, historyProvider, scheduler, retentionManager, logFileReader, logger)
-	router := NewRouter(handlers)
+	router := NewRouter(handlers, webFS)
 
 	// Apply middleware chain
 	middlewareChain := ChainMiddleware(
