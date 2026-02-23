@@ -49,12 +49,26 @@ func (r *Router) registerRoutes() {
 	if r.webFS != nil {
 		fileServer := http.FileServer(http.FS(r.webFS))
 		r.mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
-			path := req.URL.Path
-			// Serve static assets directly
-			if strings.HasPrefix(path, "/css/") || strings.HasPrefix(path, "/js/") {
+			urlPath := req.URL.Path
+
+			// Reject paths containing directory traversal sequences
+			if containsDotDot(urlPath) {
+				http.NotFound(w, req)
+				return
+			}
+
+			// Serve static assets directly.
+			// Only paths under /css/ or /js/ are considered static assets.
+			// Bare /css or /js (without trailing slash) are not valid asset paths.
+			if strings.HasPrefix(urlPath, "/css/") || strings.HasPrefix(urlPath, "/js/") {
 				fileServer.ServeHTTP(w, req)
 				return
 			}
+			if urlPath == "/css" || urlPath == "/js" {
+				http.NotFound(w, req)
+				return
+			}
+
 			// For root and any other non-API path, serve index.html directly.
 			// We read the file and write it ourselves to avoid http.FileServer's
 			// redirect from /index.html -> / which causes a redirect loop.
@@ -191,6 +205,17 @@ func (r *Router) methodHandler(methods map[string]http.HandlerFunc) http.Handler
 // methodNotAllowed returns a 405 Method Not Allowed response
 func (r *Router) methodNotAllowed(w http.ResponseWriter, req *http.Request) {
 	writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method "+req.Method+" not allowed")
+}
+
+// containsDotDot checks whether the URL path contains ".." path segments
+// that could be used for directory traversal.
+func containsDotDot(urlPath string) bool {
+	for _, seg := range strings.Split(urlPath, "/") {
+		if seg == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // ServeHTTP implements http.Handler

@@ -482,3 +482,77 @@ func TestRouter_StaticServing_NilWebFS(t *testing.T) {
 		t.Errorf("expected 404 when webFS is nil, got %d", w.Code)
 	}
 }
+
+func TestRouter_StaticServing_BareCSSPath_Returns404(t *testing.T) {
+	router := newTestRouterWithWebFS()
+
+	req := httptest.NewRequest(http.MethodGet, "/css", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for /css without trailing slash, got %d", w.Code)
+	}
+}
+
+func TestRouter_StaticServing_BareJSPath_Returns404(t *testing.T) {
+	router := newTestRouterWithWebFS()
+
+	req := httptest.NewRequest(http.MethodGet, "/js", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for /js without trailing slash, got %d", w.Code)
+	}
+}
+
+func TestRouter_StaticServing_DirectoryTraversal_Returns404(t *testing.T) {
+	router := newTestRouterWithWebFS()
+
+	// Go's net/http automatically redirects paths containing ".." segments
+	// with a 301 before the handler runs. Our containsDotDot guard provides
+	// defense-in-depth for cases that bypass the mux (e.g. direct handler calls).
+	paths := []string{
+		"/css/../../../etc/passwd",
+		"/js/../../secret",
+		"/../index.html",
+	}
+
+	for _, p := range paths {
+		req := httptest.NewRequest(http.MethodGet, p, nil)
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+
+		// Either a 301 redirect (mux cleanup) or a 404 (our guard) is acceptable
+		if w.Code != http.StatusNotFound && w.Code != http.StatusMovedPermanently {
+			t.Errorf("expected 404 or 301 for traversal path %q, got %d", p, w.Code)
+		}
+	}
+}
+
+func TestContainsDotDot(t *testing.T) {
+	tests := []struct {
+		path     string
+		expected bool
+	}{
+		{"/css/styles.css", false},
+		{"/js/app.js", false},
+		{"/", false},
+		{"/some/path", false},
+		{"/../etc/passwd", true},
+		{"/css/../../../etc/passwd", true},
+		{"/js/../../secret", true},
+		{"/..hidden", false}, // not a ".." segment
+	}
+
+	for _, tt := range tests {
+		got := containsDotDot(tt.path)
+		if got != tt.expected {
+			t.Errorf("containsDotDot(%q) = %v, want %v", tt.path, got, tt.expected)
+		}
+	}
+}
