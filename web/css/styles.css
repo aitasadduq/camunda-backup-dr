@@ -1,6 +1,10 @@
 /* Camunda Backup Controller - Custom Styles */
 /* Tailwind handles 95% of styling. This file contains custom overrides. */
 
+:root {
+    --accordion-max-height: 2000px;
+}
+
 /* ========== Accordion Animations ========== */
 .accordion-content {
     max-height: 0;
@@ -10,7 +14,7 @@
 }
 
 .accordion-content.open {
-    max-height: 2000px;
+    max-height: var(--accordion-max-height);
     opacity: 1;
     transition: max-height 0.4s ease-in, opacity 0.3s ease-in;
 }
