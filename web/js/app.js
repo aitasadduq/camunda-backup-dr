@@ -6,6 +6,14 @@
 'use strict';
 
 // ============================================================
+// Constants
+// ============================================================
+const BACKUP_POLLING_INTERVAL_MS = 5000;
+const MODAL_TRANSITION_MS = 200;
+const TOAST_REMOVAL_ANIMATION_MS = 300;
+const TOAST_DURATION_MS = 5000;
+
+// ============================================================
 // API Client
 // ============================================================
 const api = {
@@ -266,7 +274,7 @@ function startBackupPolling() {
                 if (state.currentTab === 'dashboard') loadDashboard();
             }
         } catch (_) { /* ignore polling errors */ }
-    }, 5000);
+    }, BACKUP_POLLING_INTERVAL_MS);
 }
 
 function stopBackupPolling() {
@@ -942,7 +950,7 @@ function closeModal() {
     backdrop.classList.remove('active');
     panel.classList.remove('active');
 
-    setTimeout(() => { panel.innerHTML = ''; }, 200);
+    setTimeout(() => { panel.innerHTML = ''; }, MODAL_TRANSITION_MS);
 }
 
 // Close modal on backdrop click
@@ -1006,11 +1014,11 @@ function showToast(message, type = 'info') {
     toast.innerHTML = `${icons[type] || icons.info}<span class="text-sm">${escapeHtml(message)}</span>`;
     container.appendChild(toast);
 
-    // Auto-remove after 5 seconds
+    // Auto-remove after timeout
     setTimeout(() => {
         toast.classList.add('removing');
-        setTimeout(() => toast.remove(), 300);
-    }, 5000);
+        setTimeout(() => toast.remove(), TOAST_REMOVAL_ANIMATION_MS);
+    }, TOAST_DURATION_MS);
 }
 
 // ============================================================
