@@ -12,7 +12,9 @@ const api = {
     async request(method, path, body) {
         const opts = {
             method,
-            headers: {},
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+            },
         };
         if (body) {
             opts.headers['Content-Type'] = 'application/json';

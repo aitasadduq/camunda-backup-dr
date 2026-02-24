@@ -41,6 +41,7 @@ func NewServer(
 		RecoveryMiddleware(logger),
 		LoggingMiddleware(logger),
 		CORSMiddleware(),
+		CSRFMiddleware(),
 		ContentTypeMiddleware(),
 	)
 
