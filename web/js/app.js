@@ -66,6 +66,7 @@ const state = {
     activeBackupId: null,
     systemStatus: null,
     pollingPaused: false,
+    instancesStale: true,
 };
 
 // ============================================================
@@ -229,8 +230,7 @@ async function loadQuickActions() {
     if (!container) return;
 
     try {
-        const instances = await api.get('/api/camundas');
-        state.instances = instances || [];
+        const instances = await getInstances();
         const enabled = instances.filter(i => i.enabled);
 
         if (enabled.length === 0) {
@@ -335,10 +335,27 @@ async function loadInstances() {
     try {
         const instances = await api.get('/api/camundas');
         state.instances = instances || [];
+        state.instancesStale = false;
         renderInstancesTable(instances);
     } catch (err) {
         el.innerHTML = `<div class="empty-state"><p>Failed to load instances</p><p class="text-sm mt-1">${err.message}</p></div>`;
     }
+}
+
+/** Mark instances stale so the next tab load re-fetches. */
+function invalidateInstancesCache() {
+    state.instancesStale = true;
+}
+
+/** Return cached instances or fetch fresh if stale/empty. */
+async function getInstances() {
+    if (!state.instancesStale && state.instances.length > 0) {
+        return state.instances;
+    }
+    const instances = await api.get('/api/camundas');
+    state.instances = instances || [];
+    state.instancesStale = false;
+    return state.instances;
 }
 
 function renderInstancesTable(instances) {
@@ -467,7 +484,10 @@ function openInstanceForm(instance) {
                                 <label class="block text-sm font-medium text-gray-700 mb-1">Schedule (cron)</label>
                                 <input type="text" name="schedule" value="${escapeAttr(inst.schedule || '0 2 * * *')}"
                                     class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                                    placeholder="0 2 * * *">
+                                    placeholder="0 2 * * *"
+                                    pattern="^(\\*|[0-9]|[1-5][0-9])(\\/(\\d+))?\\s+(\\*|[0-9]|1[0-9]|2[0-3])(\\/(\\d+))?\\s+(\\*|[1-9]|[12][0-9]|3[01])(\\/(\\d+))?\\s+(\\*|[1-9]|1[0-2])(\\/(\\d+))?\\s+(\\*|[0-6])$"
+                                    title="Enter a valid 5-field cron expression (min hour day month weekday)">
+                                <p class="mt-1 text-xs text-gray-400">min hour day month weekday — e.g. 0 2 * * * (daily at 2 AM)</p>
                             </div>
                             <div>
                                 <label class="block text-sm font-medium text-gray-700 mb-1">Retention Count</label>
@@ -608,12 +628,18 @@ async function saveInstance(event, editId) {
         enabled: fd.get(`component_${name}_enabled`) === 'on',
     }));
 
+    const schedule = fd.get('schedule');
+    if (schedule && !isValidCron(schedule)) {
+        showToast('Invalid cron expression. Expected format: min hour day month weekday', 'error');
+        return;
+    }
+
     const payload = {
         id: editId || fd.get('id'),
         name: fd.get('name'),
         base_url: fd.get('base_url'),
         enabled: fd.get('enabled') === 'on',
-        schedule: fd.get('schedule'),
+        schedule,
         retention_count: parseInt(fd.get('retention_count')) || 7,
         success_history_count: parseInt(fd.get('success_history_count')) || 30,
         failure_history_count: parseInt(fd.get('failure_history_count')) || 30,
@@ -642,6 +668,7 @@ async function saveInstance(event, editId) {
             showToast('Instance created successfully', 'success');
         }
         closeModal();
+        invalidateInstancesCache();
         loadInstances();
     } catch (err) {
         showToast(err.message || 'Failed to save instance', 'error');
@@ -652,6 +679,7 @@ async function toggleInstance(id, enable) {
     try {
         await api.post(`/api/camundas/${id}/${enable ? 'enable' : 'disable'}`);
         showToast(`Instance ${enable ? 'enabled' : 'disabled'}`, 'success');
+        invalidateInstancesCache();
         loadInstances();
     } catch (err) {
         showToast(err.message || 'Failed to update instance', 'error');
@@ -665,6 +693,7 @@ async function confirmDeleteInstance(id, name) {
     try {
         await api.del(`/api/camundas/${id}`);
         showToast('Instance deleted', 'success');
+        invalidateInstancesCache();
         loadInstances();
     } catch (err) {
         showToast(err.message || 'Failed to delete instance', 'error');
@@ -675,10 +704,9 @@ async function confirmDeleteInstance(id, name) {
 // Backups Tab
 // ============================================================
 async function loadBackupsTab() {
-    // Load instance selector
+    // Use cached instances when available to avoid redundant API calls
     try {
-        const instances = await api.get('/api/camundas');
-        state.instances = instances || [];
+        const instances = await getInstances();
         renderBackupsTabControls(instances);
 
         if (instances.length > 0) {
@@ -1068,8 +1096,20 @@ function closeModal() {
 // ============================================================
 // Confirm Dialog
 // ============================================================
+let _pendingConfirm = null;
+
 function showConfirm(message) {
+    // If a confirm is already pending, reject it before opening a new one
+    if (_pendingConfirm) {
+        _pendingConfirm.resolve(false);
+        _pendingConfirm = null;
+    }
+
     return new Promise((resolve) => {
+        const confirmId = Date.now();
+
+        _pendingConfirm = { id: confirmId, resolve };
+
         const html = `
             <div class="bg-white rounded-xl shadow-xl w-full max-w-sm">
                 <div class="p-6">
@@ -1080,21 +1120,23 @@ function showConfirm(message) {
                         <p class="text-sm text-gray-700">${escapeHtml(message)}</p>
                     </div>
                     <div class="flex justify-end gap-2">
-                        <button onclick="window._confirmResolve(false)" class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50">Cancel</button>
-                        <button onclick="window._confirmResolve(true)" class="px-3 py-1.5 text-sm font-medium text-white bg-red-600 rounded-md hover:bg-red-700">Delete</button>
+                        <button onclick="resolveConfirm(false)" class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50">Cancel</button>
+                        <button onclick="resolveConfirm(true)" class="px-3 py-1.5 text-sm font-medium text-white bg-red-600 rounded-md hover:bg-red-700">Delete</button>
                     </div>
                 </div>
             </div>
         `;
 
-        window._confirmResolve = (result) => {
-            delete window._confirmResolve;
-            closeModal();
-            resolve(result);
-        };
-
         showModal(html);
     });
+}
+
+function resolveConfirm(result) {
+    if (!_pendingConfirm) return;
+    const { resolve } = _pendingConfirm;
+    _pendingConfirm = null;
+    closeModal();
+    resolve(result);
 }
 
 // ============================================================
@@ -1180,6 +1222,45 @@ function escapeForInlineHandler(str) {
         .replace(/"/g, '&quot;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
+}
+
+/**
+ * Validates a 5-field cron expression (min hour day month weekday).
+ * Supports numbers, asterisk, ranges (1-5), lists (1,3,5), and steps.
+ */
+function isValidCron(expr) {
+    if (!expr || typeof expr !== 'string') return false;
+    const fields = expr.trim().split(/\s+/);
+    if (fields.length !== 5) return false;
+
+    const ranges = [
+        [0, 59],  // minute
+        [0, 23],  // hour
+        [1, 31],  // day of month
+        [1, 12],  // month
+        [0, 6],   // day of week
+    ];
+
+    return fields.every((field, i) => {
+        const [min, max] = ranges[i];
+        // Each field can be a comma-separated list of atoms
+        return field.split(',').every(atom => {
+            // step: */2, 1-5/2, or plain number/range
+            const [value, step] = atom.split('/');
+            if (step !== undefined && (!/^\d+$/.test(step) || Number(step) === 0)) return false;
+            if (value === '*') return true;
+            // range: 1-5
+            if (value.includes('-')) {
+                const [lo, hi] = value.split('-');
+                if (!/^\d+$/.test(lo) || !/^\d+$/.test(hi)) return false;
+                return Number(lo) >= min && Number(hi) <= max && Number(lo) <= Number(hi);
+            }
+            // single number
+            if (!/^\d+$/.test(value)) return false;
+            const n = Number(value);
+            return n >= min && n <= max;
+        });
+    });
 }
 
 function formatTime(isoString) {
