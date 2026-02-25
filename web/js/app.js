@@ -73,6 +73,7 @@ const state = {
 // ============================================================
 document.addEventListener('DOMContentLoaded', () => {
     initTabs();
+    initModalListeners();
     showTab('dashboard');
 });
 
@@ -950,18 +951,96 @@ async function confirmDeleteBackup(instanceId, backupId) {
 // ============================================================
 // Modal
 // ============================================================
+/** Element that held focus before the modal opened, restored on close. */
+let _priorFocusEl = null;
+
+function initModalListeners() {
+    // Backdrop click — use delegation on the backdrop element itself
+    const backdrop = document.getElementById('modal-backdrop');
+    if (backdrop) {
+        backdrop.addEventListener('click', (e) => {
+            if (e.target === backdrop) closeModal();
+        });
+    }
+
+    // Escape key
+    document.addEventListener('keydown', _handleModalKeydown);
+}
+
+function _handleModalKeydown(e) {
+    const panel = document.getElementById('modal-panel');
+    if (!panel || !panel.classList.contains('active')) return;
+
+    if (e.key === 'Escape') {
+        closeModal();
+        return;
+    }
+
+    // Focus trap: keep Tab / Shift+Tab inside the modal
+    if (e.key === 'Tab') {
+        const focusable = panel.querySelectorAll(
+            'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        );
+        if (focusable.length === 0) return;
+
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+
+        if (e.shiftKey) {
+            if (document.activeElement === first) {
+                e.preventDefault();
+                last.focus();
+            }
+        } else {
+            if (document.activeElement === last) {
+                e.preventDefault();
+                first.focus();
+            }
+        }
+    }
+}
+
+function _announceModal(message) {
+    let region = document.getElementById('modal-live-region');
+    if (!region) {
+        region = document.createElement('div');
+        region.id = 'modal-live-region';
+        region.setAttribute('aria-live', 'polite');
+        region.setAttribute('role', 'status');
+        region.className = 'sr-only';
+        region.style.cssText = 'position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;';
+        document.body.appendChild(region);
+    }
+    region.textContent = message;
+}
+
 function showModal(contentHtml) {
     const backdrop = document.getElementById('modal-backdrop');
     const panel = document.getElementById('modal-panel');
     if (!backdrop || !panel) return;
 
+    // Remember the element that had focus so we can restore it later
+    _priorFocusEl = document.activeElement;
+
     panel.innerHTML = contentHtml;
+
+    // Ensure the panel is marked as a dialog for assistive tech
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
 
     // Trigger reflow then add active class
     requestAnimationFrame(() => {
         backdrop.classList.add('active');
         panel.classList.add('active');
+
+        // Move focus to the first focusable element inside the modal
+        const firstFocusable = panel.querySelector(
+            'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        );
+        if (firstFocusable) firstFocusable.focus();
     });
+
+    _announceModal('Dialog opened');
 }
 
 function closeModal() {
@@ -972,18 +1051,19 @@ function closeModal() {
     backdrop.classList.remove('active');
     panel.classList.remove('active');
 
+    panel.removeAttribute('role');
+    panel.removeAttribute('aria-modal');
+
     setTimeout(() => { panel.innerHTML = ''; }, MODAL_TRANSITION_MS);
+
+    // Restore focus to the element that was focused before the modal opened
+    if (_priorFocusEl && typeof _priorFocusEl.focus === 'function') {
+        _priorFocusEl.focus();
+        _priorFocusEl = null;
+    }
+
+    _announceModal('Dialog closed');
 }
-
-// Close modal on backdrop click
-document.addEventListener('click', (e) => {
-    if (e.target.id === 'modal-backdrop') closeModal();
-});
-
-// Close modal on Escape key
-document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeModal();
-});
 
 // ============================================================
 // Confirm Dialog
@@ -1110,7 +1190,8 @@ function formatTime(isoString) {
             month: 'short', day: 'numeric',
             hour: '2-digit', minute: '2-digit', second: '2-digit',
         });
-    } catch {
+    } catch (err) {
+        console.warn('Failed to parse date:', isoString, err);
         return isoString;
     }
 }
