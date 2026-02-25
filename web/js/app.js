@@ -65,6 +65,7 @@ const state = {
     activeBackupInstanceId: null,
     activeBackupId: null,
     systemStatus: null,
+    pollingPaused: false,
 };
 
 // ============================================================
@@ -96,6 +97,13 @@ function showTab(name) {
     document.querySelectorAll('[data-tab-content]').forEach(panel => {
         panel.classList.toggle('hidden', panel.dataset.tabContent !== name);
     });
+
+    // Pause polling when leaving dashboard, resume when returning
+    if (name !== 'dashboard') {
+        pauseBackupPolling();
+    } else if (state.pollingPaused) {
+        resumeBackupPolling();
+    }
 
     // Load data for the activated tab
     switch (name) {
@@ -273,7 +281,7 @@ function startBackupPolling() {
                 showToast('Backup completed', 'success');
                 if (state.currentTab === 'dashboard') loadDashboard();
             }
-        } catch (_) { /* ignore polling errors */ }
+        } catch (err) { console.error('Backup polling error:', err.message || err); }
     }, BACKUP_POLLING_INTERVAL_MS);
 }
 
@@ -282,6 +290,20 @@ function stopBackupPolling() {
         clearInterval(state.pollingIntervalId);
         state.pollingIntervalId = null;
     }
+    state.pollingPaused = false;
+}
+
+function pauseBackupPolling() {
+    if (state.pollingIntervalId) {
+        clearInterval(state.pollingIntervalId);
+        state.pollingIntervalId = null;
+        state.pollingPaused = true;
+    }
+}
+
+function resumeBackupPolling() {
+    state.pollingPaused = false;
+    startBackupPolling();
 }
 
 // ============================================================
