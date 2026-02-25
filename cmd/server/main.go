@@ -18,6 +18,7 @@ import (
 	"github.com/aitasadduq/camunda-backup-dr/internal/storage"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
 	"github.com/aitasadduq/camunda-backup-dr/pkg/types"
+	"github.com/aitasadduq/camunda-backup-dr/web"
 )
 
 func main() {
@@ -123,6 +124,7 @@ func main() {
 		retentionManager,
 		fileStorage,
 		logger,
+		web.FS,
 	)
 
 	// Start HTTP server

@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
@@ -51,14 +52,24 @@ func RecoveryMiddleware(logger *utils.Logger) Middleware {
 	}
 }
 
-// CORSMiddleware adds CORS headers for the web UI
+// CORSMiddleware adds CORS headers for the web UI.
+// Since the UI is served from the same origin, we restrict to same-origin
+// rather than allowing all origins with "*".
 func CORSMiddleware() Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Set CORS headers
-			w.Header().Set("Access-Control-Allow-Origin", "*")
+			origin := r.Header.Get("Origin")
+			if origin != "" {
+				// Only reflect the origin if it matches the Host header (same-origin)
+				host := r.Host
+				// Normalize: origin includes scheme, host does not
+				if strings.HasSuffix(origin, "://"+host) {
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					w.Header().Set("Vary", "Origin")
+				}
+			}
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
 
 			// Handle preflight requests
 			if r.Method == http.MethodOptions {
@@ -66,6 +77,27 @@ func CORSMiddleware() Middleware {
 				return
 			}
 
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// CSRFMiddleware protects state-changing API requests from Cross-Site Request
+// Forgery by requiring the X-Requested-With header. Browsers block cross-origin
+// requests with custom headers unless explicitly allowed by CORS preflight,
+// making this an effective CSRF defense when combined with a restrictive CORS policy.
+func CSRFMiddleware() Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Only enforce on state-changing methods for API routes
+			if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Method != http.MethodOptions {
+				if strings.HasPrefix(r.URL.Path, "/api/") {
+					if r.Header.Get("X-Requested-With") != "XMLHttpRequest" {
+						writeError(w, http.StatusForbidden, "csrf_rejected", "Missing or invalid X-Requested-With header")
+						return
+					}
+				}
+			}
 			next.ServeHTTP(w, r)
 		})
 	}

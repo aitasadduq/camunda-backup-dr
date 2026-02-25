@@ -1,6 +1,7 @@
 package api
 
 import (
+	"io/fs"
 	"net/http"
 	"strings"
 )
@@ -9,13 +10,15 @@ import (
 type Router struct {
 	handlers *Handlers
 	mux      *http.ServeMux
+	webFS    fs.FS
 }
 
 // NewRouter creates a new router with the given handlers
-func NewRouter(handlers *Handlers) *Router {
+func NewRouter(handlers *Handlers, webFS fs.FS) *Router {
 	router := &Router{
 		handlers: handlers,
 		mux:      http.NewServeMux(),
+		webFS:    webFS,
 	}
 	router.registerRoutes()
 	return router
@@ -41,6 +44,43 @@ func (r *Router) registerRoutes() {
 	// Camunda instances - resource endpoints
 	// Use a pattern that catches all /api/camundas/ routes and route based on path
 	r.mux.HandleFunc("/api/camundas/", r.camundaResourceHandler())
+
+	// Serve embedded web UI static files
+	if r.webFS != nil {
+		fileServer := http.FileServer(http.FS(r.webFS))
+		r.mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
+			urlPath := req.URL.Path
+
+			// Reject paths containing directory traversal sequences
+			if containsDotDot(urlPath) {
+				http.NotFound(w, req)
+				return
+			}
+
+			// Serve static assets directly.
+			// Only paths under /css/ or /js/ are considered static assets.
+			// Bare /css or /js (without trailing slash) are not valid asset paths.
+			if strings.HasPrefix(urlPath, "/css/") || strings.HasPrefix(urlPath, "/js/") {
+				fileServer.ServeHTTP(w, req)
+				return
+			}
+			if urlPath == "/css" || urlPath == "/js" {
+				http.NotFound(w, req)
+				return
+			}
+
+			// For root and any other non-API path, serve index.html directly.
+			// We read the file and write it ourselves to avoid http.FileServer's
+			// redirect from /index.html -> / which causes a redirect loop.
+			data, err := fs.ReadFile(r.webFS, "index.html")
+			if err != nil {
+				http.NotFound(w, req)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write(data)
+		})
+	}
 }
 
 // camundaResourceHandler handles all /api/camundas/{id}... routes
@@ -165,6 +205,17 @@ func (r *Router) methodHandler(methods map[string]http.HandlerFunc) http.Handler
 // methodNotAllowed returns a 405 Method Not Allowed response
 func (r *Router) methodNotAllowed(w http.ResponseWriter, req *http.Request) {
 	writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method "+req.Method+" not allowed")
+}
+
+// containsDotDot checks whether the URL path contains ".." path segments
+// that could be used for directory traversal.
+func containsDotDot(urlPath string) bool {
+	for _, seg := range strings.Split(urlPath, "/") {
+		if seg == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // ServeHTTP implements http.Handler

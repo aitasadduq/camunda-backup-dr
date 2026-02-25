@@ -34,3 +34,6 @@ go.work.sum
 
 
 planning/
+data/
+.github/agents/
+.DS_Store

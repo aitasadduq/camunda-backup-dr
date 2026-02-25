@@ -59,14 +59,59 @@ func TestCORSMiddleware(t *testing.T) {
 	middleware := CORSMiddleware()
 	wrappedHandler := middleware(handler)
 
-	// Test regular request
+	// Test same-origin request — origin matches host
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Host = "localhost:8080"
+	req.Header.Set("Origin", "http://localhost:8080")
+	w := httptest.NewRecorder()
+
+	wrappedHandler.ServeHTTP(w, req)
+
+	if w.Header().Get("Access-Control-Allow-Origin") != "http://localhost:8080" {
+		t.Errorf("expected CORS origin to be reflected for same-origin, got: %s", w.Header().Get("Access-Control-Allow-Origin"))
+	}
+}
+
+func TestCORSMiddleware_CrossOriginBlocked(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := CORSMiddleware()
+	wrappedHandler := middleware(handler)
+
+	// Test cross-origin request — origin does not match host
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Host = "localhost:8080"
+	req.Header.Set("Origin", "http://evil.com")
+	w := httptest.NewRecorder()
+
+	wrappedHandler.ServeHTTP(w, req)
+
+	if w.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Errorf("expected no CORS origin header for cross-origin, got: %s", w.Header().Get("Access-Control-Allow-Origin"))
+	}
+}
+
+func TestCORSMiddleware_NoOriginHeader(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := CORSMiddleware()
+	wrappedHandler := middleware(handler)
+
+	// Request without Origin header (same-origin browser requests omit it)
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	w := httptest.NewRecorder()
 
 	wrappedHandler.ServeHTTP(w, req)
 
-	if w.Header().Get("Access-Control-Allow-Origin") != "*" {
-		t.Error("expected CORS header to be set")
+	if w.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Errorf("expected no CORS origin header when Origin is absent, got: %s", w.Header().Get("Access-Control-Allow-Origin"))
+	}
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
 	}
 }
 
@@ -141,5 +186,145 @@ func TestResponseWriter_CapturesStatusCode(t *testing.T) {
 
 	if rw.statusCode != http.StatusNotFound {
 		t.Errorf("expected status code %d, got %d", http.StatusNotFound, rw.statusCode)
+	}
+}
+
+func TestCSRFMiddleware_AllowsGET(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := CSRFMiddleware()
+	wrappedHandler := middleware(handler)
+
+	// GET requests should pass without the header
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	w := httptest.NewRecorder()
+	wrappedHandler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("GET should be allowed without X-Requested-With, got %d", w.Code)
+	}
+}
+
+func TestCSRFMiddleware_BlocksPOSTWithoutHeader(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := CSRFMiddleware()
+	wrappedHandler := middleware(handler)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/camundas", nil)
+	w := httptest.NewRecorder()
+	wrappedHandler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("POST without X-Requested-With should be 403, got %d", w.Code)
+	}
+}
+
+func TestCSRFMiddleware_AllowsPOSTWithHeader(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := CSRFMiddleware()
+	wrappedHandler := middleware(handler)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/camundas", nil)
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	w := httptest.NewRecorder()
+	wrappedHandler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("POST with X-Requested-With should be 200, got %d", w.Code)
+	}
+}
+
+func TestCSRFMiddleware_BlocksPUTWithoutHeader(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := CSRFMiddleware()
+	wrappedHandler := middleware(handler)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/camundas/test-1", nil)
+	w := httptest.NewRecorder()
+	wrappedHandler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("PUT without X-Requested-With should be 403, got %d", w.Code)
+	}
+}
+
+func TestCSRFMiddleware_BlocksDELETEWithoutHeader(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := CSRFMiddleware()
+	wrappedHandler := middleware(handler)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/camundas/test-1", nil)
+	w := httptest.NewRecorder()
+	wrappedHandler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("DELETE without X-Requested-With should be 403, got %d", w.Code)
+	}
+}
+
+func TestCSRFMiddleware_AllowsNonAPIRoutes(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := CSRFMiddleware()
+	wrappedHandler := middleware(handler)
+
+	// POST to a non-API path (e.g. webhook) should pass without the header
+	req := httptest.NewRequest(http.MethodPost, "/healthz", nil)
+	w := httptest.NewRecorder()
+	wrappedHandler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("POST to non-API path should be allowed without header, got %d", w.Code)
+	}
+}
+
+func TestCSRFMiddleware_RejectsWrongHeaderValue(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := CSRFMiddleware()
+	wrappedHandler := middleware(handler)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/camundas", nil)
+	req.Header.Set("X-Requested-With", "SomethingElse")
+	w := httptest.NewRecorder()
+	wrappedHandler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("POST with wrong X-Requested-With value should be 403, got %d", w.Code)
+	}
+}
+
+func TestCSRFMiddleware_AllowsOPTIONS(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	middleware := CSRFMiddleware()
+	wrappedHandler := middleware(handler)
+
+	req := httptest.NewRequest(http.MethodOptions, "/api/camundas", nil)
+	w := httptest.NewRecorder()
+	wrappedHandler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("OPTIONS should be allowed without header, got %d", w.Code)
 	}
 }

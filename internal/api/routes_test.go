@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/models"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
@@ -20,7 +22,7 @@ func newTestRouter() (*Router, *mockCamundaManager, *mockOrchestrator, *mockHist
 	ret := &mockRetentionManager{}
 	lfr := &mockLogFileReader{logs: make(map[string]string)}
 	handlers := NewHandlers(cm, orch, hist, sched, ret, lfr, logger)
-	router := NewRouter(handlers)
+	router := NewRouter(handlers, nil)
 	return router, cm, orch, hist, sched, ret
 }
 
@@ -337,5 +339,220 @@ func TestRouter_GetBackupLogs_MethodNotAllowed(t *testing.T) {
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("expected status %d, got %d: %s", http.StatusMethodNotAllowed, w.Code, w.Body.String())
+	}
+}
+
+// --- Static file serving tests ---
+
+func newTestFS() fstest.MapFS {
+	return fstest.MapFS{
+		"index.html": &fstest.MapFile{
+			Data: []byte("<!DOCTYPE html><html><head><title>Test</title></head><body>Hello</body></html>"),
+		},
+		"css/styles.css": &fstest.MapFile{
+			Data: []byte("body { margin: 0; }"),
+		},
+		"js/app.js": &fstest.MapFile{
+			Data: []byte("console.log('hello');"),
+		},
+	}
+}
+
+func newTestRouterWithWebFS() *Router {
+	logger := utils.NewLogger("error")
+	cm := &mockCamundaManager{instances: []models.CamundaInstance{}}
+	orch := &mockOrchestrator{}
+	hist := &mockHistoryProvider{history: []*models.BackupHistory{}}
+	sched := &mockScheduler{running: true}
+	ret := &mockRetentionManager{}
+	lfr := &mockLogFileReader{logs: make(map[string]string)}
+	handlers := NewHandlers(cm, orch, hist, sched, ret, lfr, logger)
+	return NewRouter(handlers, newTestFS())
+}
+
+func TestRouter_StaticServing_RootServesIndexHTML(t *testing.T) {
+	router := newTestRouterWithWebFS()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "<!DOCTYPE html>") {
+		t.Errorf("expected index.html content, got: %s", body)
+	}
+}
+
+func TestRouter_StaticServing_CSSFile(t *testing.T) {
+	router := newTestRouterWithWebFS()
+
+	req := httptest.NewRequest(http.MethodGet, "/css/styles.css", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+	contentType := w.Header().Get("Content-Type")
+	if !strings.Contains(contentType, "text/css") {
+		t.Errorf("expected Content-Type to contain text/css, got: %s", contentType)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "body") {
+		t.Errorf("expected CSS content, got: %s", body)
+	}
+}
+
+func TestRouter_StaticServing_JSFile(t *testing.T) {
+	router := newTestRouterWithWebFS()
+
+	req := httptest.NewRequest(http.MethodGet, "/js/app.js", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "console.log") {
+		t.Errorf("expected JS content, got: %s", body)
+	}
+}
+
+func TestRouter_StaticServing_SPAFallback(t *testing.T) {
+	router := newTestRouterWithWebFS()
+
+	// A random non-API, non-asset path should serve index.html
+	req := httptest.NewRequest(http.MethodGet, "/some/unknown/path", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "<!DOCTYPE html>") {
+		t.Errorf("expected index.html for SPA fallback, got: %s", body)
+	}
+}
+
+func TestRouter_StaticServing_APIRoutesStillWork(t *testing.T) {
+	router := newTestRouterWithWebFS()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	// API routes should still return JSON, not index.html
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "<!DOCTYPE html>") {
+		t.Error("API route should not return index.html")
+	}
+}
+
+func TestRouter_StaticServing_NilWebFS(t *testing.T) {
+	// When webFS is nil, non-API routes should 404
+	logger := utils.NewLogger("error")
+	cm := &mockCamundaManager{instances: []models.CamundaInstance{}}
+	orch := &mockOrchestrator{}
+	hist := &mockHistoryProvider{history: []*models.BackupHistory{}}
+	sched := &mockScheduler{running: true}
+	ret := &mockRetentionManager{}
+	lfr := &mockLogFileReader{logs: make(map[string]string)}
+	handlers := NewHandlers(cm, orch, hist, sched, ret, lfr, logger)
+	router := NewRouter(handlers, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 when webFS is nil, got %d", w.Code)
+	}
+}
+
+func TestRouter_StaticServing_BareCSSPath_Returns404(t *testing.T) {
+	router := newTestRouterWithWebFS()
+
+	req := httptest.NewRequest(http.MethodGet, "/css", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for /css without trailing slash, got %d", w.Code)
+	}
+}
+
+func TestRouter_StaticServing_BareJSPath_Returns404(t *testing.T) {
+	router := newTestRouterWithWebFS()
+
+	req := httptest.NewRequest(http.MethodGet, "/js", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for /js without trailing slash, got %d", w.Code)
+	}
+}
+
+func TestRouter_StaticServing_DirectoryTraversal_Returns404(t *testing.T) {
+	router := newTestRouterWithWebFS()
+
+	// Go's net/http automatically redirects paths containing ".." segments
+	// with a 301 before the handler runs. Our containsDotDot guard provides
+	// defense-in-depth for cases that bypass the mux (e.g. direct handler calls).
+	paths := []string{
+		"/css/../../../etc/passwd",
+		"/js/../../secret",
+		"/../index.html",
+	}
+
+	for _, p := range paths {
+		req := httptest.NewRequest(http.MethodGet, p, nil)
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+
+		// Either a 301 redirect (mux cleanup) or a 404 (our guard) is acceptable
+		if w.Code != http.StatusNotFound && w.Code != http.StatusMovedPermanently {
+			t.Errorf("expected 404 or 301 for traversal path %q, got %d", p, w.Code)
+		}
+	}
+}
+
+func TestContainsDotDot(t *testing.T) {
+	tests := []struct {
+		path     string
+		expected bool
+	}{
+		{"/css/styles.css", false},
+		{"/js/app.js", false},
+		{"/", false},
+		{"/some/path", false},
+		{"/../etc/passwd", true},
+		{"/css/../../../etc/passwd", true},
+		{"/js/../../secret", true},
+		{"/..hidden", false}, // not a ".." segment
+	}
+
+	for _, tt := range tests {
+		got := containsDotDot(tt.path)
+		if got != tt.expected {
+			t.Errorf("containsDotDot(%q) = %v, want %v", tt.path, got, tt.expected)
+		}
 	}
 }

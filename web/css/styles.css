@@ -1,0 +1,389 @@
+/* Camunda Backup Controller - Custom Styles */
+/* Tailwind handles 95% of styling. This file contains custom overrides. */
+
+:root {
+    --accordion-max-height: 2000px;
+}
+
+/* ========== Accordion Animations ========== */
+.accordion-content {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease-out, opacity 0.2s ease-out;
+    opacity: 0;
+}
+
+.accordion-content.open {
+    max-height: var(--accordion-max-height);
+    opacity: 1;
+    transition: max-height 0.4s ease-in, opacity 0.3s ease-in;
+}
+
+.accordion-toggle .accordion-icon {
+    transition: transform 0.2s ease;
+}
+
+.accordion-toggle.open .accordion-icon {
+    transform: rotate(180deg);
+}
+
+/* ========== Status Badges ========== */
+.badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.125rem 0.625rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    line-height: 1.25rem;
+    text-transform: uppercase;
+    letter-spacing: 0.025em;
+}
+
+.badge-completed {
+    background-color: #dcfce7;
+    color: #166534;
+}
+
+.badge-running {
+    background-color: #fef9c3;
+    color: #854d0e;
+    animation: pulse-badge 2s ease-in-out infinite;
+}
+
+.badge-failed {
+    background-color: #fee2e2;
+    color: #991b1b;
+}
+
+.badge-incomplete {
+    background-color: #f3f4f6;
+    color: #4b5563;
+}
+
+.badge-pending {
+    background-color: #e0e7ff;
+    color: #3730a3;
+}
+
+.badge-skipped {
+    background-color: #f3f4f6;
+    color: #6b7280;
+}
+
+.badge-enabled {
+    background-color: #dcfce7;
+    color: #166534;
+}
+
+.badge-disabled {
+    background-color: #fee2e2;
+    color: #991b1b;
+}
+
+.badge-scheduled {
+    background-color: #dbeafe;
+    color: #1e40af;
+}
+
+.badge-manual {
+    background-color: #f3e8ff;
+    color: #6b21a8;
+}
+
+@keyframes pulse-badge {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
+/* ========== Modal ========== */
+.modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background-color: rgba(0, 0, 0, 0.5);
+    z-index: 40;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+    pointer-events: none;
+}
+
+.modal-backdrop.active {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.modal-panel {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%) scale(0.95);
+    z-index: 50;
+    opacity: 0;
+    transition: transform 0.2s ease, opacity 0.2s ease;
+    pointer-events: none;
+    max-height: 90vh;
+    overflow-y: auto;
+}
+
+.modal-panel.active {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* ========== Toast Notifications ========== */
+.toast-container {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 60;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    pointer-events: none;
+}
+
+.toast {
+    pointer-events: auto;
+    padding: 0.75rem 1rem;
+    border-radius: 0.5rem;
+    box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -4px rgba(0,0,0,0.1);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 320px;
+    max-width: 480px;
+    animation: toast-slide-in 0.3s ease-out;
+    transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.toast.removing {
+    opacity: 0;
+    transform: translateX(100%);
+}
+
+.toast-success {
+    background-color: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    color: #166534;
+}
+
+.toast-error {
+    background-color: #fef2f2;
+    border: 1px solid #fecaca;
+    color: #991b1b;
+}
+
+.toast-info {
+    background-color: #eff6ff;
+    border: 1px solid #bfdbfe;
+    color: #1e40af;
+}
+
+.toast-warning {
+    background-color: #fffbeb;
+    border: 1px solid #fde68a;
+    color: #854d0e;
+}
+
+@keyframes toast-slide-in {
+    from {
+        opacity: 0;
+        transform: translateX(100%);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+/* ========== Log Viewer ========== */
+.log-viewer {
+    background-color: #1e1e2e;
+    color: #cdd6f4;
+    font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    padding: 1rem;
+    border-radius: 0.5rem;
+    overflow-x: auto;
+    overflow-y: auto;
+    max-height: 60vh;
+    white-space: pre-wrap;
+    word-break: break-all;
+    tab-size: 4;
+}
+
+.log-viewer::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+.log-viewer::-webkit-scrollbar-track {
+    background: #313244;
+    border-radius: 4px;
+}
+
+.log-viewer::-webkit-scrollbar-thumb {
+    background: #585b70;
+    border-radius: 4px;
+}
+
+.log-viewer::-webkit-scrollbar-thumb:hover {
+    background: #6c7086;
+}
+
+/* ========== Tab Indicator ========== */
+.tab-btn {
+    position: relative;
+    padding: 0.5rem 1rem;
+    font-weight: 500;
+    color: #6b7280;
+    transition: color 0.2s ease;
+    border: none;
+    background: none;
+    cursor: pointer;
+}
+
+.tab-btn::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background-color: transparent;
+    transition: background-color 0.2s ease;
+}
+
+.tab-btn:hover {
+    color: #374151;
+}
+
+.tab-btn.active {
+    color: #2563eb;
+}
+
+.tab-btn.active::after {
+    background-color: #2563eb;
+}
+
+/* ========== Status Dot ========== */
+.status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+}
+
+.status-dot-green {
+    background-color: #22c55e;
+    box-shadow: 0 0 6px rgba(34, 197, 94, 0.4);
+}
+
+.status-dot-yellow {
+    background-color: #eab308;
+    box-shadow: 0 0 6px rgba(234, 179, 8, 0.4);
+    animation: pulse-dot 2s ease-in-out infinite;
+}
+
+.status-dot-red {
+    background-color: #ef4444;
+    box-shadow: 0 0 6px rgba(239, 68, 68, 0.4);
+}
+
+.status-dot-gray {
+    background-color: #9ca3af;
+}
+
+@keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+/* ========== Table Styles ========== */
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.data-table th {
+    text-align: left;
+    padding: 0.75rem 1rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #6b7280;
+    border-bottom: 2px solid #e5e7eb;
+    background-color: #f9fafb;
+}
+
+.data-table td {
+    padding: 0.75rem 1rem;
+    font-size: 0.875rem;
+    border-bottom: 1px solid #f3f4f6;
+    color: #374151;
+}
+
+.data-table tbody tr:hover {
+    background-color: #f9fafb;
+}
+
+/* ========== Loading Spinner ========== */
+.spinner {
+    width: 1.25rem;
+    height: 1.25rem;
+    border: 2px solid #e5e7eb;
+    border-top-color: #2563eb;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* ========== Empty State ========== */
+.empty-state {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: #9ca3af;
+}
+
+.empty-state svg {
+    margin: 0 auto 1rem;
+    width: 3rem;
+    height: 3rem;
+    opacity: 0.4;
+}
+
+/* ========== Card hover ========== */
+.card-hover {
+    transition: box-shadow 0.2s ease, transform 0.1s ease;
+}
+
+.card-hover:hover {
+    box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -2px rgba(0,0,0,0.1);
+    transform: translateY(-1px);
+}
+
+/* ========== Responsive adjustments ========== */
+@media (max-width: 640px) {
+    .data-table th,
+    .data-table td {
+        padding: 0.5rem 0.5rem;
+        font-size: 0.75rem;
+    }
+
+    .toast {
+        min-width: auto;
+        max-width: calc(100vw - 2rem);
+    }
+
+    .modal-panel {
+        width: calc(100vw - 2rem);
+        max-height: 85vh;
+    }
+}
