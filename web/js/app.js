@@ -13,6 +13,21 @@ const MODAL_TRANSITION_MS = 200;
 const TOAST_REMOVAL_ANIMATION_MS = 300;
 const TOAST_DURATION_MS = 5000;
 
+/**
+ * Canonical list of Camunda component names with endpoint support.
+ * Each entry maps to form field names: `${name}_backup_endpoint` and `${name}_status_endpoint`.
+ */
+const CAMUNDA_COMPONENTS = ['zeebe', 'operate', 'tasklist', 'optimize'];
+
+/**
+ * All valid endpoint field names for a Camunda instance, derived from CAMUNDA_COMPONENTS.
+ * Used to safely read/write component endpoint fields without dynamic string construction.
+ */
+const COMPONENT_ENDPOINT_FIELDS = CAMUNDA_COMPONENTS.flatMap(name => [
+    `${name}_backup_endpoint`,
+    `${name}_status_endpoint`,
+]);
+
 // ============================================================
 // API Client
 // ============================================================
@@ -238,13 +253,13 @@ async function loadQuickActions() {
             return;
         }
 
-        container.innerHTML = enabled.map(inst => `
-            <button onclick="triggerBackup('${escapeForInlineHandler(inst.id)}', '${escapeForInlineHandler(inst.name)}')"
+        container.innerHTML = enabled.map(instance => `
+            <button onclick="triggerBackup('${escapeForInlineHandler(instance.id)}', '${escapeForInlineHandler(instance.name)}')"
                 class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
                 </svg>
-                Backup ${escapeHtml(inst.name)}
+                Backup ${escapeHtml(instance.name)}
             </button>
         `).join('');
     } catch (err) {
@@ -391,30 +406,30 @@ function renderInstancesTable(instances) {
                     </tr>
                 </thead>
                 <tbody>
-                    ${instances.map(inst => `
+                    ${instances.map(instance => `
                         <tr>
-                            <td class="font-medium text-gray-900">${escapeHtml(inst.name)}</td>
-                            <td class="text-gray-500 text-xs max-w-[200px] truncate">${escapeHtml(inst.base_url)}</td>
-                            <td><span class="badge ${inst.enabled ? 'badge-enabled' : 'badge-disabled'}">${inst.enabled ? 'Enabled' : 'Disabled'}</span></td>
-                            <td class="text-xs font-mono text-gray-500">${escapeHtml(inst.schedule || '—')}</td>
-                            <td class="hidden lg:table-cell text-xs text-gray-500">${inst.last_backup_at ? formatTime(inst.last_backup_at) : '—'}</td>
-                            <td class="hidden lg:table-cell">${inst.last_backup_status ? `<span class="badge badge-${inst.last_backup_status.toLowerCase()}">${inst.last_backup_status}</span>` : '—'}</td>
+                            <td class="font-medium text-gray-900">${escapeHtml(instance.name)}</td>
+                            <td class="text-gray-500 text-xs max-w-[200px] truncate">${escapeHtml(instance.base_url)}</td>
+                            <td><span class="badge ${instance.enabled ? 'badge-enabled' : 'badge-disabled'}">${instance.enabled ? 'Enabled' : 'Disabled'}</span></td>
+                            <td class="text-xs font-mono text-gray-500">${escapeHtml(instance.schedule || '—')}</td>
+                            <td class="hidden lg:table-cell text-xs text-gray-500">${instance.last_backup_at ? formatTime(instance.last_backup_at) : '—'}</td>
+                            <td class="hidden lg:table-cell">${instance.last_backup_status ? `<span class="badge badge-${instance.last_backup_status.toLowerCase()}">${instance.last_backup_status}</span>` : '—'}</td>
                             <td>
                                 <div class="flex items-center gap-1">
-                                    <button onclick="openInstanceForm(${escapeAttr(JSON.stringify(inst))})" title="Edit"
+                                    <button onclick="openInstanceForm(${escapeAttr(JSON.stringify(instance))})" title="Edit"
                                         class="p-1 text-gray-400 hover:text-blue-600 transition-colors">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
                                     </button>
-                                    <button onclick="toggleInstance('${escapeForInlineHandler(inst.id)}', ${!inst.enabled})" title="${inst.enabled ? 'Disable' : 'Enable'}"
+                                    <button onclick="toggleInstance('${escapeForInlineHandler(instance.id)}', ${!instance.enabled})" title="${instance.enabled ? 'Disable' : 'Enable'}"
                                         class="p-1 text-gray-400 hover:text-yellow-600 transition-colors">
-                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="${inst.enabled ? 'M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636' : 'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z'}"/></svg>
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="${instance.enabled ? 'M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636' : 'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z'}"/></svg>
                                     </button>
-                                    <button onclick="confirmDeleteInstance('${escapeForInlineHandler(inst.id)}', '${escapeForInlineHandler(inst.name)}')" title="Delete"
+                                    <button onclick="confirmDeleteInstance('${escapeForInlineHandler(instance.id)}', '${escapeForInlineHandler(instance.name)}')" title="Delete"
                                         class="p-1 text-gray-400 hover:text-red-600 transition-colors">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                                     </button>
-                                    ${inst.enabled ? `
-                                    <button onclick="triggerBackup('${escapeForInlineHandler(inst.id)}', '${escapeForInlineHandler(inst.name)}')" title="Trigger Backup"
+                                    ${instance.enabled ? `
+                                    <button onclick="triggerBackup('${escapeForInlineHandler(instance.id)}', '${escapeForInlineHandler(instance.name)}')" title="Trigger Backup"
                                         class="p-1 text-gray-400 hover:text-green-600 transition-colors">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
                                     </button>` : ''}
@@ -431,11 +446,11 @@ function renderInstancesTable(instances) {
 // ============================================================
 // Instance Form (Modal)
 // ============================================================
-function openInstanceForm(instance) {
-    const isEdit = !!instance;
-    const inst = instance || {};
+function openInstanceForm(existingInstance) {
+    const isEdit = !!existingInstance;
+    const instance = existingInstance || {};
 
-    const components = inst.components || [
+    const components = instance.components || [
         { name: 'zeebe', enabled: true },
         { name: 'operate', enabled: true },
         { name: 'tasklist', enabled: true },
@@ -451,7 +466,7 @@ function openInstanceForm(instance) {
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                 </button>
             </div>
-            <form id="instance-form" onsubmit="saveInstance(event, ${isEdit ? `'${escapeForInlineHandler(inst.id)}'` : 'null'})" class="px-6 py-4 space-y-4 max-h-[70vh] overflow-y-auto">
+            <form id="instance-form" onsubmit="saveInstance(event, ${isEdit ? `'${escapeForInlineHandler(instance.id)}'` : 'null'})" class="px-6 py-4 space-y-4 max-h-[70vh] overflow-y-auto">
                 
                 <!-- Basic Info (expanded) -->
                 <div class="border border-gray-200 rounded-lg">
@@ -463,26 +478,26 @@ function openInstanceForm(instance) {
                         ${!isEdit ? `
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">ID <span class="text-red-500">*</span></label>
-                            <input type="text" name="id" value="${escapeAttr(inst.id || '')}" required
+                            <input type="text" name="id" value="${escapeAttr(instance.id || '')}" required
                                 class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                                 placeholder="my-camunda-instance">
                         </div>` : ''}
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">Name <span class="text-red-500">*</span></label>
-                            <input type="text" name="name" value="${escapeAttr(inst.name || '')}" required
+                            <input type="text" name="name" value="${escapeAttr(instance.name || '')}" required
                                 class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                                 placeholder="Production Camunda">
                         </div>
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">Base URL <span class="text-red-500">*</span></label>
-                            <input type="url" name="base_url" value="${escapeAttr(inst.base_url || '')}" required
+                            <input type="url" name="base_url" value="${escapeAttr(instance.base_url || '')}" required
                                 class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                                 placeholder="https://camunda.example.com">
                         </div>
                         <div class="grid grid-cols-2 gap-3">
                             <div>
                                 <label class="block text-sm font-medium text-gray-700 mb-1">Schedule (cron)</label>
-                                <input type="text" name="schedule" value="${escapeAttr(inst.schedule || '0 2 * * *')}"
+                                <input type="text" name="schedule" value="${escapeAttr(instance.schedule || '0 2 * * *')}"
                                     class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                                     placeholder="0 2 * * *"
                                     pattern="^(\\*|[0-9]|[1-5][0-9])(\\/(\\d+))?\\s+(\\*|[0-9]|1[0-9]|2[0-3])(\\/(\\d+))?\\s+(\\*|[1-9]|[12][0-9]|3[01])(\\/(\\d+))?\\s+(\\*|[1-9]|1[0-2])(\\/(\\d+))?\\s+(\\*|[0-6])$"
@@ -491,29 +506,29 @@ function openInstanceForm(instance) {
                             </div>
                             <div>
                                 <label class="block text-sm font-medium text-gray-700 mb-1">Retention Count</label>
-                                <input type="number" name="retention_count" value="${inst.retention_count || 7}" min="1"
+                                <input type="number" name="retention_count" value="${instance.retention_count || 7}" min="1"
                                     class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
                             </div>
                         </div>
                         <div class="grid grid-cols-2 gap-3">
                             <div>
                                 <label class="block text-sm font-medium text-gray-700 mb-1">Success History</label>
-                                <input type="number" name="success_history_count" value="${inst.success_history_count || 30}" min="1"
+                                <input type="number" name="success_history_count" value="${instance.success_history_count || 30}" min="1"
                                     class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
                             </div>
                             <div>
                                 <label class="block text-sm font-medium text-gray-700 mb-1">Failure History</label>
-                                <input type="number" name="failure_history_count" value="${inst.failure_history_count || 30}" min="1"
+                                <input type="number" name="failure_history_count" value="${instance.failure_history_count || 30}" min="1"
                                     class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
                             </div>
                         </div>
                         <div class="flex items-center gap-4">
                             <label class="flex items-center gap-2 text-sm">
-                                <input type="checkbox" name="enabled" ${inst.enabled !== false ? 'checked' : ''} class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                                <input type="checkbox" name="enabled" ${instance.enabled !== false ? 'checked' : ''} class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
                                 Enabled
                             </label>
                             <label class="flex items-center gap-2 text-sm">
-                                <input type="checkbox" name="parallel_execution" ${inst.parallel_execution ? 'checked' : ''} class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                                <input type="checkbox" name="parallel_execution" ${instance.parallel_execution ? 'checked' : ''} class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
                                 Parallel Execution
                             </label>
                         </div>
@@ -527,7 +542,7 @@ function openInstanceForm(instance) {
                         <svg class="accordion-icon w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
                     </button>
                     <div class="accordion-content px-4 pb-4 space-y-4">
-                        ${['zeebe', 'operate', 'tasklist', 'optimize'].map(comp => {
+                        ${CAMUNDA_COMPONENTS.map(comp => {
                             const compConf = components.find(c => c.name === comp) || { enabled: comp !== 'optimize' };
                             return `
                             <div class="border-t border-gray-100 pt-3">
@@ -539,10 +554,10 @@ function openInstanceForm(instance) {
                                     </label>
                                 </div>
                                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                    <input type="text" name="${comp}_backup_endpoint" value="${escapeAttr(inst[comp + '_backup_endpoint'] || '')}"
+                                    <input type="text" name="${comp}_backup_endpoint" value="${escapeAttr(getInstanceEndpointValue(instance, comp, 'backup'))}"
                                         class="w-full px-2 py-1.5 border border-gray-300 rounded text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
                                         placeholder="Backup endpoint">
-                                    <input type="text" name="${comp}_status_endpoint" value="${escapeAttr(inst[comp + '_status_endpoint'] || '')}"
+                                    <input type="text" name="${comp}_status_endpoint" value="${escapeAttr(getInstanceEndpointValue(instance, comp, 'status'))}"
                                         class="w-full px-2 py-1.5 border border-gray-300 rounded text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
                                         placeholder="Status endpoint">
                                 </div>
@@ -560,13 +575,13 @@ function openInstanceForm(instance) {
                     <div class="accordion-content px-4 pb-4 space-y-3">
                         <div>
                             <label class="block text-xs font-medium text-gray-700 mb-1">Endpoint URL</label>
-                            <input type="text" name="elasticsearch_endpoint" value="${escapeAttr(inst.elasticsearch_endpoint || '')}"
+                            <input type="text" name="elasticsearch_endpoint" value="${escapeAttr(instance.elasticsearch_endpoint || '')}"
                                 class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                                 placeholder="https://elasticsearch.example.com:9200">
                         </div>
                         <div>
                             <label class="block text-xs font-medium text-gray-700 mb-1">Username</label>
-                            <input type="text" name="elasticsearch_username" value="${escapeAttr(inst.elasticsearch_username || '')}"
+                            <input type="text" name="elasticsearch_username" value="${escapeAttr(instance.elasticsearch_username || '')}"
                                 class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                                 placeholder="elastic">
                         </div>
@@ -591,13 +606,13 @@ function openInstanceForm(instance) {
                     <div class="accordion-content px-4 pb-4 space-y-3">
                         <div>
                             <label class="block text-xs font-medium text-gray-700 mb-1">S3 Endpoint</label>
-                            <input type="text" name="s3_endpoint" value="${escapeAttr(inst.s3_endpoint || '')}"
+                            <input type="text" name="s3_endpoint" value="${escapeAttr(instance.s3_endpoint || '')}"
                                 class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                                 placeholder="https://s3.amazonaws.com">
                         </div>
                         <div>
                             <label class="block text-xs font-medium text-gray-700 mb-1">Access Key</label>
-                            <input type="text" name="s3_accesskey" value="${escapeAttr(inst.s3_accesskey || '')}"
+                            <input type="text" name="s3_accesskey" value="${escapeAttr(instance.s3_accesskey || '')}"
                                 class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                                 placeholder="AKIAIOSFODNN7EXAMPLE">
                         </div>
@@ -623,7 +638,7 @@ async function saveInstance(event, editId) {
     const form = event.target;
     const fd = new FormData(form);
 
-    const components = ['zeebe', 'operate', 'tasklist', 'optimize', 'elasticsearch'].map(name => ({
+    const components = [...CAMUNDA_COMPONENTS, 'elasticsearch'].map(name => ({
         name,
         enabled: fd.get(`component_${name}_enabled`) === 'on',
     }));
@@ -645,14 +660,10 @@ async function saveInstance(event, editId) {
         failure_history_count: parseInt(fd.get('failure_history_count')) || 30,
         parallel_execution: fd.get('parallel_execution') === 'on',
         components,
-        zeebe_backup_endpoint: fd.get('zeebe_backup_endpoint') || '',
-        zeebe_status_endpoint: fd.get('zeebe_status_endpoint') || '',
-        operate_backup_endpoint: fd.get('operate_backup_endpoint') || '',
-        operate_status_endpoint: fd.get('operate_status_endpoint') || '',
-        tasklist_backup_endpoint: fd.get('tasklist_backup_endpoint') || '',
-        tasklist_status_endpoint: fd.get('tasklist_status_endpoint') || '',
-        optimize_backup_endpoint: fd.get('optimize_backup_endpoint') || '',
-        optimize_status_endpoint: fd.get('optimize_status_endpoint') || '',
+        // Dynamically populate all component endpoint fields from the constant
+        ...Object.fromEntries(
+            COMPONENT_ENDPOINT_FIELDS.map(field => [field, fd.get(field) || ''])
+        ),
         elasticsearch_endpoint: fd.get('elasticsearch_endpoint') || '',
         elasticsearch_username: fd.get('elasticsearch_username') || '',
         s3_endpoint: fd.get('s3_endpoint') || '',
@@ -1186,6 +1197,24 @@ function toggleAccordion(btn) {
  *   escapeForInlineHandler(str)  — values inside inline event handlers
  *                                  (e.g. onclick="fn('...')")
  */
+
+/**
+ * Safely retrieves a component endpoint value from an instance object.
+ * Returns empty string if the field doesn't exist or the component name is invalid.
+ *
+ * @param {Object} instance - The instance data object
+ * @param {string} componentName - Component name (e.g. 'zeebe', 'operate')
+ * @param {string} endpointType - Either 'backup' or 'status'
+ * @returns {string}
+ */
+function getInstanceEndpointValue(instance, componentName, endpointType) {
+    const fieldName = `${componentName}_${endpointType}_endpoint`;
+    if (!COMPONENT_ENDPOINT_FIELDS.includes(fieldName)) {
+        console.warn(`Unknown endpoint field: ${fieldName}`);
+        return '';
+    }
+    return instance[fieldName] || '';
+}
 
 function escapeHtml(str) {
     if (str == null) return '';
