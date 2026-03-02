@@ -246,20 +246,19 @@ async function loadQuickActions() {
 
     try {
         const instances = await getInstances();
-        const enabled = instances.filter(i => i.enabled);
 
-        if (enabled.length === 0) {
-            container.innerHTML = '<p class="text-sm text-gray-500">No enabled instances. <a href="#" onclick="showTab(\'instances\')" class="text-blue-600 hover:underline">Add one</a>.</p>';
+        if (!instances || instances.length === 0) {
+            container.innerHTML = '<p class="text-sm text-gray-500">No instances configured. <a href="#" onclick="showTab(\'instances\')" class="text-blue-600 hover:underline">Add one</a>.</p>';
             return;
         }
 
-        container.innerHTML = enabled.map(instance => `
+        container.innerHTML = instances.map(instance => `
             <button onclick="triggerBackup('${escapeForInlineHandler(instance.id)}', '${escapeForInlineHandler(instance.name)}')"
-                class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
+                class="inline-flex items-center gap-1.5 px-3 py-1.5 ${instance.enabled ? 'bg-blue-600 hover:bg-blue-700' : 'bg-gray-500 hover:bg-gray-600'} text-white text-sm font-medium rounded-md transition-colors">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
                 </svg>
-                Backup ${escapeHtml(instance.name)}
+                Backup ${escapeHtml(instance.name)}${!instance.enabled ? ' <span class="opacity-75 text-xs">(unscheduled)</span>' : ''}
             </button>
         `).join('');
     } catch (err) {
@@ -398,8 +397,8 @@ function renderInstancesTable(instances) {
                     <tr>
                         <th>Name</th>
                         <th>URL</th>
-                        <th>Status</th>
                         <th>Schedule</th>
+                        <th>Cron</th>
                         <th class="hidden lg:table-cell">Last Backup</th>
                         <th class="hidden lg:table-cell">Last Status</th>
                         <th>Actions</th>
@@ -410,7 +409,7 @@ function renderInstancesTable(instances) {
                         <tr>
                             <td class="font-medium text-gray-900">${escapeHtml(instance.name)}</td>
                             <td class="text-gray-500 text-xs max-w-[200px] truncate">${escapeHtml(instance.base_url)}</td>
-                            <td><span class="badge ${instance.enabled ? 'badge-enabled' : 'badge-disabled'}">${instance.enabled ? 'Enabled' : 'Disabled'}</span></td>
+                            <td><span class="badge ${instance.enabled ? 'badge-scheduled' : 'badge-disabled'}">${instance.enabled ? 'Scheduled' : 'Unscheduled'}</span></td>
                             <td class="text-xs font-mono text-gray-500">${escapeHtml(instance.schedule || '—')}</td>
                             <td class="hidden lg:table-cell text-xs text-gray-500">${instance.last_backup_at ? formatTime(instance.last_backup_at) : '—'}</td>
                             <td class="hidden lg:table-cell">${instance.last_backup_status ? `<span class="badge badge-${instance.last_backup_status.toLowerCase()}">${instance.last_backup_status}</span>` : '—'}</td>
@@ -428,11 +427,10 @@ function renderInstancesTable(instances) {
                                         class="p-1 text-gray-400 hover:text-red-600 transition-colors">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                                     </button>
-                                    ${instance.enabled ? `
                                     <button onclick="triggerBackup('${escapeForInlineHandler(instance.id)}', '${escapeForInlineHandler(instance.name)}')" title="Trigger Backup"
                                         class="p-1 text-gray-400 hover:text-green-600 transition-colors">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
-                                    </button>` : ''}
+                                    </button>
                                 </div>
                             </td>
                         </tr>
@@ -525,7 +523,7 @@ function openInstanceForm(existingInstance) {
                         <div class="flex items-center gap-4">
                             <label class="flex items-center gap-2 text-sm">
                                 <input type="checkbox" name="enabled" ${instance.enabled !== false ? 'checked' : ''} class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-                                Enabled
+                                Schedule Enabled
                             </label>
                             <label class="flex items-center gap-2 text-sm">
                                 <input type="checkbox" name="parallel_execution" ${instance.parallel_execution ? 'checked' : ''} class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
