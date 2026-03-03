@@ -15,7 +15,8 @@ const TOAST_DURATION_MS = 5000;
 
 /**
  * Canonical list of Camunda component names with endpoint support.
- * Each entry maps to form field names: `${name}_backup_endpoint` and `${name}_status_endpoint`.
+ * Each entry maps to a form field name: `${name}_backup_endpoint`.
+ * The status endpoint is derived automatically as backup endpoint + /{backupId}.
  */
 const CAMUNDA_COMPONENTS = ['zeebe', 'operate', 'tasklist', 'optimize'];
 
@@ -23,10 +24,7 @@ const CAMUNDA_COMPONENTS = ['zeebe', 'operate', 'tasklist', 'optimize'];
  * All valid endpoint field names for a Camunda instance, derived from CAMUNDA_COMPONENTS.
  * Used to safely read/write component endpoint fields without dynamic string construction.
  */
-const COMPONENT_ENDPOINT_FIELDS = CAMUNDA_COMPONENTS.flatMap(name => [
-    `${name}_backup_endpoint`,
-    `${name}_status_endpoint`,
-]);
+const COMPONENT_ENDPOINT_FIELDS = CAMUNDA_COMPONENTS.map(name => `${name}_backup_endpoint`);
 
 // ============================================================
 // API Client
@@ -551,13 +549,11 @@ function openInstanceForm(existingInstance) {
                                         Enabled
                                     </label>
                                 </div>
-                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                <div>
                                     <input type="text" name="${comp}_backup_endpoint" value="${escapeAttr(getInstanceEndpointValue(instance, comp, 'backup'))}"
                                         class="w-full px-2 py-1.5 border border-gray-300 rounded text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
                                         placeholder="Backup endpoint">
-                                    <input type="text" name="${comp}_status_endpoint" value="${escapeAttr(getInstanceEndpointValue(instance, comp, 'status'))}"
-                                        class="w-full px-2 py-1.5 border border-gray-300 rounded text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                        placeholder="Status endpoint">
+                                    <p class="mt-1 text-xs text-gray-400">Status endpoint is derived automatically (backup endpoint + /{backupId})</p>
                                 </div>
                             </div>`;
                         }).join('')}

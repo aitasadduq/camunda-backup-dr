@@ -2,9 +2,10 @@ package models
 
 import (
 	"encoding/json"
+	"time"
+
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
 	"github.com/aitasadduq/camunda-backup-dr/pkg/types"
-	"time"
 )
 
 // CamundaComponentConfig represents a component configuration
@@ -26,13 +27,9 @@ type CamundaInstance struct {
 
 	// Backup Configuration
 	ZeebeBackupEndpoint    string `json:"zeebe_backup_endpoint"`
-	ZeebeStatusEndpoint    string `json:"zeebe_status_endpoint"`
 	OperateBackupEndpoint  string `json:"operate_backup_endpoint"`
-	OperateStatusEndpoint  string `json:"operate_status_endpoint"`
 	TasklistBackupEndpoint string `json:"tasklist_backup_endpoint"`
-	TasklistStatusEndpoint string `json:"tasklist_status_endpoint"`
 	OptimizeBackupEndpoint string `json:"optimize_backup_endpoint"`
-	OptimizeStatusEndpoint string `json:"optimize_status_endpoint"`
 
 	// Component Settings
 	Components        []CamundaComponentConfig `json:"components"`
