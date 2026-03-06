@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/aitasadduq/camunda-backup-dr/internal/config"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
 	"github.com/aitasadduq/camunda-backup-dr/pkg/types"
 )
@@ -79,8 +80,8 @@ func NewCamundaInstance(id, name, baseURL string) *CamundaInstance {
 		},
 		ParallelExecution: false,
 		LastBackupStatus:  "NEVER_BACKED_UP",
-		ElasticsearchPasswordEnvVar: "ELASTICSEARCH_PASSWORD_" + id,
-		BackupIDS3SecretKeyEnvVar:   "S3_SECRETKEY_" + id,
+		ElasticsearchPasswordEnvVar: "ELASTICSEARCH_PASSWORD_" + config.NormalizeForEnvVar(id),
+		BackupIDS3SecretKeyEnvVar:   "S3_SECRETKEY_" + config.NormalizeForEnvVar(id),
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}

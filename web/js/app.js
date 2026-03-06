@@ -453,6 +453,14 @@ function copyToClipboard(text, label) {
 }
 
 /**
+ * Normalizes a Camunda instance ID for use in environment variable names.
+ * Converts to uppercase and replaces hyphens with underscores.
+ */
+function normalizeForEnvVar(id) {
+    return id.toUpperCase().replace(/-/g, '_');
+}
+
+/**
  * Updates the environment variable hints dynamically when creating a new instance
  */
 function updateEnvVarHints(id) {
@@ -460,11 +468,13 @@ function updateEnvVarHints(id) {
         document.querySelectorAll('.env-var-hint').forEach(el => el.classList.add('hidden'));
         return;
     }
+
+    const normalized = normalizeForEnvVar(id);
     
     // Update ES hint
     const esHint = document.getElementById('es-env-hint');
     if (esHint) {
-        const varName = `ELASTICSEARCH_PASSWORD_${id}`;
+        const varName = `ELASTICSEARCH_PASSWORD_${normalized}`;
         esHint.querySelector('code').textContent = varName;
         esHint.querySelector('code').title = varName;
         esHint.querySelector('button').setAttribute('onclick', `copyToClipboard('${varName}', 'Variable name')`);
@@ -474,7 +484,7 @@ function updateEnvVarHints(id) {
     // Update S3 hint
     const s3Hint = document.getElementById('s3-env-hint');
     if (s3Hint) {
-        const varName = `S3_SECRETKEY_${id}`;
+        const varName = `S3_SECRETKEY_${normalized}`;
         s3Hint.querySelector('code').textContent = varName;
         s3Hint.querySelector('code').title = varName;
         s3Hint.querySelector('button').setAttribute('onclick', `copyToClipboard('${varName}', 'Variable name')`);

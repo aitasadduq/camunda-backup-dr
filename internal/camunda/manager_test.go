@@ -379,3 +379,204 @@ func TestManager_UpdateComponentConfig_DisableLastComponent(t *testing.T) {
 		t.Errorf("Expected ErrNoComponentsEnabled, got %v", err)
 	}
 }
+
+// --- Env Var Field Population Tests ---
+
+func TestManager_GetInstance_PopulatesEnvVarFields(t *testing.T) {
+	manager, _, cleanup := setupTestManager(t)
+	defer cleanup()
+
+	instance := models.NewCamundaInstance("my-cluster", "Test", "https://test.example.com")
+	if err := manager.CreateInstance(instance); err != nil {
+		t.Fatalf("Failed to create instance: %v", err)
+	}
+
+	retrieved, err := manager.GetInstance("my-cluster")
+	if err != nil {
+		t.Fatalf("Failed to get instance: %v", err)
+	}
+
+	expectedES := "ELASTICSEARCH_PASSWORD_" + config.NormalizeForEnvVar("my-cluster")
+	expectedS3 := "S3_SECRETKEY_" + config.NormalizeForEnvVar("my-cluster")
+
+	if retrieved.ElasticsearchPasswordEnvVar != expectedES {
+		t.Errorf("ElasticsearchPasswordEnvVar = %q, want %q", retrieved.ElasticsearchPasswordEnvVar, expectedES)
+	}
+	if retrieved.BackupIDS3SecretKeyEnvVar != expectedS3 {
+		t.Errorf("BackupIDS3SecretKeyEnvVar = %q, want %q", retrieved.BackupIDS3SecretKeyEnvVar, expectedS3)
+	}
+}
+
+func TestManager_GetInstance_EnvVarNormalization(t *testing.T) {
+	tests := []struct {
+		name         string
+		instanceID   string
+		expectedESEV string
+		expectedS3EV string
+	}{
+		{
+			name:         "simple id",
+			instanceID:   "camunda1",
+			expectedESEV: "ELASTICSEARCH_PASSWORD_CAMUNDA1",
+			expectedS3EV: "S3_SECRETKEY_CAMUNDA1",
+		},
+		{
+			name:         "hyphenated id",
+			instanceID:   "my-cluster",
+			expectedESEV: "ELASTICSEARCH_PASSWORD_MY_CLUSTER",
+			expectedS3EV: "S3_SECRETKEY_MY_CLUSTER",
+		},
+		{
+			name:         "multi-hyphen id",
+			instanceID:   "test-camunda-instance",
+			expectedESEV: "ELASTICSEARCH_PASSWORD_TEST_CAMUNDA_INSTANCE",
+			expectedS3EV: "S3_SECRETKEY_TEST_CAMUNDA_INSTANCE",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manager, _, cleanup := setupTestManager(t)
+			defer cleanup()
+
+			instance := models.NewCamundaInstance(tt.instanceID, "Test", "https://test.example.com")
+			if err := manager.CreateInstance(instance); err != nil {
+				t.Fatalf("Failed to create instance: %v", err)
+			}
+
+			retrieved, err := manager.GetInstance(tt.instanceID)
+			if err != nil {
+				t.Fatalf("Failed to get instance: %v", err)
+			}
+
+			if retrieved.ElasticsearchPasswordEnvVar != tt.expectedESEV {
+				t.Errorf("ElasticsearchPasswordEnvVar = %q, want %q", retrieved.ElasticsearchPasswordEnvVar, tt.expectedESEV)
+			}
+			if retrieved.BackupIDS3SecretKeyEnvVar != tt.expectedS3EV {
+				t.Errorf("BackupIDS3SecretKeyEnvVar = %q, want %q", retrieved.BackupIDS3SecretKeyEnvVar, tt.expectedS3EV)
+			}
+		})
+	}
+}
+
+func TestManager_ListInstances_PopulatesEnvVarFields(t *testing.T) {
+	manager, _, cleanup := setupTestManager(t)
+	defer cleanup()
+
+	instance1 := models.NewCamundaInstance("cluster-a", "A", "https://a.example.com")
+	instance2 := models.NewCamundaInstance("cluster-b", "B", "https://b.example.com")
+	manager.CreateInstance(instance1)
+	manager.CreateInstance(instance2)
+
+	instances, err := manager.ListInstances()
+	if err != nil {
+		t.Fatalf("Failed to list instances: %v", err)
+	}
+
+	if len(instances) != 2 {
+		t.Fatalf("Expected 2 instances, got %d", len(instances))
+	}
+
+	for _, inst := range instances {
+		normalized := config.NormalizeForEnvVar(inst.ID)
+		expectedES := "ELASTICSEARCH_PASSWORD_" + normalized
+		expectedS3 := "S3_SECRETKEY_" + normalized
+
+		if inst.ElasticsearchPasswordEnvVar != expectedES {
+			t.Errorf("Instance %s: ElasticsearchPasswordEnvVar = %q, want %q", inst.ID, inst.ElasticsearchPasswordEnvVar, expectedES)
+		}
+		if inst.BackupIDS3SecretKeyEnvVar != expectedS3 {
+			t.Errorf("Instance %s: BackupIDS3SecretKeyEnvVar = %q, want %q", inst.ID, inst.BackupIDS3SecretKeyEnvVar, expectedS3)
+		}
+	}
+}
+
+func TestManager_UpdateInstance_PopulatesEnvVarFields(t *testing.T) {
+	manager, _, cleanup := setupTestManager(t)
+	defer cleanup()
+
+	instance := models.NewCamundaInstance("my-cluster", "Test", "https://test.example.com")
+	if err := manager.CreateInstance(instance); err != nil {
+		t.Fatalf("Failed to create instance: %v", err)
+	}
+
+	updated := models.NewCamundaInstance("my-cluster", "Updated", "https://updated.example.com")
+	if err := manager.UpdateInstance("my-cluster", updated); err != nil {
+		t.Fatalf("Failed to update instance: %v", err)
+	}
+
+	retrieved, err := manager.GetInstance("my-cluster")
+	if err != nil {
+		t.Fatalf("Failed to get instance: %v", err)
+	}
+
+	expectedES := "ELASTICSEARCH_PASSWORD_MY_CLUSTER"
+	expectedS3 := "S3_SECRETKEY_MY_CLUSTER"
+
+	if retrieved.ElasticsearchPasswordEnvVar != expectedES {
+		t.Errorf("ElasticsearchPasswordEnvVar = %q, want %q", retrieved.ElasticsearchPasswordEnvVar, expectedES)
+	}
+	if retrieved.BackupIDS3SecretKeyEnvVar != expectedS3 {
+		t.Errorf("BackupIDS3SecretKeyEnvVar = %q, want %q", retrieved.BackupIDS3SecretKeyEnvVar, expectedS3)
+	}
+}
+
+func TestManager_GetEnabledInstances_PopulatesEnvVarFields(t *testing.T) {
+	manager, _, cleanup := setupTestManager(t)
+	defer cleanup()
+
+	instance1 := models.NewCamundaInstance("prod-cluster", "Prod", "https://prod.example.com")
+	instance1.Enabled = true
+	instance2 := models.NewCamundaInstance("staging-cluster", "Staging", "https://staging.example.com")
+	instance2.Enabled = false
+
+	manager.CreateInstance(instance1)
+	manager.CreateInstance(instance2)
+
+	enabled, err := manager.GetEnabledInstances()
+	if err != nil {
+		t.Fatalf("Failed to get enabled instances: %v", err)
+	}
+
+	if len(enabled) != 1 {
+		t.Fatalf("Expected 1 enabled instance, got %d", len(enabled))
+	}
+
+	expectedES := "ELASTICSEARCH_PASSWORD_PROD_CLUSTER"
+	expectedS3 := "S3_SECRETKEY_PROD_CLUSTER"
+
+	if enabled[0].ElasticsearchPasswordEnvVar != expectedES {
+		t.Errorf("ElasticsearchPasswordEnvVar = %q, want %q", enabled[0].ElasticsearchPasswordEnvVar, expectedES)
+	}
+	if enabled[0].BackupIDS3SecretKeyEnvVar != expectedS3 {
+		t.Errorf("BackupIDS3SecretKeyEnvVar = %q, want %q", enabled[0].BackupIDS3SecretKeyEnvVar, expectedS3)
+	}
+}
+
+func TestManager_GetEnabledInstances_AllEnvVarsNormalized(t *testing.T) {
+	manager, _, cleanup := setupTestManager(t)
+	defer cleanup()
+
+	ids := []string{"a-b", "c-d-e", "simple"}
+	for _, id := range ids {
+		inst := models.NewCamundaInstance(id, "Test "+id, "https://"+id+".example.com")
+		inst.Enabled = true
+		manager.CreateInstance(inst)
+	}
+
+	enabled, err := manager.GetEnabledInstances()
+	if err != nil {
+		t.Fatalf("Failed to get enabled instances: %v", err)
+	}
+
+	for _, inst := range enabled {
+		normalized := config.NormalizeForEnvVar(inst.ID)
+
+		if inst.ElasticsearchPasswordEnvVar != "ELASTICSEARCH_PASSWORD_"+normalized {
+			t.Errorf("Instance %s: ES env var = %q, expected suffix %q", inst.ID, inst.ElasticsearchPasswordEnvVar, normalized)
+		}
+		if inst.BackupIDS3SecretKeyEnvVar != "S3_SECRETKEY_"+normalized {
+			t.Errorf("Instance %s: S3 env var = %q, expected suffix %q", inst.ID, inst.BackupIDS3SecretKeyEnvVar, normalized)
+		}
+	}
+}

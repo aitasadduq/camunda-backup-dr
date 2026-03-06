@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
 )
@@ -129,15 +130,22 @@ func getEnvAsInt(key string, defaultValue int) int {
 	return defaultValue
 }
 
+// NormalizeForEnvVar converts a Camunda instance ID into a valid environment
+// variable suffix: uppercase and hyphens replaced with underscores.
+// Example: "my-cluster" -> "MY_CLUSTER"
+func NormalizeForEnvVar(camundaInstanceID string) string {
+	return strings.ToUpper(strings.ReplaceAll(camundaInstanceID, "-", "_"))
+}
+
 // GetElasticsearchPassword retrieves Elasticsearch password for a specific Camunda instance
 func (c *Config) GetElasticsearchPassword(camundaInstanceID string) string {
-	return os.Getenv("ELASTICSEARCH_PASSWORD_" + camundaInstanceID)
+	return os.Getenv("ELASTICSEARCH_PASSWORD_" + NormalizeForEnvVar(camundaInstanceID))
 }
 
 // GetElasticsearchSnapshotRepository retrieves the snapshot repository name for a Camunda instance.
 // First checks for instance-specific env var, then falls back to default.
 func (c *Config) GetElasticsearchSnapshotRepository(camundaInstanceID string) string {
-	if repo := os.Getenv("ELASTICSEARCH_SNAPSHOT_REPOSITORY_" + camundaInstanceID); repo != "" {
+	if repo := os.Getenv("ELASTICSEARCH_SNAPSHOT_REPOSITORY_" + NormalizeForEnvVar(camundaInstanceID)); repo != "" {
 		return repo
 	}
 	return c.DefaultElasticsearchSnapshotRepository
@@ -146,7 +154,7 @@ func (c *Config) GetElasticsearchSnapshotRepository(camundaInstanceID string) st
 // GetElasticsearchSnapshotNamePrefix retrieves the snapshot name prefix for a Camunda instance.
 // First checks for instance-specific env var, then falls back to default.
 func (c *Config) GetElasticsearchSnapshotNamePrefix(camundaInstanceID string) string {
-	if prefix := os.Getenv("ELASTICSEARCH_SNAPSHOT_NAME_PREFIX_" + camundaInstanceID); prefix != "" {
+	if prefix := os.Getenv("ELASTICSEARCH_SNAPSHOT_NAME_PREFIX_" + NormalizeForEnvVar(camundaInstanceID)); prefix != "" {
 		return prefix
 	}
 	return c.DefaultElasticsearchSnapshotNamePrefix
@@ -154,5 +162,5 @@ func (c *Config) GetElasticsearchSnapshotNamePrefix(camundaInstanceID string) st
 
 // GetS3SecretKey retrieves S3 secret key for a specific Camunda instance
 func (c *Config) GetS3SecretKey(camundaInstanceID string) string {
-	return os.Getenv("S3_SECRETKEY_" + camundaInstanceID)
+	return os.Getenv("S3_SECRETKEY_" + NormalizeForEnvVar(camundaInstanceID))
 }
