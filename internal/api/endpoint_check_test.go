@@ -14,6 +14,10 @@ import (
 func setupCheckEndpointHandlers(t *testing.T) *Handlers {
 	t.Helper()
 	logger := utils.NewLogger("debug")
+	// Disable SSRF protection in tests since httptest servers bind to 127.0.0.1
+	origBlockedHost := isBlockedHost
+	isBlockedHost = func(string) bool { return false }
+	t.Cleanup(func() { isBlockedHost = origBlockedHost })
 	return NewHandlers(nil, nil, nil, nil, nil, nil, logger)
 }
 
@@ -45,15 +49,76 @@ func TestCheckEndpointHandler_InvalidJSON(t *testing.T) {
 func TestCheckEndpointHandler_EmptyURL(t *testing.T) {
 	h := setupCheckEndpointHandlers(t)
 
-	_, resp := doCheckEndpoint(t, h, EndpointCheckRequest{URL: "", Type: "camunda"})
-	// Empty URL returns 400 validation error, not a check response
-	_ = resp
+	jsonBody, _ := json.Marshal(EndpointCheckRequest{URL: "", Type: "camunda"})
+	req := httptest.NewRequest(http.MethodPost, "/api/check-endpoint", bytes.NewReader(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	h.CheckEndpointHandler(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("Expected status 400, got %d", rr.Code)
+	}
+
+	var errResp ErrorResponse
+	if err := json.NewDecoder(rr.Body).Decode(&errResp); err != nil {
+		t.Fatalf("Failed to decode error response: %v", err)
+	}
+	if errResp.Error != "validation_error" {
+		t.Errorf("Expected error type %q, got %q", "validation_error", errResp.Error)
+	}
+	if errResp.Message == "" {
+		t.Error("Expected non-empty error message")
+	}
 }
 
 func TestCheckEndpointHandler_InvalidURL(t *testing.T) {
 	h := setupCheckEndpointHandlers(t)
 
 	_, resp := doCheckEndpoint(t, h, EndpointCheckRequest{URL: "://bad-url", Type: "camunda"})
+
+	if resp.Status != EndpointStatusUnreachable {
+		t.Errorf("Expected status %q, got %q", EndpointStatusUnreachable, resp.Status)
+	}
+}
+
+func TestCheckEndpointHandler_SSRFBlocksPrivateIPs(t *testing.T) {
+	logger := utils.NewLogger("debug")
+	h := NewHandlers(nil, nil, nil, nil, nil, nil, logger)
+	// Re-enable SSRF protection for this test
+	origBlockedHost := isBlockedHost
+	t.Cleanup(func() { isBlockedHost = origBlockedHost })
+
+	tests := []struct {
+		name string
+		url  string
+	}{
+		{"loopback", "http://127.0.0.1:8080"},
+		{"private-10", "http://10.0.0.1:8080"},
+		{"private-172", "http://172.16.0.1:8080"},
+		{"private-192", "http://192.168.1.1:8080"},
+		{"link-local", "http://169.254.1.1:8080"},
+		{"ipv6-loopback", "http://[::1]:8080"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			jsonBody, _ := json.Marshal(EndpointCheckRequest{URL: tc.url, Type: "camunda"})
+			req := httptest.NewRequest(http.MethodPost, "/api/check-endpoint", bytes.NewReader(jsonBody))
+			req.Header.Set("Content-Type", "application/json")
+			rr := httptest.NewRecorder()
+			h.CheckEndpointHandler(rr, req)
+
+			if rr.Code != http.StatusBadRequest {
+				t.Errorf("Expected status 400 for %s, got %d", tc.url, rr.Code)
+			}
+		})
+	}
+}
+
+func TestCheckEndpointHandler_BlocksNonHTTPSchemes(t *testing.T) {
+	h := setupCheckEndpointHandlers(t)
+
+	_, resp := doCheckEndpoint(t, h, EndpointCheckRequest{URL: "ftp://example.com/file", Type: "camunda"})
 
 	if resp.Status != EndpointStatusUnreachable {
 		t.Errorf("Expected status %q, got %q", EndpointStatusUnreachable, resp.Status)
@@ -110,7 +175,12 @@ func TestCheckEndpointHandler_CamundaForbidden(t *testing.T) {
 
 func TestCheckEndpointHandler_CamundaUnreachable(t *testing.T) {
 	h := setupCheckEndpointHandlers(t)
-	_, resp := doCheckEndpoint(t, h, EndpointCheckRequest{URL: "http://192.0.2.1:9999", Type: "camunda"})
+	// Start and immediately close a server to get a guaranteed-unreachable URL
+	ts := httptest.NewServer(http.NotFoundHandler())
+	closedURL := ts.URL
+	ts.Close()
+
+	_, resp := doCheckEndpoint(t, h, EndpointCheckRequest{URL: closedURL, Type: "camunda"})
 
 	if resp.Status != EndpointStatusUnreachable {
 		t.Errorf("Expected status %q, got %q", EndpointStatusUnreachable, resp.Status)
@@ -408,7 +478,12 @@ func TestCheckEndpointHandler_S3Forbidden(t *testing.T) {
 
 func TestCheckEndpointHandler_S3Unreachable(t *testing.T) {
 	h := setupCheckEndpointHandlers(t)
-	_, resp := doCheckEndpoint(t, h, EndpointCheckRequest{URL: "http://192.0.2.1:9999", Type: "s3"})
+	// Start and immediately close a server to get a guaranteed-unreachable URL
+	ts := httptest.NewServer(http.NotFoundHandler())
+	closedURL := ts.URL
+	ts.Close()
+
+	_, resp := doCheckEndpoint(t, h, EndpointCheckRequest{URL: closedURL, Type: "s3"})
 
 	if resp.Status != EndpointStatusUnreachable {
 		t.Errorf("Expected status %q, got %q", EndpointStatusUnreachable, resp.Status)
@@ -616,6 +691,11 @@ func TestBasicAuth(t *testing.T) {
 }
 
 func TestCheckEndpointHandler_RouteRegistered(t *testing.T) {
+	// Disable SSRF protection since httptest servers bind to 127.0.0.1
+	origBlockedHost := isBlockedHost
+	isBlockedHost = func(string) bool { return false }
+	t.Cleanup(func() { isBlockedHost = origBlockedHost })
+
 	logger := utils.NewLogger("debug")
 	handlers := NewHandlers(&mockCamundaManager{}, nil, nil, nil, nil, nil, logger)
 	router := NewRouter(handlers, nil)

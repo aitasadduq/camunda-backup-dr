@@ -133,8 +133,10 @@ func (m *Manager) UpdateInstance(id string, updates *models.CamundaInstance) err
 			updates.UpdatedAt = time.Now()
 			updates.LastBackupAt = config.CamundaInstances[i].LastBackupAt
 			updates.LastBackupStatus = config.CamundaInstances[i].LastBackupStatus
-			updates.ElasticsearchPasswordEnvVar = "ELASTICSEARCH_PASSWORD_" + cfg.NormalizeForEnvVar(id)
-			updates.BackupIDS3SecretKeyEnvVar = "S3_SECRETKEY_" + cfg.NormalizeForEnvVar(id)
+
+			// Clear computed env var hints so they are not persisted
+			updates.ElasticsearchPasswordEnvVar = ""
+			updates.BackupIDS3SecretKeyEnvVar = ""
 
 			// Validate updated instance
 			if err := updates.Validate(); err != nil {

@@ -47,17 +47,33 @@ const (
 )
 
 // probeHTTPClient is a short-timeout HTTP client used for endpoint probing.
-var probeHTTPClient = &http.Client{
-	Timeout: 5 * time.Second,
-	Transport: &http.Transport{
-		TLSClientConfig:       &tls.Config{InsecureSkipVerify: true},
+var probeHTTPClient = newProbeHTTPClient()
+
+func newProbeHTTPClient() *http.Client {
+	insecureSkip := false
+	if v := os.Getenv("PROBE_INSECURE_SKIP_VERIFY"); strings.EqualFold(v, "true") || v == "1" {
+		insecureSkip = true
+	}
+
+	transport := &http.Transport{
 		DialContext:           (&net.Dialer{Timeout: 3 * time.Second}).DialContext,
 		ResponseHeaderTimeout: 4 * time.Second,
-	},
-	// Don't follow redirects — we just want the raw response
-	CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		return http.ErrUseLastResponse
-	},
+	}
+
+	if insecureSkip {
+		transport.TLSClientConfig = &tls.Config{
+			InsecureSkipVerify: true,
+		}
+	}
+
+	return &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: transport,
+		// Don't follow redirects — we just want the raw response
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 // CheckEndpointHandler handles endpoint connectivity check requests
@@ -74,11 +90,27 @@ func (h *Handlers) CheckEndpointHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Validate the URL
-	if _, err := url.ParseRequestURI(req.URL); err != nil {
+	parsedURL, err := url.ParseRequestURI(req.URL)
+	if err != nil {
 		writeJSON(w, http.StatusOK, EndpointCheckResponse{
 			Status:  EndpointStatusUnreachable,
 			Message: "Invalid URL format",
 		})
+		return
+	}
+
+	// Only allow http and https schemes
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		writeJSON(w, http.StatusOK, EndpointCheckResponse{
+			Status:  EndpointStatusUnreachable,
+			Message: "Only http and https URLs are supported",
+		})
+		return
+	}
+
+	// SSRF protection: block private, loopback, and link-local addresses
+	if isBlockedHost(parsedURL.Hostname()) {
+		writeError(w, http.StatusBadRequest, "validation_error", "URLs targeting private or loopback addresses are not allowed")
 		return
 	}
 
@@ -387,4 +419,54 @@ func summarizeError(err error) string {
 		return "TLS/SSL certificate error"
 	}
 	return "Network error"
+}
+
+// privateIPNets defines CIDR ranges that should be blocked for SSRF protection.
+var privateIPNets = func() []*net.IPNet {
+	cidrs := []string{
+		"127.0.0.0/8",    // loopback
+		"10.0.0.0/8",     // RFC 1918
+		"172.16.0.0/12",  // RFC 1918
+		"192.168.0.0/16", // RFC 1918
+		"169.254.0.0/16", // link-local
+		"::1/128",        // IPv6 loopback
+		"fc00::/7",       // IPv6 unique local
+		"fe80::/10",      // IPv6 link-local
+	}
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		_, n, _ := net.ParseCIDR(c)
+		nets = append(nets, n)
+	}
+	return nets
+}()
+
+// isBlockedHost returns true if the hostname resolves to a private, loopback, or link-local address.
+// Exposed as a var so tests can disable SSRF protection when using httptest servers.
+var isBlockedHost = func(hostname string) bool {
+	// Try parsing as a literal IP first
+	if ip := net.ParseIP(hostname); ip != nil {
+		return isPrivateIP(ip)
+	}
+	// Resolve the hostname
+	addrs, err := net.LookupHost(hostname)
+	if err != nil {
+		return false // DNS failure is handled later by the probe itself
+	}
+	for _, addr := range addrs {
+		if ip := net.ParseIP(addr); ip != nil && isPrivateIP(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPrivateIP checks whether an IP falls in any blocked CIDR range.
+func isPrivateIP(ip net.IP) bool {
+	for _, n := range privateIPNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
