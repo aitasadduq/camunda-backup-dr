@@ -2,12 +2,17 @@ package models
 
 import (
 	"encoding/json"
+	"regexp"
 	"time"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/config"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
 	"github.com/aitasadduq/camunda-backup-dr/pkg/types"
 )
+
+// validIDPattern matches IDs with only lowercase letters and hyphens,
+// starting and ending with a letter (no leading/trailing hyphens).
+var validIDPattern = regexp.MustCompile(`^[a-z][a-z-]*[a-z]$|^[a-z]$`)
 
 // CamundaComponentConfig represents a component configuration
 type CamundaComponentConfig struct {
@@ -111,6 +116,9 @@ func (ci *CamundaInstance) GetEnabledComponents() []string {
 // Validate validates the Camunda instance configuration
 func (ci *CamundaInstance) Validate() error {
 	if ci.ID == "" {
+		return utils.ErrInvalidCamundaInstance
+	}
+	if !validIDPattern.MatchString(ci.ID) {
 		return utils.ErrInvalidCamundaInstance
 	}
 	if ci.Name == "" {

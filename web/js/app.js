@@ -528,9 +528,11 @@ function openInstanceForm(existingInstance) {
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">ID <span class="text-red-500">*</span></label>
                             <input type="text" name="id" value="${escapeAttr(instance.id || '')}" required
+                                pattern="^[a-z][a-z-]*[a-z]$|^[a-z]$"
+                                title="Only lowercase letters and hyphens allowed. Must start and end with a letter."
                                 class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                                 placeholder="my-camunda-instance"
-                                oninput="updateEnvVarHints(this.value)">
+                                oninput="this.value = this.value.toLowerCase().replace(/[^a-z-]/g, ''); updateEnvVarHints(this.value)">
                         </div>` : ''}
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">Name <span class="text-red-500">*</span></label>

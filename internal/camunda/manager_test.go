@@ -40,7 +40,7 @@ func TestManager_CreateInstance(t *testing.T) {
 	manager, _, cleanup := setupTestManager(t)
 	defer cleanup()
 
-	instance := models.NewCamundaInstance("camunda1", "Test Camunda", "https://test.example.com")
+	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
 
 	err := manager.CreateInstance(instance)
 	if err != nil {
@@ -48,7 +48,7 @@ func TestManager_CreateInstance(t *testing.T) {
 	}
 
 	// Verify instance was created
-	retrieved, err := manager.GetInstance("camunda1")
+	retrieved, err := manager.GetInstance("camunda-a")
 	if err != nil {
 		t.Fatalf("Failed to retrieve instance: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestManager_CreateInstance_Duplicate(t *testing.T) {
 	manager, _, cleanup := setupTestManager(t)
 	defer cleanup()
 
-	instance := models.NewCamundaInstance("camunda1", "Test Camunda", "https://test.example.com")
+	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
 
 	err := manager.CreateInstance(instance)
 	if err != nil {
@@ -94,19 +94,19 @@ func TestManager_GetInstance(t *testing.T) {
 	manager, _, cleanup := setupTestManager(t)
 	defer cleanup()
 
-	instance := models.NewCamundaInstance("camunda1", "Test Camunda", "https://test.example.com")
+	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
 	err := manager.CreateInstance(instance)
 	if err != nil {
 		t.Fatalf("Failed to create instance: %v", err)
 	}
 
-	retrieved, err := manager.GetInstance("camunda1")
+	retrieved, err := manager.GetInstance("camunda-a")
 	if err != nil {
 		t.Fatalf("Failed to get instance: %v", err)
 	}
 
-	if retrieved.ID != "camunda1" {
-		t.Errorf("Expected ID 'camunda1', got '%s'", retrieved.ID)
+	if retrieved.ID != "camunda-a" {
+		t.Errorf("Expected ID 'camunda-a', got '%s'", retrieved.ID)
 	}
 }
 
@@ -125,8 +125,8 @@ func TestManager_ListInstances(t *testing.T) {
 	defer cleanup()
 
 	// Create multiple instances
-	instance1 := models.NewCamundaInstance("camunda1", "Test 1", "https://test1.example.com")
-	instance2 := models.NewCamundaInstance("camunda2", "Test 2", "https://test2.example.com")
+	instance1 := models.NewCamundaInstance("camunda-a", "Test 1", "https://test1.example.com")
+	instance2 := models.NewCamundaInstance("camunda-b", "Test 2", "https://test2.example.com")
 
 	manager.CreateInstance(instance1)
 	manager.CreateInstance(instance2)
@@ -145,22 +145,22 @@ func TestManager_UpdateInstance(t *testing.T) {
 	manager, _, cleanup := setupTestManager(t)
 	defer cleanup()
 
-	instance := models.NewCamundaInstance("camunda1", "Test Camunda", "https://test.example.com")
+	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
 	err := manager.CreateInstance(instance)
 	if err != nil {
 		t.Fatalf("Failed to create instance: %v", err)
 	}
 
 	// Update instance
-	updated := models.NewCamundaInstance("camunda1", "Updated Name", "https://updated.example.com")
+	updated := models.NewCamundaInstance("camunda-a", "Updated Name", "https://updated.example.com")
 	updated.Schedule = "0 3 * * *"
-	err = manager.UpdateInstance("camunda1", updated)
+	err = manager.UpdateInstance("camunda-a", updated)
 	if err != nil {
 		t.Fatalf("Failed to update instance: %v", err)
 	}
 
 	// Verify update
-	retrieved, err := manager.GetInstance("camunda1")
+	retrieved, err := manager.GetInstance("camunda-a")
 	if err != nil {
 		t.Fatalf("Failed to get instance: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestManager_UpdateInstance_NotFound(t *testing.T) {
 	manager, _, cleanup := setupTestManager(t)
 	defer cleanup()
 
-	instance := models.NewCamundaInstance("camunda1", "Test", "https://test.example.com")
+	instance := models.NewCamundaInstance("camunda-a", "Test", "https://test.example.com")
 	err := manager.UpdateInstance("nonexistent", instance)
 	if err != utils.ErrCamundaInstanceNotFound {
 		t.Errorf("Expected ErrCamundaInstanceNotFound, got %v", err)
@@ -189,19 +189,19 @@ func TestManager_DeleteInstance(t *testing.T) {
 	manager, _, cleanup := setupTestManager(t)
 	defer cleanup()
 
-	instance := models.NewCamundaInstance("camunda1", "Test Camunda", "https://test.example.com")
+	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
 	err := manager.CreateInstance(instance)
 	if err != nil {
 		t.Fatalf("Failed to create instance: %v", err)
 	}
 
-	err = manager.DeleteInstance("camunda1")
+	err = manager.DeleteInstance("camunda-a")
 	if err != nil {
 		t.Fatalf("Failed to delete instance: %v", err)
 	}
 
 	// Verify deletion
-	_, err = manager.GetInstance("camunda1")
+	_, err = manager.GetInstance("camunda-a")
 	if err != utils.ErrCamundaInstanceNotFound {
 		t.Errorf("Expected ErrCamundaInstanceNotFound after deletion, got %v", err)
 	}
@@ -221,19 +221,19 @@ func TestManager_EnableInstance(t *testing.T) {
 	manager, _, cleanup := setupTestManager(t)
 	defer cleanup()
 
-	instance := models.NewCamundaInstance("camunda1", "Test Camunda", "https://test.example.com")
+	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
 	instance.Enabled = false
 	err := manager.CreateInstance(instance)
 	if err != nil {
 		t.Fatalf("Failed to create instance: %v", err)
 	}
 
-	err = manager.EnableInstance("camunda1")
+	err = manager.EnableInstance("camunda-a")
 	if err != nil {
 		t.Fatalf("Failed to enable instance: %v", err)
 	}
 
-	retrieved, err := manager.GetInstance("camunda1")
+	retrieved, err := manager.GetInstance("camunda-a")
 	if err != nil {
 		t.Fatalf("Failed to get instance: %v", err)
 	}
@@ -247,18 +247,18 @@ func TestManager_DisableInstance(t *testing.T) {
 	manager, _, cleanup := setupTestManager(t)
 	defer cleanup()
 
-	instance := models.NewCamundaInstance("camunda1", "Test Camunda", "https://test.example.com")
+	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
 	err := manager.CreateInstance(instance)
 	if err != nil {
 		t.Fatalf("Failed to create instance: %v", err)
 	}
 
-	err = manager.DisableInstance("camunda1")
+	err = manager.DisableInstance("camunda-a")
 	if err != nil {
 		t.Fatalf("Failed to disable instance: %v", err)
 	}
 
-	retrieved, err := manager.GetInstance("camunda1")
+	retrieved, err := manager.GetInstance("camunda-a")
 	if err != nil {
 		t.Fatalf("Failed to get instance: %v", err)
 	}
@@ -272,9 +272,9 @@ func TestManager_GetEnabledInstances(t *testing.T) {
 	manager, _, cleanup := setupTestManager(t)
 	defer cleanup()
 
-	instance1 := models.NewCamundaInstance("camunda1", "Test 1", "https://test1.example.com")
+	instance1 := models.NewCamundaInstance("camunda-a", "Test 1", "https://test1.example.com")
 	instance1.Enabled = true
-	instance2 := models.NewCamundaInstance("camunda2", "Test 2", "https://test2.example.com")
+	instance2 := models.NewCamundaInstance("camunda-b", "Test 2", "https://test2.example.com")
 	instance2.Enabled = false
 
 	manager.CreateInstance(instance1)
@@ -289,8 +289,8 @@ func TestManager_GetEnabledInstances(t *testing.T) {
 		t.Errorf("Expected 1 enabled instance, got %d", len(enabled))
 	}
 
-	if enabled[0].ID != "camunda1" {
-		t.Errorf("Expected enabled instance ID 'camunda1', got '%s'", enabled[0].ID)
+	if enabled[0].ID != "camunda-a" {
+		t.Errorf("Expected enabled instance ID 'camunda-a', got '%s'", enabled[0].ID)
 	}
 }
 
@@ -298,19 +298,19 @@ func TestManager_UpdateComponentConfig(t *testing.T) {
 	manager, _, cleanup := setupTestManager(t)
 	defer cleanup()
 
-	instance := models.NewCamundaInstance("camunda1", "Test Camunda", "https://test.example.com")
+	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
 	err := manager.CreateInstance(instance)
 	if err != nil {
 		t.Fatalf("Failed to create instance: %v", err)
 	}
 
 	// Disable a component
-	err = manager.UpdateComponentConfig("camunda1", types.ComponentOptimize, false)
+	err = manager.UpdateComponentConfig("camunda-a", types.ComponentOptimize, false)
 	if err != nil {
 		t.Fatalf("Failed to update component config: %v", err)
 	}
 
-	retrieved, err := manager.GetInstance("camunda1")
+	retrieved, err := manager.GetInstance("camunda-a")
 	if err != nil {
 		t.Fatalf("Failed to get instance: %v", err)
 	}
@@ -324,13 +324,13 @@ func TestManager_UpdateComponentConfig_InvalidComponent(t *testing.T) {
 	manager, _, cleanup := setupTestManager(t)
 	defer cleanup()
 
-	instance := models.NewCamundaInstance("camunda1", "Test Camunda", "https://test.example.com")
+	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
 	err := manager.CreateInstance(instance)
 	if err != nil {
 		t.Fatalf("Failed to create instance: %v", err)
 	}
 
-	err = manager.UpdateComponentConfig("camunda1", "invalid-component", true)
+	err = manager.UpdateComponentConfig("camunda-a", "invalid-component", true)
 	if err != utils.ErrInvalidComponent {
 		t.Errorf("Expected ErrInvalidComponent, got %v", err)
 	}
@@ -340,7 +340,7 @@ func TestManager_UpdateComponentConfig_NoComponentsEnabled(t *testing.T) {
 	manager, _, cleanup := setupTestManager(t)
 	defer cleanup()
 
-	instance := models.NewCamundaInstance("camunda1", "Test Camunda", "https://test.example.com")
+	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
 	// Disable all components
 	instance.Components = []models.CamundaComponentConfig{
 		{Name: types.ComponentZeebe, Enabled: false},
@@ -359,7 +359,7 @@ func TestManager_UpdateComponentConfig_DisableLastComponent(t *testing.T) {
 	manager, _, cleanup := setupTestManager(t)
 	defer cleanup()
 
-	instance := models.NewCamundaInstance("camunda1", "Test Camunda", "https://test.example.com")
+	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
 	// Keep only one component enabled
 	instance.Components = []models.CamundaComponentConfig{
 		{Name: types.ComponentZeebe, Enabled: true},
@@ -374,7 +374,7 @@ func TestManager_UpdateComponentConfig_DisableLastComponent(t *testing.T) {
 	}
 
 	// Try to disable the last enabled component
-	err = manager.UpdateComponentConfig("camunda1", types.ComponentZeebe, false)
+	err = manager.UpdateComponentConfig("camunda-a", types.ComponentZeebe, false)
 	if err != utils.ErrNoComponentsEnabled {
 		t.Errorf("Expected ErrNoComponentsEnabled, got %v", err)
 	}
@@ -416,9 +416,9 @@ func TestManager_GetInstance_EnvVarNormalization(t *testing.T) {
 	}{
 		{
 			name:         "simple id",
-			instanceID:   "camunda1",
-			expectedESEV: "ELASTICSEARCH_PASSWORD_CAMUNDA1",
-			expectedS3EV: "S3_SECRETKEY_CAMUNDA1",
+			instanceID:   "camunda-a",
+			expectedESEV: "ELASTICSEARCH_PASSWORD_CAMUNDA_A",
+			expectedS3EV: "S3_SECRETKEY_CAMUNDA_A",
 		},
 		{
 			name:         "hyphenated id",

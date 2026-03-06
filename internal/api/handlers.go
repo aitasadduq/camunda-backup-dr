@@ -208,6 +208,8 @@ func (h *Handlers) CreateCamundaInstanceHandler(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, "validation_error", "ID is required")
 		return
 	}
+	// Normalize: lowercase the ID automatically
+	instance.ID = strings.ToLower(instance.ID)
 	if instance.Name == "" {
 		writeError(w, http.StatusBadRequest, "validation_error", "Name is required")
 		return
