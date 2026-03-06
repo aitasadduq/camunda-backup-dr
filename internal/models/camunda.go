@@ -41,6 +41,10 @@ type CamundaInstance struct {
 	BackupIDS3Endpoint    string `json:"s3_endpoint"`
 	BackupIDS3AccessKey   string `json:"s3_accesskey"`
 
+	// Computed fields for UI guidance
+	ElasticsearchPasswordEnvVar string `json:"elasticsearch_password_env_var,omitempty"`
+	BackupIDS3SecretKeyEnvVar   string `json:"s3_secret_key_env_var,omitempty"`
+
 	// Metadata
 	CreatedAt        time.Time  `json:"created_at"`
 	UpdatedAt        time.Time  `json:"updated_at"`
@@ -75,6 +79,8 @@ func NewCamundaInstance(id, name, baseURL string) *CamundaInstance {
 		},
 		ParallelExecution: false,
 		LastBackupStatus:  "NEVER_BACKED_UP",
+		ElasticsearchPasswordEnvVar: "ELASTICSEARCH_PASSWORD_" + id,
+		BackupIDS3SecretKeyEnvVar:   "S3_SECRETKEY_" + id,
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}

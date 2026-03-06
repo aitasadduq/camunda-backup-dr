@@ -439,6 +439,49 @@ function renderInstancesTable(instances) {
     `;
 }
 
+/**
+ * Copies text to clipboard and shows a toast
+ */
+function copyToClipboard(text, label) {
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(() => {
+        showToast(`${label} copied to clipboard`, 'success');
+    }).catch(err => {
+        console.error('Failed to copy:', err);
+        showToast('Failed to copy to clipboard', 'error');
+    });
+}
+
+/**
+ * Updates the environment variable hints dynamically when creating a new instance
+ */
+function updateEnvVarHints(id) {
+    if (!id) {
+        document.querySelectorAll('.env-var-hint').forEach(el => el.classList.add('hidden'));
+        return;
+    }
+    
+    // Update ES hint
+    const esHint = document.getElementById('es-env-hint');
+    if (esHint) {
+        const varName = `ELASTICSEARCH_PASSWORD_${id}`;
+        esHint.querySelector('code').textContent = varName;
+        esHint.querySelector('code').title = varName;
+        esHint.querySelector('button').setAttribute('onclick', `copyToClipboard('${varName}', 'Variable name')`);
+        esHint.classList.remove('hidden');
+    }
+
+    // Update S3 hint
+    const s3Hint = document.getElementById('s3-env-hint');
+    if (s3Hint) {
+        const varName = `S3_SECRETKEY_${id}`;
+        s3Hint.querySelector('code').textContent = varName;
+        s3Hint.querySelector('code').title = varName;
+        s3Hint.querySelector('button').setAttribute('onclick', `copyToClipboard('${varName}', 'Variable name')`);
+        s3Hint.classList.remove('hidden');
+    }
+}
+
 // ============================================================
 // Instance Form (Modal)
 // ============================================================
@@ -476,7 +519,8 @@ function openInstanceForm(existingInstance) {
                             <label class="block text-sm font-medium text-gray-700 mb-1">ID <span class="text-red-500">*</span></label>
                             <input type="text" name="id" value="${escapeAttr(instance.id || '')}" required
                                 class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                                placeholder="my-camunda-instance">
+                                placeholder="my-camunda-instance"
+                                oninput="updateEnvVarHints(this.value)">
                         </div>` : ''}
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">Name <span class="text-red-500">*</span></label>
@@ -579,6 +623,19 @@ function openInstanceForm(existingInstance) {
                                 class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                                 placeholder="elastic">
                         </div>
+                        <div id="es-env-hint" class="${instance.elasticsearch_password_env_var ? '' : 'hidden'} bg-blue-50 border border-blue-100 rounded-md p-3 env-var-hint">
+                            <p class="text-xs text-blue-800 mb-1 font-medium">Required Environment Variable</p>
+                            <p class="text-xs text-blue-600 mb-2">Set this variable on the server to provide the Elasticsearch password:</p>
+                            <div class="flex items-center gap-2">
+                                <code class="flex-1 bg-white border border-blue-200 rounded px-2 py-1 text-xs font-mono text-blue-900 truncate" title="${escapeAttr(instance.elasticsearch_password_env_var || '')}">
+                                    ${escapeHtml(instance.elasticsearch_password_env_var || '')}
+                                </code>
+                                <button type="button" onclick="copyToClipboard('${escapeForInlineHandler(instance.elasticsearch_password_env_var || '')}', 'Variable name')"
+                                    class="p-1 text-blue-600 hover:text-blue-800 hover:bg-blue-100 rounded transition-colors" title="Copy variable name">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                                </button>
+                            </div>
+                        </div>
                         <div class="flex items-center gap-2">
                             ${(() => {
                                 const esComp = components.find(c => c.name === 'elasticsearch') || { enabled: true };
@@ -609,6 +666,19 @@ function openInstanceForm(existingInstance) {
                             <input type="text" name="s3_accesskey" value="${escapeAttr(instance.s3_accesskey || '')}"
                                 class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                                 placeholder="AKIAIOSFODNN7EXAMPLE">
+                        </div>
+                        <div id="s3-env-hint" class="${instance.s3_secret_key_env_var ? '' : 'hidden'} bg-blue-50 border border-blue-100 rounded-md p-3 env-var-hint">
+                            <p class="text-xs text-blue-800 mb-1 font-medium">Required Environment Variable</p>
+                            <p class="text-xs text-blue-600 mb-2">Set this variable on the server to provide the S3 Secret Key:</p>
+                            <div class="flex items-center gap-2">
+                                <code class="flex-1 bg-white border border-blue-200 rounded px-2 py-1 text-xs font-mono text-blue-900 truncate" title="${escapeAttr(instance.s3_secret_key_env_var || '')}">
+                                    ${escapeHtml(instance.s3_secret_key_env_var || '')}
+                                </code>
+                                <button type="button" onclick="copyToClipboard('${escapeForInlineHandler(instance.s3_secret_key_env_var || '')}', 'Variable name')"
+                                    class="p-1 text-blue-600 hover:text-blue-800 hover:bg-blue-100 rounded transition-colors" title="Copy variable name">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
