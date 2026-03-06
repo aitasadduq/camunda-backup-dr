@@ -35,6 +35,11 @@ func (r *Router) registerRoutes() {
 		http.MethodGet: r.handlers.SystemStatusHandler,
 	}))
 
+	// Endpoint connectivity check
+	r.mux.HandleFunc("/api/check-endpoint", r.methodHandler(map[string]http.HandlerFunc{
+		http.MethodPost: r.handlers.CheckEndpointHandler,
+	}))
+
 	// Camunda instances - collection endpoints
 	r.mux.HandleFunc("/api/camundas", r.methodHandler(map[string]http.HandlerFunc{
 		http.MethodGet:  r.handlers.ListCamundaInstancesHandler,
