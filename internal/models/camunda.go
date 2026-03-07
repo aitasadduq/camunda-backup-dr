@@ -2,10 +2,17 @@ package models
 
 import (
 	"encoding/json"
+	"regexp"
+	"time"
+
+	"github.com/aitasadduq/camunda-backup-dr/internal/config"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
 	"github.com/aitasadduq/camunda-backup-dr/pkg/types"
-	"time"
 )
+
+// validIDPattern matches IDs with only lowercase letters and hyphens,
+// starting and ending with a letter (no leading/trailing hyphens).
+var validIDPattern = regexp.MustCompile(`^[a-z][a-z-]*[a-z]$|^[a-z]$`)
 
 // CamundaComponentConfig represents a component configuration
 type CamundaComponentConfig struct {
@@ -26,13 +33,9 @@ type CamundaInstance struct {
 
 	// Backup Configuration
 	ZeebeBackupEndpoint    string `json:"zeebe_backup_endpoint"`
-	ZeebeStatusEndpoint    string `json:"zeebe_status_endpoint"`
 	OperateBackupEndpoint  string `json:"operate_backup_endpoint"`
-	OperateStatusEndpoint  string `json:"operate_status_endpoint"`
 	TasklistBackupEndpoint string `json:"tasklist_backup_endpoint"`
-	TasklistStatusEndpoint string `json:"tasklist_status_endpoint"`
 	OptimizeBackupEndpoint string `json:"optimize_backup_endpoint"`
-	OptimizeStatusEndpoint string `json:"optimize_status_endpoint"`
 
 	// Component Settings
 	Components        []CamundaComponentConfig `json:"components"`
@@ -43,6 +46,10 @@ type CamundaInstance struct {
 	ElasticsearchUsername string `json:"elasticsearch_username"`
 	BackupIDS3Endpoint    string `json:"s3_endpoint"`
 	BackupIDS3AccessKey   string `json:"s3_accesskey"`
+
+	// Computed fields for UI guidance
+	ElasticsearchPasswordEnvVar string `json:"elasticsearch_password_env_var,omitempty"`
+	BackupIDS3SecretKeyEnvVar   string `json:"s3_secret_key_env_var,omitempty"`
 
 	// Metadata
 	CreatedAt        time.Time  `json:"created_at"`
@@ -78,6 +85,8 @@ func NewCamundaInstance(id, name, baseURL string) *CamundaInstance {
 		},
 		ParallelExecution: false,
 		LastBackupStatus:  "NEVER_BACKED_UP",
+		ElasticsearchPasswordEnvVar: "ELASTICSEARCH_PASSWORD_" + config.NormalizeForEnvVar(id),
+		BackupIDS3SecretKeyEnvVar:   "S3_SECRETKEY_" + config.NormalizeForEnvVar(id),
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
@@ -107,6 +116,9 @@ func (ci *CamundaInstance) GetEnabledComponents() []string {
 // Validate validates the Camunda instance configuration
 func (ci *CamundaInstance) Validate() error {
 	if ci.ID == "" {
+		return utils.ErrInvalidCamundaInstance
+	}
+	if !validIDPattern.MatchString(ci.ID) {
 		return utils.ErrInvalidCamundaInstance
 	}
 	if ci.Name == "" {

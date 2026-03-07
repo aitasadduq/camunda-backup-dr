@@ -15,7 +15,8 @@ const TOAST_DURATION_MS = 5000;
 
 /**
  * Canonical list of Camunda component names with endpoint support.
- * Each entry maps to form field names: `${name}_backup_endpoint` and `${name}_status_endpoint`.
+ * Each entry maps to a form field name: `${name}_backup_endpoint`.
+ * The status endpoint is derived automatically as backup endpoint + /{backupId}.
  */
 const CAMUNDA_COMPONENTS = ['zeebe', 'operate', 'tasklist', 'optimize'];
 
@@ -23,10 +24,7 @@ const CAMUNDA_COMPONENTS = ['zeebe', 'operate', 'tasklist', 'optimize'];
  * All valid endpoint field names for a Camunda instance, derived from CAMUNDA_COMPONENTS.
  * Used to safely read/write component endpoint fields without dynamic string construction.
  */
-const COMPONENT_ENDPOINT_FIELDS = CAMUNDA_COMPONENTS.flatMap(name => [
-    `${name}_backup_endpoint`,
-    `${name}_status_endpoint`,
-]);
+const COMPONENT_ENDPOINT_FIELDS = CAMUNDA_COMPONENTS.map(name => `${name}_backup_endpoint`);
 
 // ============================================================
 // API Client
@@ -246,20 +244,19 @@ async function loadQuickActions() {
 
     try {
         const instances = await getInstances();
-        const enabled = instances.filter(i => i.enabled);
 
-        if (enabled.length === 0) {
-            container.innerHTML = '<p class="text-sm text-gray-500">No enabled instances. <a href="#" onclick="showTab(\'instances\')" class="text-blue-600 hover:underline">Add one</a>.</p>';
+        if (!instances || instances.length === 0) {
+            container.innerHTML = '<p class="text-sm text-gray-500">No instances configured. <a href="#" onclick="showTab(\'instances\')" class="text-blue-600 hover:underline">Add one</a>.</p>';
             return;
         }
 
-        container.innerHTML = enabled.map(instance => `
+        container.innerHTML = instances.map(instance => `
             <button onclick="triggerBackup('${escapeForInlineHandler(instance.id)}', '${escapeForInlineHandler(instance.name)}')"
-                class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 transition-colors">
+                class="inline-flex items-center gap-1.5 px-3 py-1.5 ${instance.enabled ? 'bg-blue-600 hover:bg-blue-700' : 'bg-gray-500 hover:bg-gray-600'} text-white text-sm font-medium rounded-md transition-colors">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
                 </svg>
-                Backup ${escapeHtml(instance.name)}
+                Backup ${escapeHtml(instance.name)}${!instance.enabled ? ' <span class="opacity-75 text-xs">(unscheduled)</span>' : ''}
             </button>
         `).join('');
     } catch (err) {
@@ -398,19 +395,42 @@ function renderInstancesTable(instances) {
                     <tr>
                         <th>Name</th>
                         <th>URL</th>
-                        <th>Status</th>
+                        <th>Connectivity</th>
                         <th>Schedule</th>
+                        <th>Cron</th>
                         <th class="hidden lg:table-cell">Last Backup</th>
                         <th class="hidden lg:table-cell">Last Status</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
-                    ${instances.map(instance => `
+                    ${instances.map(instance => {
+                        const esComp = (instance.components || []).find(c => c.name === 'elasticsearch');
+                        const esEnabled = esComp && esComp.enabled && instance.elasticsearch_endpoint;
+                        const s3Enabled = !!instance.s3_endpoint;
+                        return `
                         <tr>
                             <td class="font-medium text-gray-900">${escapeHtml(instance.name)}</td>
                             <td class="text-gray-500 text-xs max-w-[200px] truncate">${escapeHtml(instance.base_url)}</td>
-                            <td><span class="badge ${instance.enabled ? 'badge-enabled' : 'badge-disabled'}">${instance.enabled ? 'Enabled' : 'Disabled'}</span></td>
+                            <td>
+                                <div class="flex items-center gap-3">
+                                    <span class="inline-flex items-center gap-1" title="Camunda">
+                                        <span id="list-camunda-${escapeAttr(instance.id)}" class="w-2 h-2 rounded-full bg-gray-300"></span>
+                                        <span class="text-xs text-gray-500">C8</span>
+                                    </span>
+                                    ${esEnabled ? `
+                                    <span class="inline-flex items-center gap-1" title="Elasticsearch">
+                                        <span id="list-es-${escapeAttr(instance.id)}" class="w-2 h-2 rounded-full bg-gray-300"></span>
+                                        <span class="text-xs text-gray-500">ES</span>
+                                    </span>` : ''}
+                                    ${s3Enabled ? `
+                                    <span class="inline-flex items-center gap-1" title="S3">
+                                        <span id="list-s3-${escapeAttr(instance.id)}" class="w-2 h-2 rounded-full bg-gray-300"></span>
+                                        <span class="text-xs text-gray-500">S3</span>
+                                    </span>` : ''}
+                                </div>
+                            </td>
+                            <td><span class="badge ${instance.enabled ? 'badge-scheduled' : 'badge-disabled'}">${instance.enabled ? 'Scheduled' : 'Unscheduled'}</span></td>
                             <td class="text-xs font-mono text-gray-500">${escapeHtml(instance.schedule || '—')}</td>
                             <td class="hidden lg:table-cell text-xs text-gray-500">${instance.last_backup_at ? formatTime(instance.last_backup_at) : '—'}</td>
                             <td class="hidden lg:table-cell">${instance.last_backup_status ? `<span class="badge badge-${instance.last_backup_status.toLowerCase()}">${instance.last_backup_status}</span>` : '—'}</td>
@@ -428,19 +448,232 @@ function renderInstancesTable(instances) {
                                         class="p-1 text-gray-400 hover:text-red-600 transition-colors">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                                     </button>
-                                    ${instance.enabled ? `
                                     <button onclick="triggerBackup('${escapeForInlineHandler(instance.id)}', '${escapeForInlineHandler(instance.name)}')" title="Trigger Backup"
                                         class="p-1 text-gray-400 hover:text-green-600 transition-colors">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
-                                    </button>` : ''}
+                                    </button>
                                 </div>
                             </td>
-                        </tr>
-                    `).join('')}
+                        </tr>`;
+                    }).join('')}
                 </tbody>
             </table>
         </div>
     `;
+
+    // Fire connectivity checks for all listed instances
+    checkInstanceListEndpoints(instances);
+}
+
+/**
+ * Copies text to clipboard and shows a toast
+ */
+function copyToClipboard(text, label) {
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(() => {
+        showToast(`${label} copied to clipboard`, 'success');
+    }).catch(err => {
+        console.error('Failed to copy:', err);
+        showToast('Failed to copy to clipboard', 'error');
+    });
+}
+
+/**
+ * Normalizes a Camunda instance ID for use in environment variable names.
+ * Converts to uppercase and replaces hyphens with underscores.
+ */
+function normalizeForEnvVar(id) {
+    return id.toUpperCase().replace(/-/g, '_');
+}
+
+/**
+ * Updates the environment variable hints dynamically when creating a new instance
+ */
+function updateEnvVarHints(id) {
+    if (!id) {
+        document.querySelectorAll('.env-var-hint').forEach(el => el.classList.add('hidden'));
+        return;
+    }
+
+    const normalized = normalizeForEnvVar(id);
+    
+    // Update ES hint
+    const esHint = document.getElementById('es-env-hint');
+    if (esHint) {
+        const varName = `ELASTICSEARCH_PASSWORD_${normalized}`;
+        esHint.querySelector('code').textContent = varName;
+        esHint.querySelector('code').title = varName;
+        esHint.querySelector('button').setAttribute('onclick', `copyToClipboard('${varName}', 'Variable name')`);
+        esHint.classList.remove('hidden');
+    }
+
+    // Update S3 hint
+    const s3Hint = document.getElementById('s3-env-hint');
+    if (s3Hint) {
+        const varName = `S3_SECRETKEY_${normalized}`;
+        s3Hint.querySelector('code').textContent = varName;
+        s3Hint.querySelector('code').title = varName;
+        s3Hint.querySelector('button').setAttribute('onclick', `copyToClipboard('${varName}', 'Variable name')`);
+        s3Hint.classList.remove('hidden');
+    }
+}
+
+// ============================================================
+// Endpoint Connectivity Check
+// ============================================================
+const _endpointCheckTimers = {};
+
+/**
+ * Status dot HTML component.
+ * @param {string} id - Unique ID for the status indicator
+ */
+function statusDotHtml(id) {
+    return `<span id="${id}" class="endpoint-status inline-flex items-center ml-2" title="Enter a URL to check connectivity">
+        <span class="status-dot w-2.5 h-2.5 rounded-full bg-gray-300"></span>
+        <span class="status-text text-xs text-gray-400 ml-1">Not checked</span>
+    </span>`;
+}
+
+/**
+ * Debounced endpoint connectivity check.
+ * Called on input events from endpoint fields.
+ */
+function checkEndpointStatus(inputEl, type, statusId) {
+    const url = inputEl.value.trim();
+    const statusEl = document.getElementById(statusId);
+    if (!statusEl) return;
+
+    const dot = statusEl.querySelector('.status-dot');
+    const text = statusEl.querySelector('.status-text');
+
+    // Clear any pending timer for this field
+    if (_endpointCheckTimers[statusId]) {
+        clearTimeout(_endpointCheckTimers[statusId]);
+    }
+
+    if (!url) {
+        dot.className = 'status-dot w-2.5 h-2.5 rounded-full bg-gray-300';
+        text.textContent = 'Not checked';
+        text.className = 'status-text text-xs text-gray-400 ml-1';
+        statusEl.title = 'Enter a URL to check connectivity';
+        return;
+    }
+
+    // Show checking state
+    dot.className = 'status-dot w-2.5 h-2.5 rounded-full bg-gray-300 animate-pulse';
+    text.textContent = 'Checking...';
+    text.className = 'status-text text-xs text-gray-400 ml-1';
+
+    // Debounce: wait 800ms after user stops typing
+    _endpointCheckTimers[statusId] = setTimeout(async () => {
+        try {
+            // Gather credentials for ES checks
+            const body = { url, type };
+
+            // Include instance_id for env var lookup on backend
+            const form = inputEl.closest('form');
+            if (form) {
+                const idField = form.querySelector('[name="id"]');
+                if (idField && idField.value) {
+                    body.instance_id = idField.value;
+                }
+                // For edit mode, instance_id may be in a hidden field or data attribute
+                if (!body.instance_id) {
+                    const hiddenId = form.querySelector('[data-instance-id]');
+                    if (hiddenId) body.instance_id = hiddenId.dataset.instanceId;
+                }
+            }
+
+            if (type === 'elasticsearch') {
+                if (form) {
+                    body.username = form.querySelector('[name="elasticsearch_username"]')?.value || '';
+                }
+            }
+            if (type === 's3') {
+                if (form) {
+                    body.access_key = form.querySelector('[name="s3_accesskey"]')?.value || '';
+                }
+            }
+
+            const result = await api.request('POST', '/api/check-endpoint', body);
+
+            if (result.status === 'connected') {
+                dot.className = 'status-dot w-2.5 h-2.5 rounded-full bg-green-500';
+                text.textContent = result.message;
+                text.className = 'status-text text-xs text-green-600 ml-1';
+                statusEl.title = result.message;
+            } else if (result.status === 'unauthenticated') {
+                dot.className = 'status-dot w-2.5 h-2.5 rounded-full bg-yellow-400';
+                text.textContent = result.message;
+                text.className = 'status-text text-xs text-yellow-600 ml-1';
+                statusEl.title = result.message;
+            } else {
+                dot.className = 'status-dot w-2.5 h-2.5 rounded-full bg-red-500';
+                text.textContent = result.message;
+                text.className = 'status-text text-xs text-red-600 ml-1';
+                statusEl.title = result.message;
+            }
+        } catch (err) {
+            dot.className = 'status-dot w-2.5 h-2.5 rounded-full bg-red-500';
+            text.textContent = 'Check failed';
+            text.className = 'status-text text-xs text-red-600 ml-1';
+            statusEl.title = err.message || 'Failed to check endpoint';
+        }
+    }, 800);
+}
+
+/**
+ * Updates a single status dot element in the instances list.
+ */
+function updateListDot(dotEl, status, message) {
+    if (!dotEl) return;
+    const colors = {
+        connected: 'bg-green-500',
+        unauthenticated: 'bg-yellow-400',
+        unreachable: 'bg-red-500',
+    };
+    dotEl.className = `w-2 h-2 rounded-full ${colors[status] || 'bg-gray-300'}`;
+    dotEl.title = message || status;
+}
+
+/**
+ * Checks connectivity for all endpoints of instances shown in the list.
+ * Fires requests in parallel for all instances.
+ */
+async function checkInstanceListEndpoints(instances) {
+    if (!instances || instances.length === 0) return;
+
+    for (const instance of instances) {
+        // Always check Camunda base URL
+        if (instance.base_url) {
+            api.request('POST', '/api/check-endpoint', { url: instance.base_url, type: 'camunda', instance_id: instance.id })
+                .then(r => updateListDot(document.getElementById(`list-camunda-${instance.id}`), r.status, r.message))
+                .catch(() => updateListDot(document.getElementById(`list-camunda-${instance.id}`), 'unreachable', 'Check failed'));
+        }
+
+        // Check ES if enabled and endpoint configured
+        const esComp = (instance.components || []).find(c => c.name === 'elasticsearch');
+        if (esComp && esComp.enabled && instance.elasticsearch_endpoint) {
+            api.request('POST', '/api/check-endpoint', {
+                url: instance.elasticsearch_endpoint,
+                type: 'elasticsearch',
+                instance_id: instance.id,
+                username: instance.elasticsearch_username || '',
+            }).then(r => updateListDot(document.getElementById(`list-es-${instance.id}`), r.status, r.message))
+              .catch(() => updateListDot(document.getElementById(`list-es-${instance.id}`), 'unreachable', 'Check failed'));
+        }
+
+        // Check S3 if endpoint configured
+        if (instance.s3_endpoint) {
+            api.request('POST', '/api/check-endpoint', {
+                url: instance.s3_endpoint,
+                type: 's3',
+                instance_id: instance.id,
+                access_key: instance.s3_accesskey || '',
+            }).then(r => updateListDot(document.getElementById(`list-s3-${instance.id}`), r.status, r.message))
+              .catch(() => updateListDot(document.getElementById(`list-s3-${instance.id}`), 'unreachable', 'Check failed'));
+        }
+    }
 }
 
 // ============================================================
@@ -475,12 +708,16 @@ function openInstanceForm(existingInstance) {
                         <svg class="accordion-icon w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
                     </button>
                     <div class="accordion-content open px-4 pb-4 space-y-3">
+                        ${isEdit ? `<input type="hidden" name="id" value="${escapeAttr(instance.id || '')}">` : ''}
                         ${!isEdit ? `
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">ID <span class="text-red-500">*</span></label>
                             <input type="text" name="id" value="${escapeAttr(instance.id || '')}" required
+                                pattern="^[a-z][a-z-]*[a-z]$|^[a-z]$"
+                                title="Only lowercase letters and hyphens allowed. Must start and end with a letter."
                                 class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                                placeholder="my-camunda-instance">
+                                placeholder="my-camunda-instance"
+                                oninput="this.value = this.value.toLowerCase().replace(/[^a-z-]/g, ''); updateEnvVarHints(this.value)">
                         </div>` : ''}
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">Name <span class="text-red-500">*</span></label>
@@ -489,10 +726,11 @@ function openInstanceForm(existingInstance) {
                                 placeholder="Production Camunda">
                         </div>
                         <div>
-                            <label class="block text-sm font-medium text-gray-700 mb-1">Base URL <span class="text-red-500">*</span></label>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Base URL <span class="text-red-500">*</span>${statusDotHtml('camunda-status')}</label>
                             <input type="url" name="base_url" value="${escapeAttr(instance.base_url || '')}" required
                                 class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                                placeholder="https://camunda.example.com">
+                                placeholder="https://camunda.example.com"
+                                oninput="checkEndpointStatus(this, 'camunda', 'camunda-status')">
                         </div>
                         <div class="grid grid-cols-2 gap-3">
                             <div>
@@ -525,7 +763,7 @@ function openInstanceForm(existingInstance) {
                         <div class="flex items-center gap-4">
                             <label class="flex items-center gap-2 text-sm">
                                 <input type="checkbox" name="enabled" ${instance.enabled !== false ? 'checked' : ''} class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
-                                Enabled
+                                Schedule Enabled
                             </label>
                             <label class="flex items-center gap-2 text-sm">
                                 <input type="checkbox" name="parallel_execution" ${instance.parallel_execution ? 'checked' : ''} class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
@@ -553,13 +791,11 @@ function openInstanceForm(existingInstance) {
                                         Enabled
                                     </label>
                                 </div>
-                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                <div>
                                     <input type="text" name="${comp}_backup_endpoint" value="${escapeAttr(getInstanceEndpointValue(instance, comp, 'backup'))}"
                                         class="w-full px-2 py-1.5 border border-gray-300 rounded text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
                                         placeholder="Backup endpoint">
-                                    <input type="text" name="${comp}_status_endpoint" value="${escapeAttr(getInstanceEndpointValue(instance, comp, 'status'))}"
-                                        class="w-full px-2 py-1.5 border border-gray-300 rounded text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                        placeholder="Status endpoint">
+                                    <p class="mt-1 text-xs text-gray-400">Status endpoint is derived automatically (backup endpoint + /{backupId})</p>
                                 </div>
                             </div>`;
                         }).join('')}
@@ -574,16 +810,31 @@ function openInstanceForm(existingInstance) {
                     </button>
                     <div class="accordion-content px-4 pb-4 space-y-3">
                         <div>
-                            <label class="block text-xs font-medium text-gray-700 mb-1">Endpoint URL</label>
+                            <label class="block text-xs font-medium text-gray-700 mb-1">Endpoint URL ${statusDotHtml('es-status')}</label>
                             <input type="text" name="elasticsearch_endpoint" value="${escapeAttr(instance.elasticsearch_endpoint || '')}"
                                 class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                placeholder="https://elasticsearch.example.com:9200">
+                                placeholder="https://elasticsearch.example.com:9200"
+                                oninput="checkEndpointStatus(this, 'elasticsearch', 'es-status')">
                         </div>
                         <div>
                             <label class="block text-xs font-medium text-gray-700 mb-1">Username</label>
                             <input type="text" name="elasticsearch_username" value="${escapeAttr(instance.elasticsearch_username || '')}"
                                 class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                placeholder="elastic">
+                                placeholder="elastic"
+                                oninput="const esInput = this.closest('form').querySelector('[name=elasticsearch_endpoint]'); if (esInput && esInput.value) checkEndpointStatus(esInput, 'elasticsearch', 'es-status')">
+                        </div>
+                        <div id="es-env-hint" class="${instance.elasticsearch_password_env_var ? '' : 'hidden'} bg-blue-50 border border-blue-100 rounded-md p-3 env-var-hint">
+                            <p class="text-xs text-blue-800 mb-1 font-medium">Required Environment Variable</p>
+                            <p class="text-xs text-blue-600 mb-2">Set this variable on the server to provide the Elasticsearch password:</p>
+                            <div class="flex items-center gap-2">
+                                <code class="flex-1 bg-white border border-blue-200 rounded px-2 py-1 text-xs font-mono text-blue-900 truncate" title="${escapeAttr(instance.elasticsearch_password_env_var || '')}">
+                                    ${escapeHtml(instance.elasticsearch_password_env_var || '')}
+                                </code>
+                                <button type="button" onclick="copyToClipboard('${escapeForInlineHandler(instance.elasticsearch_password_env_var || '')}', 'Variable name')"
+                                    class="p-1 text-blue-600 hover:text-blue-800 hover:bg-blue-100 rounded transition-colors" title="Copy variable name">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                                </button>
+                            </div>
                         </div>
                         <div class="flex items-center gap-2">
                             ${(() => {
@@ -605,16 +856,31 @@ function openInstanceForm(existingInstance) {
                     </button>
                     <div class="accordion-content px-4 pb-4 space-y-3">
                         <div>
-                            <label class="block text-xs font-medium text-gray-700 mb-1">S3 Endpoint</label>
+                            <label class="block text-xs font-medium text-gray-700 mb-1">S3 Endpoint ${statusDotHtml('s3-status')}</label>
                             <input type="text" name="s3_endpoint" value="${escapeAttr(instance.s3_endpoint || '')}"
                                 class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                placeholder="https://s3.amazonaws.com">
+                                placeholder="https://s3.amazonaws.com"
+                                oninput="checkEndpointStatus(this, 's3', 's3-status')">
                         </div>
                         <div>
                             <label class="block text-xs font-medium text-gray-700 mb-1">Access Key</label>
                             <input type="text" name="s3_accesskey" value="${escapeAttr(instance.s3_accesskey || '')}"
                                 class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                placeholder="AKIAIOSFODNN7EXAMPLE">
+                                placeholder="AKIAIOSFODNN7EXAMPLE"
+                                oninput="const s3Input = this.closest('form').querySelector('[name=s3_endpoint]'); if (s3Input && s3Input.value) checkEndpointStatus(s3Input, 's3', 's3-status')">
+                        </div>
+                        <div id="s3-env-hint" class="${instance.s3_secret_key_env_var ? '' : 'hidden'} bg-blue-50 border border-blue-100 rounded-md p-3 env-var-hint">
+                            <p class="text-xs text-blue-800 mb-1 font-medium">Required Environment Variable</p>
+                            <p class="text-xs text-blue-600 mb-2">Set this variable on the server to provide the S3 Secret Key:</p>
+                            <div class="flex items-center gap-2">
+                                <code class="flex-1 bg-white border border-blue-200 rounded px-2 py-1 text-xs font-mono text-blue-900 truncate" title="${escapeAttr(instance.s3_secret_key_env_var || '')}">
+                                    ${escapeHtml(instance.s3_secret_key_env_var || '')}
+                                </code>
+                                <button type="button" onclick="copyToClipboard('${escapeForInlineHandler(instance.s3_secret_key_env_var || '')}', 'Variable name')"
+                                    class="p-1 text-blue-600 hover:text-blue-800 hover:bg-blue-100 rounded transition-colors" title="Copy variable name">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>

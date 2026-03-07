@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -294,13 +295,8 @@ func (o *Orchestrator) executeZeebeBackup(ctx context.Context, instance *models.
 
 	o.writeLog(instance.ID, backupID, "Zeebe backup triggered successfully")
 
-	// Poll for status
-	if instance.ZeebeStatusEndpoint != "" {
-		return o.pollBackupStatus(ctx, instance, backupID, instance.ZeebeStatusEndpoint, "Zeebe")
-	}
-
-	// If no status endpoint, assume success
-	return types.ComponentStatusCompleted, nil
+	// Poll for status using backup endpoint + /{backupId}
+	return o.pollBackupStatus(ctx, instance, backupID, instance.ZeebeBackupEndpoint, "Zeebe")
 }
 
 // executeOperateBackup executes Operate backup
@@ -332,13 +328,8 @@ func (o *Orchestrator) executeOperateBackup(ctx context.Context, instance *model
 
 	o.writeLog(instance.ID, backupID, "Operate backup triggered successfully")
 
-	// Poll for status
-	if instance.OperateStatusEndpoint != "" {
-		return o.pollBackupStatus(ctx, instance, backupID, instance.OperateStatusEndpoint, "Operate")
-	}
-
-	// If no status endpoint, assume success
-	return types.ComponentStatusCompleted, nil
+	// Poll for status using backup endpoint + /{backupId}
+	return o.pollBackupStatus(ctx, instance, backupID, instance.OperateBackupEndpoint, "Operate")
 }
 
 // executeTasklistBackup executes Tasklist backup
@@ -370,13 +361,8 @@ func (o *Orchestrator) executeTasklistBackup(ctx context.Context, instance *mode
 
 	o.writeLog(instance.ID, backupID, "Tasklist backup triggered successfully")
 
-	// Poll for status
-	if instance.TasklistStatusEndpoint != "" {
-		return o.pollBackupStatus(ctx, instance, backupID, instance.TasklistStatusEndpoint, "Tasklist")
-	}
-
-	// If no status endpoint, assume success
-	return types.ComponentStatusCompleted, nil
+	// Poll for status using backup endpoint + /{backupId}
+	return o.pollBackupStatus(ctx, instance, backupID, instance.TasklistBackupEndpoint, "Tasklist")
 }
 
 // executeOptimizeBackup executes Optimize backup
@@ -408,13 +394,8 @@ func (o *Orchestrator) executeOptimizeBackup(ctx context.Context, instance *mode
 
 	o.writeLog(instance.ID, backupID, "Optimize backup triggered successfully")
 
-	// Poll for status
-	if instance.OptimizeStatusEndpoint != "" {
-		return o.pollBackupStatus(ctx, instance, backupID, instance.OptimizeStatusEndpoint, "Optimize")
-	}
-
-	// If no status endpoint, assume success
-	return types.ComponentStatusCompleted, nil
+	// Poll for status using backup endpoint + /{backupId}
+	return o.pollBackupStatus(ctx, instance, backupID, instance.OptimizeBackupEndpoint, "Optimize")
 }
 
 // executeElasticsearchBackup executes Elasticsearch snapshot backup
@@ -533,9 +514,13 @@ func (o *Orchestrator) pollElasticsearchSnapshot(ctx context.Context, instance *
 	return types.ComponentStatusFailed, fmt.Errorf("elasticsearch snapshot timed out after %d attempts", o.maxPollAttempts)
 }
 
-// pollBackupStatus polls the status endpoint until backup is completed or fails
-func (o *Orchestrator) pollBackupStatus(ctx context.Context, instance *models.CamundaInstance, backupID, statusEndpoint, componentName string) (types.ComponentStatus, error) {
+// pollBackupStatus polls the backup endpoint + /{backupId} until backup is completed or fails.
+// The status URL is derived from the backup endpoint by appending /{backupId}.
+func (o *Orchestrator) pollBackupStatus(ctx context.Context, instance *models.CamundaInstance, backupID, backupEndpoint, componentName string) (types.ComponentStatus, error) {
 	o.writeLog(instance.ID, backupID, fmt.Sprintf("Polling %s backup status", componentName))
+
+	// Build status URL: backupEndpoint/{backupId}
+	statusURL := strings.TrimRight(backupEndpoint, "/") + "/" + url.PathEscape(backupID)
 
 	// Use configured poll settings
 	ticker := time.NewTicker(o.pollInterval)
@@ -546,16 +531,6 @@ func (o *Orchestrator) pollBackupStatus(ctx context.Context, instance *models.Ca
 		case <-ctx.Done():
 			return types.ComponentStatusFailed, ctx.Err()
 		case <-ticker.C:
-			// Build status URL with properly encoded query parameters
-			parsedURL, err := url.Parse(statusEndpoint)
-			if err != nil {
-				o.writeLog(instance.ID, backupID, fmt.Sprintf("Invalid %s status endpoint URL: %v", componentName, err))
-				return types.ComponentStatusFailed, fmt.Errorf("invalid %s status endpoint URL: %w", componentName, err)
-			}
-			query := parsedURL.Query()
-			query.Set("backupId", backupID)
-			parsedURL.RawQuery = query.Encode()
-			statusURL := parsedURL.String()
 
 			resp, err := o.httpClient.Get(ctx, statusURL, nil)
 			if err != nil {

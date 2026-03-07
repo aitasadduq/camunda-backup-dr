@@ -208,6 +208,8 @@ func (h *Handlers) CreateCamundaInstanceHandler(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, "validation_error", "ID is required")
 		return
 	}
+	// Normalize: lowercase the ID automatically
+	instance.ID = strings.ToLower(instance.ID)
 	if instance.Name == "" {
 		writeError(w, http.StatusBadRequest, "validation_error", "Name is required")
 		return
@@ -770,15 +772,18 @@ func (h *Handlers) GetBackupLogsHandler(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-// extractIDFromPath extracts an ID from a URL path
+// extractIDFromPath extracts an ID from a URL path, normalizing to lowercase.
 func extractIDFromPath(path, prefix string) string {
 	if !strings.HasPrefix(path, prefix) {
 		return ""
 	}
 	remaining := strings.TrimPrefix(path, prefix)
+	var id string
 	// Return everything up to the next slash or end of string
 	if idx := strings.Index(remaining, "/"); idx != -1 {
-		return remaining[:idx]
+		id = remaining[:idx]
+	} else {
+		id = remaining
 	}
-	return remaining
+	return strings.ToLower(id)
 }
