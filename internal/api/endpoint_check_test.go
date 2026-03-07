@@ -84,6 +84,8 @@ func TestCheckEndpointHandler_InvalidURL(t *testing.T) {
 func TestCheckEndpointHandler_SSRFBlocksPrivateIPs(t *testing.T) {
 	logger := utils.NewLogger("debug")
 	h := NewHandlers(nil, nil, nil, nil, nil, nil, logger)
+	// Ensure SSRF protection is active (env var unset)
+	t.Setenv("PROBE_ALLOW_PRIVATE_IPS", "")
 	// Re-enable SSRF protection for this test
 	origBlockedHost := isBlockedHost
 	t.Cleanup(func() { isBlockedHost = origBlockedHost })

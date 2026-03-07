@@ -80,11 +80,15 @@ func newProbeHTTPClient() *http.Client {
 func (h *Handlers) CheckEndpointHandler(w http.ResponseWriter, r *http.Request) {
 	var req EndpointCheckRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.logger.Debug("Endpoint check: invalid JSON body")
 		writeError(w, http.StatusBadRequest, "invalid_request", "Invalid JSON body")
 		return
 	}
 
+	h.logger.Info("Checking endpoint: type=%s url=%s instance_id=%s", req.Type, req.URL, req.InstanceID)
+
 	if req.URL == "" {
+		h.logger.Debug("Endpoint check rejected: empty URL")
 		writeError(w, http.StatusBadRequest, "validation_error", "URL is required")
 		return
 	}
@@ -92,6 +96,7 @@ func (h *Handlers) CheckEndpointHandler(w http.ResponseWriter, r *http.Request) 
 	// Validate the URL
 	parsedURL, err := url.ParseRequestURI(req.URL)
 	if err != nil {
+		h.logger.Debug("Endpoint check rejected: invalid URL format: %s", req.URL)
 		writeJSON(w, http.StatusOK, EndpointCheckResponse{
 			Status:  EndpointStatusUnreachable,
 			Message: "Invalid URL format",
@@ -101,6 +106,7 @@ func (h *Handlers) CheckEndpointHandler(w http.ResponseWriter, r *http.Request) 
 
 	// Only allow http and https schemes
 	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		h.logger.Debug("Endpoint check rejected: unsupported scheme %q in URL %s", parsedURL.Scheme, req.URL)
 		writeJSON(w, http.StatusOK, EndpointCheckResponse{
 			Status:  EndpointStatusUnreachable,
 			Message: "Only http and https URLs are supported",
@@ -110,14 +116,14 @@ func (h *Handlers) CheckEndpointHandler(w http.ResponseWriter, r *http.Request) 
 
 	// SSRF protection: block private, loopback, and link-local addresses
 	if isBlockedHost(parsedURL.Hostname()) {
-		writeError(w, http.StatusBadRequest, "validation_error", "URLs targeting private or loopback addresses are not allowed")
+		h.logger.Warn("Endpoint check blocked (SSRF): %s — set PROBE_ALLOW_PRIVATE_IPS=true to allow private/loopback targets", req.URL)
+		writeError(w, http.StatusBadRequest, "validation_error", "URLs targeting private or loopback addresses are not allowed (set PROBE_ALLOW_PRIVATE_IPS=true to allow)")
 		return
 	}
 
 	var result EndpointCheckResponse
 	switch req.Type {
 	case "elasticsearch":
-		h.logger.Info("Checking endpoint: type=%s url=%s instance_id=%s", req.Type, req.URL, req.InstanceID)
 		// Look up password from env var if instance_id is provided
 		password := req.Password
 		if password == "" && req.InstanceID != "" {
@@ -126,7 +132,6 @@ func (h *Handlers) CheckEndpointHandler(w http.ResponseWriter, r *http.Request) 
 		}
 		result = probeElasticsearch(req.URL, req.Username, password)
 	case "s3":
-		h.logger.Info("Checking endpoint: type=%s url=%s instance_id=%s", req.Type, req.URL, req.InstanceID)
 		// Look up secret key from env var if instance_id is provided
 		secretKey := ""
 		if req.InstanceID != "" {
@@ -135,10 +140,8 @@ func (h *Handlers) CheckEndpointHandler(w http.ResponseWriter, r *http.Request) 
 		}
 		result = probeS3(req.URL, req.AccessKey, secretKey)
 	case "camunda":
-		h.logger.Info("Checking endpoint: type=%s url=%s", req.Type, req.URL)
 		result = probeCamunda(req.URL)
 	default:
-		h.logger.Info("Checking endpoint: type=%s url=%s", req.Type, req.URL)
 		result = probeGeneric(req.URL)
 	}
 
@@ -443,7 +446,12 @@ var privateIPNets = func() []*net.IPNet {
 
 // isBlockedHost returns true if the hostname resolves to a private, loopback, or link-local address.
 // Exposed as a var so tests can disable SSRF protection when using httptest servers.
+// Set PROBE_ALLOW_PRIVATE_IPS=true to disable this check (e.g., for local/self-hosted services).
 var isBlockedHost = func(hostname string) bool {
+	if v := os.Getenv("PROBE_ALLOW_PRIVATE_IPS"); strings.EqualFold(v, "true") || v == "1" {
+		return false
+	}
+
 	// Try parsing as a literal IP first
 	if ip := net.ParseIP(hostname); ip != nil {
 		return isPrivateIP(ip)
