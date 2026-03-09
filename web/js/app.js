@@ -615,7 +615,7 @@ function checkEndpointStatus(inputEl, type, statusId) {
             }
         } catch (err) {
             dot.className = 'status-dot w-2.5 h-2.5 rounded-full bg-red-500';
-            text.textContent = 'Check failed';
+            text.textContent = err.message || 'Check failed';
             text.className = 'status-text text-xs text-red-600 ml-1';
             statusEl.title = err.message || 'Failed to check endpoint';
         }
@@ -648,7 +648,7 @@ async function checkInstanceListEndpoints(instances) {
         if (instance.base_url) {
             api.request('POST', '/api/check-endpoint', { url: instance.base_url, type: 'camunda', instance_id: instance.id })
                 .then(r => updateListDot(document.getElementById(`list-camunda-${instance.id}`), r.status, r.message))
-                .catch(() => updateListDot(document.getElementById(`list-camunda-${instance.id}`), 'unreachable', 'Check failed'));
+                .catch(e => updateListDot(document.getElementById(`list-camunda-${instance.id}`), 'unreachable', e.message || 'Check failed'));
         }
 
         // Check ES if enabled and endpoint configured
@@ -660,7 +660,7 @@ async function checkInstanceListEndpoints(instances) {
                 instance_id: instance.id,
                 username: instance.elasticsearch_username || '',
             }).then(r => updateListDot(document.getElementById(`list-es-${instance.id}`), r.status, r.message))
-              .catch(() => updateListDot(document.getElementById(`list-es-${instance.id}`), 'unreachable', 'Check failed'));
+              .catch(e => updateListDot(document.getElementById(`list-es-${instance.id}`), 'unreachable', e.message || 'Check failed'));
         }
 
         // Check S3 if endpoint configured
@@ -671,7 +671,7 @@ async function checkInstanceListEndpoints(instances) {
                 instance_id: instance.id,
                 access_key: instance.s3_accesskey || '',
             }).then(r => updateListDot(document.getElementById(`list-s3-${instance.id}`), r.status, r.message))
-              .catch(() => updateListDot(document.getElementById(`list-s3-${instance.id}`), 'unreachable', 'Check failed'));
+              .catch(e => updateListDot(document.getElementById(`list-s3-${instance.id}`), 'unreachable', e.message || 'Check failed'));
         }
     }
 }
