@@ -85,7 +85,7 @@ func (h *Handlers) CheckEndpointHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	h.logger.Info("Checking endpoint: type=%s url=%s instance_id=%s", req.Type, req.URL, req.InstanceID)
+	h.logger.Info("Checking endpoint: type=%q url=%q instance_id=%q", req.Type, redactURL(req.URL), req.InstanceID)
 
 	if req.URL == "" {
 		h.logger.Debug("Endpoint check rejected: empty URL")
@@ -96,7 +96,7 @@ func (h *Handlers) CheckEndpointHandler(w http.ResponseWriter, r *http.Request) 
 	// Validate the URL
 	parsedURL, err := url.ParseRequestURI(req.URL)
 	if err != nil {
-		h.logger.Debug("Endpoint check rejected: invalid URL format: %s", req.URL)
+		h.logger.Debug("Endpoint check rejected: invalid URL format: %q", req.URL)
 		writeJSON(w, http.StatusOK, EndpointCheckResponse{
 			Status:  EndpointStatusUnreachable,
 			Message: "Invalid URL format",
@@ -106,7 +106,7 @@ func (h *Handlers) CheckEndpointHandler(w http.ResponseWriter, r *http.Request) 
 
 	// Only allow http and https schemes
 	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		h.logger.Debug("Endpoint check rejected: unsupported scheme %q in URL %s", parsedURL.Scheme, req.URL)
+		h.logger.Debug("Endpoint check rejected: unsupported scheme %q in URL %q", parsedURL.Scheme, redactURL(req.URL))
 		writeJSON(w, http.StatusOK, EndpointCheckResponse{
 			Status:  EndpointStatusUnreachable,
 			Message: "Only http and https URLs are supported",
@@ -116,7 +116,7 @@ func (h *Handlers) CheckEndpointHandler(w http.ResponseWriter, r *http.Request) 
 
 	// SSRF protection: block private, loopback, and link-local addresses
 	if isBlockedHost(parsedURL.Hostname()) {
-		h.logger.Warn("Endpoint check blocked (SSRF): %s — set PROBE_ALLOW_PRIVATE_IPS=true to allow private/loopback targets", req.URL)
+		h.logger.Warn("Endpoint check blocked (SSRF): %q — set PROBE_ALLOW_PRIVATE_IPS=true to allow private/loopback targets", redactURL(req.URL))
 		writeError(w, http.StatusBadRequest, "validation_error", "URLs targeting private or loopback addresses are not allowed (set PROBE_ALLOW_PRIVATE_IPS=true to allow)")
 		return
 	}
@@ -145,7 +145,7 @@ func (h *Handlers) CheckEndpointHandler(w http.ResponseWriter, r *http.Request) 
 		result = probeGeneric(req.URL)
 	}
 
-	h.logger.Info("Endpoint check result: type=%s url=%s status=%s message=%s", req.Type, req.URL, result.Status, result.Message)
+	h.logger.Info("Endpoint check result: type=%q url=%q status=%q message=%q", req.Type, redactURL(req.URL), result.Status, result.Message)
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -400,6 +400,16 @@ func doProbeRequest(method, url string, headers map[string]string) (*http.Respon
 // basicAuth encodes username:password for HTTP Basic auth.
 func basicAuth(username, password string) string {
 	return base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
+}
+
+// redactURL returns a sanitized URL string safe for logging (scheme + host only,
+// userinfo and query parameters stripped to avoid leaking credentials).
+func redactURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "<invalid-url>"
+	}
+	return fmt.Sprintf("%s://%s", u.Scheme, u.Host)
 }
 
 // summarizeError extracts a user-friendly message from a network error.

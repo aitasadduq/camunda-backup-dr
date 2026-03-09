@@ -127,6 +127,35 @@ func TestCheckEndpointHandler_BlocksNonHTTPSchemes(t *testing.T) {
 	}
 }
 
+func TestCheckEndpointHandler_SSRFBypassWithEnvVar(t *testing.T) {
+	t.Setenv("PROBE_ALLOW_PRIVATE_IPS", "true")
+	// Use real isBlockedHost (not the disabled one from setupCheckEndpointHandlers)
+	logger := utils.NewLogger("debug")
+	h := NewHandlers(nil, nil, nil, nil, nil, nil, logger)
+
+	// Start a local server on loopback — this would normally be blocked
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	jsonBody, _ := json.Marshal(EndpointCheckRequest{URL: srv.URL, Type: "camunda"})
+	req := httptest.NewRequest(http.MethodPost, "/api/check-endpoint", bytes.NewReader(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	h.CheckEndpointHandler(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Expected status 200 with PROBE_ALLOW_PRIVATE_IPS=true, got %d", rr.Code)
+	}
+
+	var resp EndpointCheckResponse
+	json.NewDecoder(rr.Body).Decode(&resp)
+	if resp.Status != EndpointStatusConnected {
+		t.Errorf("Expected %q with PROBE_ALLOW_PRIVATE_IPS=true, got %q", EndpointStatusConnected, resp.Status)
+	}
+}
+
 // ---- Camunda tests ----
 
 func TestCheckEndpointHandler_CamundaConnected(t *testing.T) {
