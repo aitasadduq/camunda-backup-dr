@@ -121,3 +121,36 @@ func TestEnvVarFieldsOmittedWhenEmpty(t *testing.T) {
 		t.Error("s3_secret_key_env_var should be omitted when empty")
 	}
 }
+
+func TestCamundaInstance_Validate_RequiresS3Fields(t *testing.T) {
+	base := &CamundaInstance{
+		ID:                  "test",
+		Name:                "Test",
+		BaseURL:             "https://test.example.com",
+		Schedule:            "0 2 * * *",
+		BackupIDS3Endpoint:  "https://s3.example.com",
+		BackupIDS3AccessKey: "AKIAIOSFODNN7EXAMPLE",
+		Components: []CamundaComponentConfig{
+			{Name: "zeebe", Enabled: true},
+		},
+	}
+
+	// Valid with both S3 fields
+	if err := base.Validate(); err != nil {
+		t.Errorf("Expected no error with both S3 fields set, got %v", err)
+	}
+
+	// Missing S3 endpoint
+	noEndpoint := *base
+	noEndpoint.BackupIDS3Endpoint = ""
+	if err := noEndpoint.Validate(); err == nil {
+		t.Error("Expected validation error when S3 endpoint is empty")
+	}
+
+	// Missing S3 access key
+	noKey := *base
+	noKey.BackupIDS3AccessKey = ""
+	if err := noKey.Validate(); err == nil {
+		t.Error("Expected validation error when S3 access key is empty")
+	}
+}

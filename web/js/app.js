@@ -859,14 +859,14 @@ function openInstanceForm(existingInstance) {
                             <label class="block text-xs font-medium text-gray-700 mb-1">S3 Endpoint ${statusDotHtml('s3-status')}</label>
                             <input type="text" name="s3_endpoint" value="${escapeAttr(instance.s3_endpoint || '')}"
                                 class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                placeholder="https://s3.amazonaws.com"
+                                placeholder="https://s3.amazonaws.com" required
                                 oninput="checkEndpointStatus(this, 's3', 's3-status')">
                         </div>
                         <div>
                             <label class="block text-xs font-medium text-gray-700 mb-1">Access Key</label>
                             <input type="text" name="s3_accesskey" value="${escapeAttr(instance.s3_accesskey || '')}"
                                 class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                placeholder="AKIAIOSFODNN7EXAMPLE"
+                                placeholder="AKIAIOSFODNN7EXAMPLE" required
                                 oninput="const s3Input = this.closest('form').querySelector('[name=s3_endpoint]'); if (s3Input && s3Input.value) checkEndpointStatus(s3Input, 's3', 's3-status')">
                         </div>
                         <div id="s3-env-hint" class="${instance.s3_secret_key_env_var ? '' : 'hidden'} bg-blue-50 border border-blue-100 rounded-md p-3 env-var-hint">

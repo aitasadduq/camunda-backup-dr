@@ -41,6 +41,8 @@ func TestManager_CreateInstance(t *testing.T) {
 	defer cleanup()
 
 	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
+	instance.BackupIDS3Endpoint = "https://s3.example.com"
+	instance.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 
 	err := manager.CreateInstance(instance)
 	if err != nil {
@@ -63,6 +65,8 @@ func TestManager_CreateInstance_Duplicate(t *testing.T) {
 	defer cleanup()
 
 	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
+	instance.BackupIDS3Endpoint = "https://s3.example.com"
+	instance.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 
 	err := manager.CreateInstance(instance)
 	if err != nil {
@@ -95,6 +99,8 @@ func TestManager_GetInstance(t *testing.T) {
 	defer cleanup()
 
 	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
+	instance.BackupIDS3Endpoint = "https://s3.example.com"
+	instance.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 	err := manager.CreateInstance(instance)
 	if err != nil {
 		t.Fatalf("Failed to create instance: %v", err)
@@ -126,7 +132,11 @@ func TestManager_ListInstances(t *testing.T) {
 
 	// Create multiple instances
 	instance1 := models.NewCamundaInstance("camunda-a", "Test 1", "https://test1.example.com")
+	instance1.BackupIDS3Endpoint = "https://s3.example.com"
+	instance1.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 	instance2 := models.NewCamundaInstance("camunda-b", "Test 2", "https://test2.example.com")
+	instance2.BackupIDS3Endpoint = "https://s3.example.com"
+	instance2.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 
 	manager.CreateInstance(instance1)
 	manager.CreateInstance(instance2)
@@ -146,6 +156,8 @@ func TestManager_UpdateInstance(t *testing.T) {
 	defer cleanup()
 
 	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
+	instance.BackupIDS3Endpoint = "https://s3.example.com"
+	instance.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 	err := manager.CreateInstance(instance)
 	if err != nil {
 		t.Fatalf("Failed to create instance: %v", err)
@@ -153,6 +165,8 @@ func TestManager_UpdateInstance(t *testing.T) {
 
 	// Update instance
 	updated := models.NewCamundaInstance("camunda-a", "Updated Name", "https://updated.example.com")
+	updated.BackupIDS3Endpoint = "https://s3.example.com"
+	updated.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 	updated.Schedule = "0 3 * * *"
 	err = manager.UpdateInstance("camunda-a", updated)
 	if err != nil {
@@ -179,6 +193,8 @@ func TestManager_UpdateInstance_NotFound(t *testing.T) {
 	defer cleanup()
 
 	instance := models.NewCamundaInstance("camunda-a", "Test", "https://test.example.com")
+	instance.BackupIDS3Endpoint = "https://s3.example.com"
+	instance.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 	err := manager.UpdateInstance("nonexistent", instance)
 	if err != utils.ErrCamundaInstanceNotFound {
 		t.Errorf("Expected ErrCamundaInstanceNotFound, got %v", err)
@@ -190,6 +206,8 @@ func TestManager_DeleteInstance(t *testing.T) {
 	defer cleanup()
 
 	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
+	instance.BackupIDS3Endpoint = "https://s3.example.com"
+	instance.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 	err := manager.CreateInstance(instance)
 	if err != nil {
 		t.Fatalf("Failed to create instance: %v", err)
@@ -222,6 +240,8 @@ func TestManager_EnableInstance(t *testing.T) {
 	defer cleanup()
 
 	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
+	instance.BackupIDS3Endpoint = "https://s3.example.com"
+	instance.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 	instance.Enabled = false
 	err := manager.CreateInstance(instance)
 	if err != nil {
@@ -248,6 +268,8 @@ func TestManager_DisableInstance(t *testing.T) {
 	defer cleanup()
 
 	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
+	instance.BackupIDS3Endpoint = "https://s3.example.com"
+	instance.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 	err := manager.CreateInstance(instance)
 	if err != nil {
 		t.Fatalf("Failed to create instance: %v", err)
@@ -273,8 +295,12 @@ func TestManager_GetEnabledInstances(t *testing.T) {
 	defer cleanup()
 
 	instance1 := models.NewCamundaInstance("camunda-a", "Test 1", "https://test1.example.com")
+	instance1.BackupIDS3Endpoint = "https://s3.example.com"
+	instance1.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 	instance1.Enabled = true
 	instance2 := models.NewCamundaInstance("camunda-b", "Test 2", "https://test2.example.com")
+	instance2.BackupIDS3Endpoint = "https://s3.example.com"
+	instance2.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 	instance2.Enabled = false
 
 	manager.CreateInstance(instance1)
@@ -299,6 +325,8 @@ func TestManager_UpdateComponentConfig(t *testing.T) {
 	defer cleanup()
 
 	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
+	instance.BackupIDS3Endpoint = "https://s3.example.com"
+	instance.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 	err := manager.CreateInstance(instance)
 	if err != nil {
 		t.Fatalf("Failed to create instance: %v", err)
@@ -325,6 +353,8 @@ func TestManager_UpdateComponentConfig_InvalidComponent(t *testing.T) {
 	defer cleanup()
 
 	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
+	instance.BackupIDS3Endpoint = "https://s3.example.com"
+	instance.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 	err := manager.CreateInstance(instance)
 	if err != nil {
 		t.Fatalf("Failed to create instance: %v", err)
@@ -341,6 +371,8 @@ func TestManager_UpdateComponentConfig_NoComponentsEnabled(t *testing.T) {
 	defer cleanup()
 
 	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
+	instance.BackupIDS3Endpoint = "https://s3.example.com"
+	instance.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 	// Disable all components
 	instance.Components = []models.CamundaComponentConfig{
 		{Name: types.ComponentZeebe, Enabled: false},
@@ -360,6 +392,8 @@ func TestManager_UpdateComponentConfig_DisableLastComponent(t *testing.T) {
 	defer cleanup()
 
 	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
+	instance.BackupIDS3Endpoint = "https://s3.example.com"
+	instance.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 	// Keep only one component enabled
 	instance.Components = []models.CamundaComponentConfig{
 		{Name: types.ComponentZeebe, Enabled: true},
@@ -387,6 +421,8 @@ func TestManager_GetInstance_PopulatesEnvVarFields(t *testing.T) {
 	defer cleanup()
 
 	instance := models.NewCamundaInstance("my-cluster", "Test", "https://test.example.com")
+	instance.BackupIDS3Endpoint = "https://s3.example.com"
+	instance.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 	if err := manager.CreateInstance(instance); err != nil {
 		t.Fatalf("Failed to create instance: %v", err)
 	}
@@ -440,6 +476,8 @@ func TestManager_GetInstance_EnvVarNormalization(t *testing.T) {
 			defer cleanup()
 
 			instance := models.NewCamundaInstance(tt.instanceID, "Test", "https://test.example.com")
+			instance.BackupIDS3Endpoint = "https://s3.example.com"
+			instance.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 			if err := manager.CreateInstance(instance); err != nil {
 				t.Fatalf("Failed to create instance: %v", err)
 			}
@@ -464,7 +502,11 @@ func TestManager_ListInstances_PopulatesEnvVarFields(t *testing.T) {
 	defer cleanup()
 
 	instance1 := models.NewCamundaInstance("cluster-a", "A", "https://a.example.com")
+	instance1.BackupIDS3Endpoint = "https://s3.example.com"
+	instance1.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 	instance2 := models.NewCamundaInstance("cluster-b", "B", "https://b.example.com")
+	instance2.BackupIDS3Endpoint = "https://s3.example.com"
+	instance2.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 	manager.CreateInstance(instance1)
 	manager.CreateInstance(instance2)
 
@@ -496,11 +538,15 @@ func TestManager_UpdateInstance_PopulatesEnvVarFields(t *testing.T) {
 	defer cleanup()
 
 	instance := models.NewCamundaInstance("my-cluster", "Test", "https://test.example.com")
+	instance.BackupIDS3Endpoint = "https://s3.example.com"
+	instance.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 	if err := manager.CreateInstance(instance); err != nil {
 		t.Fatalf("Failed to create instance: %v", err)
 	}
 
 	updated := models.NewCamundaInstance("my-cluster", "Updated", "https://updated.example.com")
+	updated.BackupIDS3Endpoint = "https://s3.example.com"
+	updated.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 	if err := manager.UpdateInstance("my-cluster", updated); err != nil {
 		t.Fatalf("Failed to update instance: %v", err)
 	}
@@ -526,8 +572,12 @@ func TestManager_GetEnabledInstances_PopulatesEnvVarFields(t *testing.T) {
 	defer cleanup()
 
 	instance1 := models.NewCamundaInstance("prod-cluster", "Prod", "https://prod.example.com")
+	instance1.BackupIDS3Endpoint = "https://s3.example.com"
+	instance1.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 	instance1.Enabled = true
 	instance2 := models.NewCamundaInstance("staging-cluster", "Staging", "https://staging.example.com")
+	instance2.BackupIDS3Endpoint = "https://s3.example.com"
+	instance2.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 	instance2.Enabled = false
 
 	manager.CreateInstance(instance1)
@@ -560,6 +610,8 @@ func TestManager_GetEnabledInstances_AllEnvVarsNormalized(t *testing.T) {
 	ids := []string{"a-b", "c-d-e", "simple"}
 	for _, id := range ids {
 		inst := models.NewCamundaInstance(id, "Test "+id, "https://"+id+".example.com")
+		inst.BackupIDS3Endpoint = "https://s3.example.com"
+		inst.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
 		inst.Enabled = true
 		manager.CreateInstance(inst)
 	}

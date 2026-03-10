@@ -369,9 +369,11 @@ func TestCreateCamundaInstanceHandler(t *testing.T) {
 	handlers, _, _, _, _, _, _ := newTestHandlers()
 
 	instance := models.CamundaInstance{
-		ID:      "new-instance",
-		Name:    "New Instance",
-		BaseURL: "http://localhost:8080",
+		ID:                  "new-instance",
+		Name:                "New Instance",
+		BaseURL:             "http://localhost:8080",
+		BackupIDS3Endpoint:  "https://s3.example.com",
+		BackupIDS3AccessKey: "AKIAIOSFODNN7EXAMPLE",
 	}
 
 	body, _ := json.Marshal(instance)
