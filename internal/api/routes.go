@@ -62,10 +62,22 @@ func (r *Router) registerRoutes() {
 				return
 			}
 
+			// Return JSON 404 for unmatched /api/ routes instead of serving HTML
+			if strings.HasPrefix(urlPath, "/api/") {
+				writeError(w, http.StatusNotFound, "not_found", "API endpoint not found")
+				return
+			}
+
 			// Serve static assets directly.
-			// Only paths under /css/ or /js/ are considered static assets.
-			// Bare /css or /js (without trailing slash) are not valid asset paths.
+			// Only paths under /css/ or /js/ that reference actual files are
+			// considered static assets. Bare directory paths (/css/, /js/) are
+			// rejected to prevent directory listings.
 			if strings.HasPrefix(urlPath, "/css/") || strings.HasPrefix(urlPath, "/js/") {
+				// Block bare directory paths (e.g. /css/, /js/) to prevent directory listings
+				if urlPath == "/css/" || urlPath == "/js/" {
+					http.NotFound(w, req)
+					return
+				}
 				fileServer.ServeHTTP(w, req)
 				return
 			}

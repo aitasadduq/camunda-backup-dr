@@ -18,6 +18,8 @@ func setupCheckEndpointHandlers(t *testing.T) *Handlers {
 	origBlockedHost := isBlockedHost
 	isBlockedHost = func(string) bool { return false }
 	t.Cleanup(func() { isBlockedHost = origBlockedHost })
+	// Also disable DialContext-level SSRF check for local test servers
+	t.Setenv("PROBE_ALLOW_PRIVATE_IPS", "true")
 	return NewHandlers(nil, nil, nil, nil, nil, nil, logger)
 }
 
@@ -556,6 +558,9 @@ func TestProbeS3WithSDK_Success(t *testing.T) {
 }
 
 func TestProbeS3_CredentialChecks(t *testing.T) {
+	// Allow connections to local httptest server
+	t.Setenv("PROBE_ALLOW_PRIVATE_IPS", "true")
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -726,6 +731,7 @@ func TestCheckEndpointHandler_RouteRegistered(t *testing.T) {
 	origBlockedHost := isBlockedHost
 	isBlockedHost = func(string) bool { return false }
 	t.Cleanup(func() { isBlockedHost = origBlockedHost })
+	t.Setenv("PROBE_ALLOW_PRIVATE_IPS", "true")
 
 	logger := utils.NewLogger("debug")
 	handlers := NewHandlers(&mockCamundaManager{}, nil, nil, nil, nil, nil, logger)

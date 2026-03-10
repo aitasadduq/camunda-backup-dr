@@ -55,8 +55,30 @@ func newProbeHTTPClient() *http.Client {
 		insecureSkip = true
 	}
 
+	dialer := &net.Dialer{Timeout: 3 * time.Second}
+
 	transport := &http.Transport{
-		DialContext:           (&net.Dialer{Timeout: 3 * time.Second}).DialContext,
+		// Wrap DialContext to validate the resolved IP at dial time,
+		// preventing DNS rebinding attacks (TOCTOU gap).
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			conn, err := dialer.DialContext(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+
+			// Check the actual IP being connected to
+			if !isSSRFCheckDisabled() {
+				host, _, splitErr := net.SplitHostPort(conn.RemoteAddr().String())
+				if splitErr == nil {
+					if ip := net.ParseIP(host); ip != nil && isPrivateIP(ip) {
+						conn.Close()
+						return nil, fmt.Errorf("connection to private/loopback address %s is blocked (SSRF protection)", host)
+					}
+				}
+			}
+
+			return conn, nil
+		},
 		ResponseHeaderTimeout: 4 * time.Second,
 	}
 
@@ -74,6 +96,12 @@ func newProbeHTTPClient() *http.Client {
 			return http.ErrUseLastResponse
 		},
 	}
+}
+
+// isSSRFCheckDisabled returns true when PROBE_ALLOW_PRIVATE_IPS is set.
+func isSSRFCheckDisabled() bool {
+	v := os.Getenv("PROBE_ALLOW_PRIVATE_IPS")
+	return strings.EqualFold(v, "true") || v == "1"
 }
 
 // CheckEndpointHandler handles endpoint connectivity check requests
@@ -458,7 +486,7 @@ var privateIPNets = func() []*net.IPNet {
 // Exposed as a var so tests can disable SSRF protection when using httptest servers.
 // Set PROBE_ALLOW_PRIVATE_IPS=true to disable this check (e.g., for local/self-hosted services).
 var isBlockedHost = func(hostname string) bool {
-	if v := os.Getenv("PROBE_ALLOW_PRIVATE_IPS"); strings.EqualFold(v, "true") || v == "1" {
+	if isSSRFCheckDisabled() {
 		return false
 	}
 

@@ -729,12 +729,12 @@ func (h *Handlers) GetBackupLogsHandler(w http.ResponseWriter, r *http.Request) 
 	path := r.URL.Path
 	// Extract instance ID and backup ID from path like /api/camundas/{id}/backups/{backupId}/logs
 	parts := strings.Split(strings.TrimPrefix(path, "/api/camundas/"), "/")
-	if len(parts) < 4 || parts[0] == "" || parts[1] != "backups" || parts[2] == "" || parts[3] != "logs" {
+	if len(parts) != 4 || parts[0] == "" || parts[1] != "backups" || parts[2] == "" || parts[3] != "logs" {
 		writeError(w, http.StatusBadRequest, "validation_error", "Instance ID and Backup ID are required")
 		return
 	}
 
-	instanceID := parts[0]
+	instanceID := strings.ToLower(parts[0])
 	backupID := parts[2]
 
 	// Verify instance exists

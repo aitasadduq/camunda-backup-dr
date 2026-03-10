@@ -1470,7 +1470,7 @@ function toggleAccordion(btn) {
  *
  * @param {Object} instance - The instance data object
  * @param {string} componentName - Component name (e.g. 'zeebe', 'operate')
- * @param {string} endpointType - Either 'backup' or 'status'
+ * @param {string} endpointType - Must be 'backup' (status is derived from the backup endpoint)
  * @returns {string}
  */
 function getInstanceEndpointValue(instance, componentName, endpointType) {
