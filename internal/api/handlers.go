@@ -57,6 +57,11 @@ type RetentionManager interface {
 	ListFailedBackups(camundaInstanceID string) ([]*models.BackupHistory, error)
 }
 
+// LogFileReader defines the interface for reading backup log files
+type LogFileReader interface {
+	ReadLogFile(camundaInstanceID, backupID string) (string, error)
+}
+
 // Handlers contains HTTP request handlers
 type Handlers struct {
 	camundaManager   CamundaManager
@@ -64,6 +69,7 @@ type Handlers struct {
 	historyProvider  BackupHistoryProvider
 	scheduler        SchedulerInterface
 	retentionManager RetentionManager
+	logFileReader    LogFileReader
 	logger           *utils.Logger
 }
 
@@ -74,6 +80,7 @@ func NewHandlers(
 	historyProvider BackupHistoryProvider,
 	scheduler SchedulerInterface,
 	retentionManager RetentionManager,
+	logFileReader LogFileReader,
 	logger *utils.Logger,
 ) *Handlers {
 	return &Handlers{
@@ -82,6 +89,7 @@ func NewHandlers(
 		historyProvider:  historyProvider,
 		scheduler:        scheduler,
 		retentionManager: retentionManager,
+		logFileReader:    logFileReader,
 		logger:           logger,
 	}
 }
@@ -200,6 +208,8 @@ func (h *Handlers) CreateCamundaInstanceHandler(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, "validation_error", "ID is required")
 		return
 	}
+	// Normalize: lowercase the ID automatically
+	instance.ID = strings.ToLower(instance.ID)
 	if instance.Name == "" {
 		writeError(w, http.StatusBadRequest, "validation_error", "Name is required")
 		return
@@ -714,15 +724,66 @@ func (h *Handlers) ListFailedBackupsHandler(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, failed)
 }
 
-// extractIDFromPath extracts an ID from a URL path
+// GetBackupLogsHandler handles retrieving backup log file contents
+func (h *Handlers) GetBackupLogsHandler(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	// Extract instance ID and backup ID from path like /api/camundas/{id}/backups/{backupId}/logs
+	parts := strings.Split(strings.TrimPrefix(path, "/api/camundas/"), "/")
+	if len(parts) != 4 || parts[0] == "" || parts[1] != "backups" || parts[2] == "" || parts[3] != "logs" {
+		writeError(w, http.StatusBadRequest, "validation_error", "Instance ID and Backup ID are required")
+		return
+	}
+
+	instanceID := strings.ToLower(parts[0])
+	backupID := parts[2]
+
+	// Verify instance exists
+	_, err := h.camundaManager.GetInstance(instanceID)
+	if err != nil {
+		if err == utils.ErrCamundaInstanceNotFound {
+			writeError(w, http.StatusNotFound, "not_found", "Camunda instance not found")
+			return
+		}
+		h.logger.Error("Failed to get Camunda instance: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to get Camunda instance")
+		return
+	}
+
+	if h.logFileReader == nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Log file reader not configured")
+		return
+	}
+
+	logContent, err := h.logFileReader.ReadLogFile(instanceID, backupID)
+	if err != nil {
+		if err == utils.ErrBackupNotFound || err == utils.ErrFileStorageFailed {
+			writeError(w, http.StatusNotFound, "not_found", "Backup log file not found")
+			return
+		}
+		h.logger.Error("Failed to read backup log file: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to read backup log file")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write([]byte(logContent)); err != nil {
+		h.logger.Error("Failed to write backup log response: %v", err)
+	}
+}
+
+// extractIDFromPath extracts an ID from a URL path, normalizing to lowercase.
 func extractIDFromPath(path, prefix string) string {
 	if !strings.HasPrefix(path, prefix) {
 		return ""
 	}
 	remaining := strings.TrimPrefix(path, prefix)
+	var id string
 	// Return everything up to the next slash or end of string
 	if idx := strings.Index(remaining, "/"); idx != -1 {
-		return remaining[:idx]
+		id = remaining[:idx]
+	} else {
+		id = remaining
 	}
-	return remaining
+	return strings.ToLower(id)
 }

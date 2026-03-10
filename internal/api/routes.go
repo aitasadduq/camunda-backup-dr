@@ -1,6 +1,7 @@
 package api
 
 import (
+	"io/fs"
 	"net/http"
 	"strings"
 )
@@ -9,13 +10,15 @@ import (
 type Router struct {
 	handlers *Handlers
 	mux      *http.ServeMux
+	webFS    fs.FS
 }
 
 // NewRouter creates a new router with the given handlers
-func NewRouter(handlers *Handlers) *Router {
+func NewRouter(handlers *Handlers, webFS fs.FS) *Router {
 	router := &Router{
 		handlers: handlers,
 		mux:      http.NewServeMux(),
+		webFS:    webFS,
 	}
 	router.registerRoutes()
 	return router
@@ -32,6 +35,11 @@ func (r *Router) registerRoutes() {
 		http.MethodGet: r.handlers.SystemStatusHandler,
 	}))
 
+	// Endpoint connectivity check
+	r.mux.HandleFunc("/api/check-endpoint", r.methodHandler(map[string]http.HandlerFunc{
+		http.MethodPost: r.handlers.CheckEndpointHandler,
+	}))
+
 	// Camunda instances - collection endpoints
 	r.mux.HandleFunc("/api/camundas", r.methodHandler(map[string]http.HandlerFunc{
 		http.MethodGet:  r.handlers.ListCamundaInstancesHandler,
@@ -41,6 +49,55 @@ func (r *Router) registerRoutes() {
 	// Camunda instances - resource endpoints
 	// Use a pattern that catches all /api/camundas/ routes and route based on path
 	r.mux.HandleFunc("/api/camundas/", r.camundaResourceHandler())
+
+	// Serve embedded web UI static files
+	if r.webFS != nil {
+		fileServer := http.FileServer(http.FS(r.webFS))
+		r.mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
+			urlPath := req.URL.Path
+
+			// Reject paths containing directory traversal sequences
+			if containsDotDot(urlPath) {
+				http.NotFound(w, req)
+				return
+			}
+
+			// Return JSON 404 for unmatched /api/ routes instead of serving HTML
+			if strings.HasPrefix(urlPath, "/api/") {
+				writeError(w, http.StatusNotFound, "not_found", "API endpoint not found")
+				return
+			}
+
+			// Serve static assets directly.
+			// Only paths under /css/ or /js/ that reference actual files are
+			// considered static assets. Bare directory paths (/css/, /js/) are
+			// rejected to prevent directory listings.
+			if strings.HasPrefix(urlPath, "/css/") || strings.HasPrefix(urlPath, "/js/") {
+				// Block bare directory paths (e.g. /css/, /js/) to prevent directory listings
+				if urlPath == "/css/" || urlPath == "/js/" {
+					http.NotFound(w, req)
+					return
+				}
+				fileServer.ServeHTTP(w, req)
+				return
+			}
+			if urlPath == "/css" || urlPath == "/js" {
+				http.NotFound(w, req)
+				return
+			}
+
+			// For root and any other non-API path, serve index.html directly.
+			// We read the file and write it ourselves to avoid http.FileServer's
+			// redirect from /index.html -> / which causes a redirect loop.
+			data, err := fs.ReadFile(r.webFS, "index.html")
+			if err != nil {
+				http.NotFound(w, req)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write(data)
+		})
+	}
 }
 
 // camundaResourceHandler handles all /api/camundas/{id}... routes
@@ -101,6 +158,14 @@ func (r *Router) camundaResourceHandler() http.HandlerFunc {
 			}
 			r.handlers.ListFailedBackupsHandler(w, req)
 
+		// GET /api/camundas/{id}/backups/{backupId}/logs
+		case strings.HasSuffix(path, "/logs") && strings.Contains(path, "/backups/"):
+			if req.Method != http.MethodGet {
+				r.methodNotAllowed(w, req)
+				return
+			}
+			r.handlers.GetBackupLogsHandler(w, req)
+
 		// GET/DELETE /api/camundas/{id}/backups/{backupId}
 		case strings.Contains(path, "/backups/"):
 			switch req.Method {
@@ -157,6 +222,17 @@ func (r *Router) methodHandler(methods map[string]http.HandlerFunc) http.Handler
 // methodNotAllowed returns a 405 Method Not Allowed response
 func (r *Router) methodNotAllowed(w http.ResponseWriter, req *http.Request) {
 	writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method "+req.Method+" not allowed")
+}
+
+// containsDotDot checks whether the URL path contains ".." path segments
+// that could be used for directory traversal.
+func containsDotDot(urlPath string) bool {
+	for _, seg := range strings.Split(urlPath, "/") {
+		if seg == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // ServeHTTP implements http.Handler

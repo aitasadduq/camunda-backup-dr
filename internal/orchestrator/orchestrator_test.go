@@ -217,11 +217,8 @@ func setupTestInstance(id, name string) *models.CamundaInstance {
 		Enabled:                true,
 		ParallelExecution:      false,
 		ZeebeBackupEndpoint:    "http://localhost:8080/zeebe/backup",
-		ZeebeStatusEndpoint:    "http://localhost:8080/zeebe/backup/status",
 		OperateBackupEndpoint:  "http://localhost:8080/operate/backup",
-		OperateStatusEndpoint:  "http://localhost:8080/operate/backup/status",
 		TasklistBackupEndpoint: "http://localhost:8080/tasklist/backup",
-		TasklistStatusEndpoint: "http://localhost:8080/tasklist/backup/status",
 		Components: []models.CamundaComponentConfig{
 			{Name: types.ComponentZeebe, Enabled: true},
 			{Name: types.ComponentOperate, Enabled: true},
@@ -288,11 +285,8 @@ func TestExecuteBackup_SequentialMode_Success(t *testing.T) {
 	// Create test instance with server URLs
 	instance := setupTestInstance("test-instance", "Test Instance")
 	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
-	instance.ZeebeStatusEndpoint = server.URL + "/zeebe/backup/status"
 	instance.OperateBackupEndpoint = server.URL + "/operate/backup"
-	instance.OperateStatusEndpoint = server.URL + "/operate/backup/status"
 	instance.TasklistBackupEndpoint = server.URL + "/tasklist/backup"
-	instance.TasklistStatusEndpoint = server.URL + "/tasklist/backup/status"
 	instance.ParallelExecution = false
 
 	// Execute backup
@@ -382,11 +376,8 @@ func TestExecuteBackup_ParallelMode_Success(t *testing.T) {
 	// Create test instance with server URLs
 	instance := setupTestInstance("test-instance", "Test Instance")
 	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
-	instance.ZeebeStatusEndpoint = server.URL + "/zeebe/backup/status"
 	instance.OperateBackupEndpoint = server.URL + "/operate/backup"
-	instance.OperateStatusEndpoint = server.URL + "/operate/backup/status"
 	instance.TasklistBackupEndpoint = server.URL + "/tasklist/backup"
-	instance.TasklistStatusEndpoint = server.URL + "/tasklist/backup/status"
 	instance.ParallelExecution = true // Enable parallel execution
 
 	// Execute backup
@@ -451,11 +442,8 @@ func TestExecuteBackup_ComponentFailure(t *testing.T) {
 	// Create test instance with server URLs
 	instance := setupTestInstance("test-instance", "Test Instance")
 	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
-	instance.ZeebeStatusEndpoint = server.URL + "/zeebe/backup/status"
 	instance.OperateBackupEndpoint = server.URL + "/operate/backup"
-	instance.OperateStatusEndpoint = server.URL + "/operate/backup/status"
 	instance.TasklistBackupEndpoint = server.URL + "/tasklist/backup"
-	instance.TasklistStatusEndpoint = server.URL + "/tasklist/backup/status"
 
 	// Execute backup
 	ctx := context.Background()
@@ -554,7 +542,6 @@ func TestExecuteBackup_LogsWrittenToFile(t *testing.T) {
 	// Create test instance
 	instance := setupTestInstance("test-instance", "Test Instance")
 	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
-	instance.ZeebeStatusEndpoint = server.URL + "/zeebe/backup/status"
 	// Disable other components to avoid failures due to missing endpoints
 	instance.OperateBackupEndpoint = ""
 	instance.TasklistBackupEndpoint = ""
@@ -691,7 +678,6 @@ func TestExecuteOptimizeBackup_Success(t *testing.T) {
 	// Create test instance with only Optimize enabled
 	instance := setupTestInstance("test-instance", "Test Instance")
 	instance.OptimizeBackupEndpoint = server.URL + "/optimize/backup"
-	instance.OptimizeStatusEndpoint = server.URL + "/optimize/backup/status"
 	instance.Components = []models.CamundaComponentConfig{
 		{Name: types.ComponentOptimize, Enabled: true},
 	}
@@ -800,50 +786,6 @@ func TestExecuteOptimizeBackup_TriggerFailure(t *testing.T) {
 	}
 }
 
-func TestExecuteOptimizeBackup_NoStatusEndpoint(t *testing.T) {
-	// Create mock server that accepts trigger but has no status endpoint
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			w.WriteHeader(http.StatusAccepted) // Test 202 Accepted
-			json.NewEncoder(w).Encode(map[string]string{"message": "Backup triggered"})
-		}
-	}))
-	defer server.Close()
-
-	// Set up orchestrator
-	fileStorage := newMockFileStorage()
-	s3Storage := newMockS3Storage()
-	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
-	logger := utils.NewLogger("test")
-	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, setupTestConfig(), logger, 100*time.Millisecond, 50)
-
-	// Create test instance with Optimize but no status endpoint
-	instance := setupTestInstance("test-instance", "Test Instance")
-	instance.OptimizeBackupEndpoint = server.URL + "/optimize/backup"
-	instance.OptimizeStatusEndpoint = "" // No status endpoint
-	instance.Components = []models.CamundaComponentConfig{
-		{Name: types.ComponentOptimize, Enabled: true},
-	}
-
-	// Execute backup
-	ctx := context.Background()
-	req := BackupRequest{
-		CamundaInstance: instance,
-		TriggerType:     types.TriggerTypeManual,
-		BackupReason:    "Test Optimize no status endpoint",
-	}
-
-	execution, err := orchestrator.ExecuteBackup(ctx, req)
-
-	// Verify results - should complete without polling
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
-	}
-	if execution.ComponentStatus[types.ComponentOptimize] != types.ComponentStatusCompleted {
-		t.Errorf("Expected Optimize to be COMPLETED, got: %s", execution.ComponentStatus[types.ComponentOptimize])
-	}
-}
-
 // Test 2: Scenario where a Camunda instance has no enabled components
 func TestExecuteBackup_NoEnabledComponents(t *testing.T) {
 	// Set up orchestrator
@@ -942,7 +884,6 @@ func TestPollBackupStatus_Timeout(t *testing.T) {
 	// Create test instance
 	instance := setupTestInstance("test-instance", "Test Instance")
 	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
-	instance.ZeebeStatusEndpoint = server.URL + "/zeebe/backup/status"
 	instance.Components = []models.CamundaComponentConfig{
 		{Name: types.ComponentZeebe, Enabled: true},
 	}
@@ -1074,7 +1015,6 @@ func TestExecuteBackup_ContextCancellation(t *testing.T) {
 	// Create test instance
 	instance := setupTestInstance("test-instance", "Test Instance")
 	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
-	instance.ZeebeStatusEndpoint = server.URL + "/zeebe/backup/status"
 	instance.Components = []models.CamundaComponentConfig{
 		{Name: types.ComponentZeebe, Enabled: true},
 	}
@@ -1125,9 +1065,7 @@ func TestExecuteBackup_ContextCancellation_Parallel(t *testing.T) {
 	// Create test instance with parallel execution
 	instance := setupTestInstance("test-instance", "Test Instance")
 	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
-	instance.ZeebeStatusEndpoint = server.URL + "/zeebe/backup/status"
 	instance.OperateBackupEndpoint = server.URL + "/operate/backup"
-	instance.OperateStatusEndpoint = server.URL + "/operate/backup/status"
 	instance.ParallelExecution = true
 	instance.Components = []models.CamundaComponentConfig{
 		{Name: types.ComponentZeebe, Enabled: true},
@@ -1215,7 +1153,6 @@ func TestExecuteBackup_BackupHistoryStorageFailure(t *testing.T) {
 	// Create test instance
 	instance := setupTestInstance("test-instance", "Test Instance")
 	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
-	instance.ZeebeStatusEndpoint = server.URL + "/zeebe/backup/status"
 	instance.Components = []models.CamundaComponentConfig{
 		{Name: types.ComponentZeebe, Enabled: true},
 	}
@@ -1263,7 +1200,6 @@ func TestExecuteBackup_StatusUpdateFailure(t *testing.T) {
 	// Create test instance
 	instance := setupTestInstance("test-instance", "Test Instance")
 	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
-	instance.ZeebeStatusEndpoint = server.URL + "/zeebe/backup/status"
 	instance.Components = []models.CamundaComponentConfig{
 		{Name: types.ComponentZeebe, Enabled: true},
 	}
@@ -1313,7 +1249,6 @@ func TestPollBackupStatus_StatusField(t *testing.T) {
 	// Create test instance
 	instance := setupTestInstance("test-instance", "Test Instance")
 	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
-	instance.ZeebeStatusEndpoint = server.URL + "/zeebe/backup/status"
 	instance.Components = []models.CamundaComponentConfig{
 		{Name: types.ComponentZeebe, Enabled: true},
 	}
@@ -1371,7 +1306,6 @@ func TestPollBackupStatus_AlternativeCompletionStates(t *testing.T) {
 			// Create test instance
 			instance := setupTestInstance("test-instance", "Test Instance")
 			instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
-			instance.ZeebeStatusEndpoint = server.URL + "/zeebe/backup/status"
 			instance.Components = []models.CamundaComponentConfig{
 				{Name: types.ComponentZeebe, Enabled: true},
 			}
@@ -1427,7 +1361,6 @@ func TestPollBackupStatus_MissingStateField(t *testing.T) {
 	// Create test instance
 	instance := setupTestInstance("test-instance", "Test Instance")
 	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
-	instance.ZeebeStatusEndpoint = server.URL + "/zeebe/backup/status"
 	instance.Components = []models.CamundaComponentConfig{
 		{Name: types.ComponentZeebe, Enabled: true},
 	}
@@ -1474,7 +1407,6 @@ func TestPollBackupStatus_404NotFound(t *testing.T) {
 	// Create test instance
 	instance := setupTestInstance("test-instance", "Test Instance")
 	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
-	instance.ZeebeStatusEndpoint = server.URL + "/zeebe/backup/status"
 	instance.Components = []models.CamundaComponentConfig{
 		{Name: types.ComponentZeebe, Enabled: true},
 	}
@@ -1530,7 +1462,6 @@ func TestPollBackupStatus_TransientServerError(t *testing.T) {
 	// Create test instance
 	instance := setupTestInstance("test-instance", "Test Instance")
 	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
-	instance.ZeebeStatusEndpoint = server.URL + "/zeebe/backup/status"
 	instance.Components = []models.CamundaComponentConfig{
 		{Name: types.ComponentZeebe, Enabled: true},
 	}
@@ -1585,7 +1516,6 @@ func TestPollBackupStatus_InvalidJSON(t *testing.T) {
 	// Create test instance
 	instance := setupTestInstance("test-instance", "Test Instance")
 	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
-	instance.ZeebeStatusEndpoint = server.URL + "/zeebe/backup/status"
 	instance.Components = []models.CamundaComponentConfig{
 		{Name: types.ComponentZeebe, Enabled: true},
 	}

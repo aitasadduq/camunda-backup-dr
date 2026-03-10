@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	cfg "github.com/aitasadduq/camunda-backup-dr/internal/config"
 	"github.com/aitasadduq/camunda-backup-dr/internal/models"
 	"github.com/aitasadduq/camunda-backup-dr/internal/storage"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
@@ -57,6 +58,10 @@ func (m *Manager) CreateInstance(instance *models.CamundaInstance) error {
 		instance.LastBackupStatus = "NEVER_BACKED_UP"
 	}
 
+	// Clear computed env var hints so they are not persisted
+	instance.ElasticsearchPasswordEnvVar = ""
+	instance.BackupIDS3SecretKeyEnvVar = ""
+
 	// Add instance to configuration
 	config.CamundaInstances = append(config.CamundaInstances, *instance)
 
@@ -80,6 +85,10 @@ func (m *Manager) GetInstance(id string) (*models.CamundaInstance, error) {
 	}
 
 	for i := range config.CamundaInstances {
+		// Populate helper fields
+		config.CamundaInstances[i].ElasticsearchPasswordEnvVar = "ELASTICSEARCH_PASSWORD_" + cfg.NormalizeForEnvVar(config.CamundaInstances[i].ID)
+		config.CamundaInstances[i].BackupIDS3SecretKeyEnvVar = "S3_SECRETKEY_" + cfg.NormalizeForEnvVar(config.CamundaInstances[i].ID)
+
 		if config.CamundaInstances[i].ID == id {
 			return &config.CamundaInstances[i], nil
 		}
@@ -96,6 +105,12 @@ func (m *Manager) ListInstances() ([]models.CamundaInstance, error) {
 	config, err := m.fileStorage.LoadConfiguration()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load configuration: %w", err)
+	}
+
+	// Populate helper fields
+	for i := range config.CamundaInstances {
+		config.CamundaInstances[i].ElasticsearchPasswordEnvVar = "ELASTICSEARCH_PASSWORD_" + cfg.NormalizeForEnvVar(config.CamundaInstances[i].ID)
+		config.CamundaInstances[i].BackupIDS3SecretKeyEnvVar = "S3_SECRETKEY_" + cfg.NormalizeForEnvVar(config.CamundaInstances[i].ID)
 	}
 
 	return config.CamundaInstances, nil
@@ -122,6 +137,10 @@ func (m *Manager) UpdateInstance(id string, updates *models.CamundaInstance) err
 			updates.UpdatedAt = time.Now()
 			updates.LastBackupAt = config.CamundaInstances[i].LastBackupAt
 			updates.LastBackupStatus = config.CamundaInstances[i].LastBackupStatus
+
+			// Clear computed env var hints so they are not persisted
+			updates.ElasticsearchPasswordEnvVar = ""
+			updates.BackupIDS3SecretKeyEnvVar = ""
 
 			// Validate updated instance
 			if err := updates.Validate(); err != nil {
@@ -331,6 +350,9 @@ func (m *Manager) GetEnabledInstances() ([]models.CamundaInstance, error) {
 	var enabled []models.CamundaInstance
 	for _, instance := range config.CamundaInstances {
 		if instance.Enabled {
+			// Populate helper fields
+			instance.ElasticsearchPasswordEnvVar = "ELASTICSEARCH_PASSWORD_" + cfg.NormalizeForEnvVar(instance.ID)
+			instance.BackupIDS3SecretKeyEnvVar = "S3_SECRETKEY_" + cfg.NormalizeForEnvVar(instance.ID)
 			enabled = append(enabled, instance)
 		}
 	}
