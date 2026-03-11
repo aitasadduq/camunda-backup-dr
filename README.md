@@ -16,6 +16,7 @@ The project follows a layered architecture with clear separation of concerns:
 - **External Integrations**: Camunda instances, Elasticsearch, Object Storage
 
 For detailed architecture documentation, see [docs/architecture.md](docs/architecture.md).
+For error handling, resilience patterns, and configuration reference, see [docs/error-handling.md](docs/error-handling.md).
 
 ## Project Structure
 
