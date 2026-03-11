@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"time"
 
@@ -63,13 +64,15 @@ func (c *HTTPClient) Do(ctx context.Context, opts RequestOptions) (*http.Respons
 
 	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
 		if attempt > 0 {
-			// Wait before retry with exponential backoff
-			c.logger.Debug("Retrying request (attempt %d/%d) after %v", attempt, c.config.MaxRetries, delay)
+			// Wait before retry with exponential backoff + jitter
+			jitter := time.Duration(rand.Int63n(int64(delay) / 2))
+			waitTime := delay + jitter
+			c.logger.Debug("Retrying request (attempt %d/%d) after %v (jitter: %v)", attempt, c.config.MaxRetries, waitTime, jitter)
 			
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(delay):
+			case <-time.After(waitTime):
 				// Continue with retry
 			}
 			

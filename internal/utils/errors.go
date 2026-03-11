@@ -41,4 +41,16 @@ var (
 
 	// ErrCannotDeleteMostRecentBackup is returned when attempting to delete the most recent successful backup
 	ErrCannotDeleteMostRecentBackup = errors.New("cannot delete the most recent successful backup")
+
+	// ErrCircuitBreakerOpen is returned when a circuit breaker is in the open state
+	ErrCircuitBreakerOpen = errors.New("circuit breaker is open")
+
+	// ErrBackupStuck is returned when a backup has been running longer than the stuck timeout
+	ErrBackupStuck = errors.New("backup appears stuck")
+
+	// ErrCleanupFailed is returned when post-failure cleanup encounters errors
+	ErrCleanupFailed = errors.New("cleanup after failure encountered errors")
+
+	// ErrRetryExhausted is returned when all retry attempts are exhausted
+	ErrRetryExhausted = errors.New("all retry attempts exhausted")
 )

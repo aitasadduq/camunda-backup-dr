@@ -37,6 +37,7 @@ type Orchestrator struct {
 	pollInterval    time.Duration
 	maxPollAttempts int
 	retentionFunc   RetentionFunc
+	alerter         *utils.Alerter
 }
 
 // NewOrchestrator creates a new backup orchestrator
@@ -63,6 +64,11 @@ func NewOrchestrator(
 // SetRetentionFunc sets the callback invoked after a successful backup.
 func (o *Orchestrator) SetRetentionFunc(fn RetentionFunc) {
 	o.retentionFunc = fn
+}
+
+// SetAlerter sets the alerter used for critical failure notifications.
+func (o *Orchestrator) SetAlerter(alerter *utils.Alerter) {
+	o.alerter = alerter
 }
 
 // BackupRequest represents a backup request
@@ -644,6 +650,48 @@ func (o *Orchestrator) finalizeBackup(req BackupRequest, execution *models.Backu
 	// Update backup status in S3
 	if err := o.s3Storage.UpdateBackupStatus(req.CamundaInstance.ID, execution.BackupID, execution.Status); err != nil {
 		o.logger.Error("Failed to update backup status in S3: %v", err)
+	}
+
+	// Automatic cleanup and alerting on failure
+	if execution.Status == types.BackupStatusFailed {
+		o.handleBackupFailure(req, execution)
+	}
+}
+
+// handleBackupFailure performs automatic cleanup and sends alerts when a backup fails.
+// It moves the failed backup to incomplete in S3 and notifies via the alerter.
+// All errors are logged but never propagated — cleanup must not disrupt the main flow.
+func (o *Orchestrator) handleBackupFailure(req BackupRequest, execution *models.BackupExecution) {
+	log := o.logger.WithContext("handleBackupFailure", "", req.CamundaInstance.ID)
+
+	// Build a summary of failed components for the alert message
+	var failedComponents []string
+	for comp, status := range execution.ComponentStatus {
+		if status == types.ComponentStatusFailed {
+			failedComponents = append(failedComponents, comp)
+		}
+	}
+	failureReason := fmt.Sprintf("failed components: %s", strings.Join(failedComponents, ", "))
+	if execution.ErrorMessage != "" {
+		failureReason = execution.ErrorMessage
+	}
+
+	// Move the failed backup to incomplete in S3 so retention can clean it up
+	// when a newer successful backup arrives (per architecture spec).
+	o.writeLog(req.CamundaInstance.ID, execution.BackupID, "Moving failed backup to incomplete for future cleanup")
+	if err := o.s3Storage.MoveToIncomplete(req.CamundaInstance.ID, execution.BackupID); err != nil {
+		log.Error("Failed to move backup %s to incomplete: %v", execution.BackupID, err)
+		o.writeLog(req.CamundaInstance.ID, execution.BackupID, fmt.Sprintf("Cleanup warning: failed to move to incomplete: %v", err))
+		if o.alerter != nil {
+			o.alerter.AlertCleanupFailed(req.CamundaInstance.ID, execution.BackupID, err.Error())
+		}
+	} else {
+		o.writeLog(req.CamundaInstance.ID, execution.BackupID, "Failed backup moved to incomplete successfully")
+	}
+
+	// Send alert for the backup failure
+	if o.alerter != nil {
+		o.alerter.AlertBackupFailed(req.CamundaInstance.ID, execution.BackupID, failureReason)
 	}
 }
 

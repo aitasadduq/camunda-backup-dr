@@ -199,23 +199,23 @@ func (h *Handlers) ListCamundaInstancesHandler(w http.ResponseWriter, r *http.Re
 func (h *Handlers) CreateCamundaInstanceHandler(w http.ResponseWriter, r *http.Request) {
 	var instance models.CamundaInstance
 	if err := json.NewDecoder(r.Body).Decode(&instance); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "Invalid JSON body: "+err.Error())
+		writeAppError(w, utils.NewValidationError("Invalid JSON body: "+err.Error()))
 		return
 	}
 
 	// Validate required fields
 	if instance.ID == "" {
-		writeError(w, http.StatusBadRequest, "validation_error", "ID is required")
+		writeAppError(w, utils.NewValidationError("ID is required"))
 		return
 	}
 	// Normalize: lowercase the ID automatically
 	instance.ID = strings.ToLower(instance.ID)
 	if instance.Name == "" {
-		writeError(w, http.StatusBadRequest, "validation_error", "Name is required")
+		writeAppError(w, utils.NewValidationError("Name is required"))
 		return
 	}
 	if instance.BaseURL == "" {
-		writeError(w, http.StatusBadRequest, "validation_error", "BaseURL is required")
+		writeAppError(w, utils.NewValidationError("BaseURL is required"))
 		return
 	}
 
@@ -248,11 +248,11 @@ func (h *Handlers) CreateCamundaInstanceHandler(w http.ResponseWriter, r *http.R
 			return
 		}
 		if err == utils.ErrInvalidCamundaInstance || err == utils.ErrNoComponentsEnabled {
-			writeError(w, http.StatusBadRequest, "validation_error", "Invalid Camunda instance configuration")
+			writeAppError(w, utils.NewValidationError("Invalid Camunda instance configuration").WithInstance(instance.ID))
 			return
 		}
 		h.logger.Error("Failed to create Camunda instance: %v", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create Camunda instance")
+		writeAppError(w, utils.WrapError(err, "internal_error", "Failed to create Camunda instance", http.StatusInternalServerError))
 		return
 	}
 
@@ -432,7 +432,7 @@ func (h *Handlers) TriggerBackupHandler(w http.ResponseWriter, r *http.Request) 
 	id := extractIDFromPath(path, "/api/camundas/")
 	id = strings.TrimSuffix(id, "/backup")
 	if id == "" {
-		writeError(w, http.StatusBadRequest, "validation_error", "Instance ID is required")
+		writeAppError(w, utils.NewValidationError("Instance ID is required"))
 		return
 	}
 
@@ -440,11 +440,11 @@ func (h *Handlers) TriggerBackupHandler(w http.ResponseWriter, r *http.Request) 
 	instance, err := h.camundaManager.GetInstance(id)
 	if err != nil {
 		if err == utils.ErrCamundaInstanceNotFound {
-			writeError(w, http.StatusNotFound, "not_found", "Camunda instance not found")
+			writeAppError(w, utils.NewNotFoundError("Camunda instance not found").WithInstance(id))
 			return
 		}
 		h.logger.Error("Failed to get Camunda instance: %v", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to get Camunda instance")
+		writeAppError(w, utils.WrapError(err, "internal_error", "Failed to get Camunda instance", http.StatusInternalServerError).WithInstance(id))
 		return
 	}
 

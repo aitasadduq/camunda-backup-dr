@@ -39,10 +39,17 @@ func RecoveryMiddleware(logger *utils.Logger) Middleware {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if err := recover(); err != nil {
-					// Log the panic
+					// Log the panic with full stack trace
 					logger.Error("Panic recovered: %v\nStack trace:\n%s", err, debug.Stack())
 
-					// Return a 500 error
+					// If the panic value is an AppError, use its details
+					if appErr, ok := err.(*utils.AppError); ok {
+						status, body := utils.ToHTTPError(appErr)
+						writeJSON(w, status, body)
+						return
+					}
+
+					// Return a generic 500 error
 					writeError(w, http.StatusInternalServerError, "internal_error", "Internal server error")
 				}
 			}()

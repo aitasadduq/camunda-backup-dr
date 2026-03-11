@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+
+	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
 )
 
 // ErrorResponse represents an error response
@@ -106,4 +108,10 @@ func writeSuccess(w http.ResponseWriter, status int, message string, data interf
 		Message: message,
 		Data:    data,
 	})
+}
+
+// writeAppError writes an error response from an AppError or falls back to generic 500.
+func writeAppError(w http.ResponseWriter, err error) {
+	status, body := utils.ToHTTPError(err)
+	writeJSON(w, status, body)
 }
