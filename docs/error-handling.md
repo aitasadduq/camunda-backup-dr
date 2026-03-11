@@ -24,7 +24,7 @@ This document describes the error handling patterns, resilience mechanisms, logg
 
 ### AppError Type
 
-All application errors use the `AppError` struct, which provides machine-readable codes, HTTP status mapping, and contextual metadata:
+For API and handler responses, errors are represented using the `AppError` struct, which provides machine-readable codes, HTTP status mapping, and contextual metadata, while lower-level components may also return sentinel errors for identity checks and internal control flow:
 
 ```go
 type AppError struct {
@@ -45,7 +45,6 @@ type AppError struct {
 | Code | Constant | HTTP Status | Description |
 |------|----------|-------------|-------------|
 | `backup_failed` | `ErrCodeBackupFailed` | 500 | Backup operation failed |
-| `backup_timeout` | `ErrCodeBackupTimeout` | 504 | Backup exceeded time limit |
 | `circuit_open` | `ErrCodeCircuitOpen` | 503 | Circuit breaker is open; service unavailable |
 | `cleanup_failed` | `ErrCodeCleanupFailed` | 500 | Post-failure cleanup failed |
 | `not_found` | `ErrCodeNotFound` | 404 | Requested resource not found |
@@ -124,7 +123,9 @@ err := utils.WrapError(originalErr, "backup_failed", "backup operation failed", 
 
 ## API Error Responses
 
-All API errors are returned as JSON with the following structure:
+There are two error response formats depending on the handler path:
+
+**Standard error response** (used by most handlers via `writeError`):
 
 ```json
 {
@@ -134,25 +135,35 @@ All API errors are returned as JSON with the following structure:
 }
 ```
 
-When an `AppError` includes component or instance context, those fields are included:
+**Structured AppError response** (used by handlers via `writeAppError`):
 
 ```json
 {
   "error": "backup_failed",
   "message": "backup failed due to elasticsearch timeout",
-  "code": 500,
   "component": "elasticsearch",
   "instance_id": "prod-1"
 }
 ```
 
+> **Note:** The `writeAppError` path returns the HTTP status code in the response header but does not include a `code` field in the JSON body. The `writeError` path includes `code` in the JSON body.
+
 ### Error Response Fields
+
+**Standard responses (`writeError`):**
 
 | Field | Type | Always Present | Description |
 |-------|------|----------------|-------------|
 | `error` | string | Yes | Machine-readable error code |
 | `message` | string | Yes | Human-readable description |
 | `code` | int | Yes | HTTP status code |
+
+**Structured AppError responses (`writeAppError`):**
+
+| Field | Type | Always Present | Description |
+|-------|------|----------------|-------------|
+| `error` | string | Yes | Machine-readable error code |
+| `message` | string | Yes | Human-readable description |
 | `component` | string | No | Component that caused the error |
 | `instance_id` | string | No | Related Camunda instance ID |
 
@@ -160,10 +171,10 @@ When an `AppError` includes component or instance context, those fields are incl
 
 | Endpoint | Error Code | Status | When |
 |----------|-----------|--------|------|
-| `POST /api/instances` | `validation_error` | 400 | Invalid instance configuration |
-| `POST /api/instances` | `validation_error` | 409 | Instance ID already exists |
-| `POST /api/instances/{id}/backup` | `not_found` | 404 | Instance not found |
-| `POST /api/instances/{id}/backup` | `backup_failed` | 500 | Internal backup trigger error |
+| `POST /api/camundas` | `validation_error` | 400 | Invalid instance configuration |
+| `POST /api/camundas` | `validation_error` | 409 | Instance ID already exists |
+| `POST /api/camundas/{id}/backup` | `not_found` | 404 | Instance not found |
+| `POST /api/camundas/{id}/backup` | `backup_failed` | 500 | Internal backup trigger error |
 | Any endpoint | `circuit_open` | 503 | Circuit breaker is open for a dependency |
 | Any endpoint | `external_call_failed` | 502 | Upstream service returned an error |
 
@@ -175,7 +186,7 @@ The recovery middleware catches panics in HTTP handlers. If the panic value is a
 
 ## Circuit Breaker
 
-The circuit breaker prevents cascading failures by temporarily blocking calls to failing external services.
+The circuit breaker prevents cascading failures by temporarily blocking calls to failing external services. The `utils.CircuitBreaker` component is fully implemented and tested, but is not yet wired into the main external-call paths. This section describes the intended behavior for when it is integrated into production flows.
 
 ### States
 
@@ -190,7 +201,7 @@ The circuit breaker prevents cascading failures by temporarily blocking calls to
 ```
 
 - **CLOSED** — Normal operation. All requests pass through. Each failure increments the counter; each success resets it to zero.
-- **OPEN** — Too many failures. All requests are immediately rejected with `ErrCircuitBreakerOpen` (HTTP 503).
+- **OPEN** — Too many failures. All requests are immediately rejected with an error wrapping the sentinel `ErrCircuitBreakerOpen`. To return HTTP 503 from handlers, callers should wrap this into an `*AppError` via `utils.NewCircuitOpenError()` so that `ToHTTPError` maps it to 503.
 - **HALF_OPEN** — Recovery probe. A limited number of requests are allowed through. A single success closes the circuit; any failure re-opens it.
 
 ### Default Configuration
