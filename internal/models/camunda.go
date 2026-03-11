@@ -136,6 +136,12 @@ func (ci *CamundaInstance) Validate() error {
 	if ci.FailureHistoryCount < 0 {
 		return utils.ErrInvalidCamundaInstance
 	}
+	if ci.BackupIDS3Endpoint == "" {
+		return utils.ErrInvalidCamundaInstance
+	}
+	if ci.BackupIDS3AccessKey == "" {
+		return utils.ErrInvalidCamundaInstance
+	}
 
 	// Validate components
 	if len(ci.Components) == 0 {
