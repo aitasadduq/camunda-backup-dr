@@ -1,0 +1,51 @@
+services:
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web console
+    environment:
+      MINIO_ROOT_USER: localminio
+      MINIO_ROOT_PASSWORD: localminio12345
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+
+  minio-mc:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        until mc alias set local http://minio:9000 localminio localminio12345; do sleep 1; done
+        mc mb -p local/es-snapshots || true
+    restart: "no"
+
+  elasticsearch:
+    image: elasticsearch:9.2.4
+    build:
+      context: ./elasticsearch
+      args:
+        ES_IMAGE: elasticsearch:9.2.4
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=true
+      - ELASTIC_PASSWORD=localelastic12345
+      - S3_ACCESS_KEY=localminio
+      - S3_SECRET_KEY=localminio12345
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    depends_on:
+      - minio
+    restart: unless-stopped
+
+volumes:
+  minio_data:
+    driver: local
+  es_data:
+    driver: local
