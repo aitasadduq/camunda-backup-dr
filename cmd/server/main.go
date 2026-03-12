@@ -98,12 +98,27 @@ func main() {
 	})
 	logger.Info("Retention manager initialized and wired to orchestrator")
 
+	// Initialize alerter for critical failure notifications
+	alerter := utils.NewAlerter(cfg.AlertWebhookURL, logger)
+	if alerter.IsEnabled() {
+		logger.Info("Alert webhook configured: notifications enabled")
+	} else {
+		logger.Info("Alert webhook not configured: notifications disabled")
+	}
+	backupOrchestrator.SetAlerter(alerter)
+
 	// Create backup executor adapter for scheduler
 	backupExecutor := &backupExecutorAdapter{orchestrator: backupOrchestrator}
 
 	// Initialize scheduler
 	schedulerCfg := scheduler.DefaultConfig()
+	if cfg.BackupStuckTimeoutMinutes > 0 {
+		schedulerCfg.StuckTimeout = time.Duration(cfg.BackupStuckTimeoutMinutes) * time.Minute
+	} else {
+		schedulerCfg.StuckTimeout = 0 // disabled
+	}
 	sched := scheduler.NewScheduler(backupExecutor, camundaManager, logger, schedulerCfg)
+	sched.SetAlerter(alerter)
 	logger.Info("Scheduler initialized successfully")
 
 	// Start scheduler

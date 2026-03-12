@@ -88,3 +88,55 @@ func (bl *BackupLogger) Error(format string, v ...interface{}) {
 func (bl *BackupLogger) Debug(format string, v ...interface{}) {
 	bl.logger.Debug("[BACKUP_ID: %s] "+format, append([]interface{}{bl.backupID}, v...)...)
 }
+
+// ContextLogger is a logger with operation, component, and instance context.
+type ContextLogger struct {
+	logger     *Logger
+	prefix     string
+}
+
+// WithContext creates a ContextLogger with operation, component, and instanceID context.
+// Any empty string parameter is omitted from the prefix.
+func (l *Logger) WithContext(operation, component, instanceID string) *ContextLogger {
+	parts := ""
+	if operation != "" {
+		parts += "op=" + operation
+	}
+	if component != "" {
+		if parts != "" {
+			parts += " "
+		}
+		parts += "component=" + component
+	}
+	if instanceID != "" {
+		if parts != "" {
+			parts += " "
+		}
+		parts += "instance=" + instanceID
+	}
+	prefix := ""
+	if parts != "" {
+		prefix = "[" + parts + "] "
+	}
+	return &ContextLogger{logger: l, prefix: prefix}
+}
+
+// Info logs an info message with context.
+func (cl *ContextLogger) Info(format string, v ...interface{}) {
+	cl.logger.Info(cl.prefix+format, v...)
+}
+
+// Warn logs a warning message with context.
+func (cl *ContextLogger) Warn(format string, v ...interface{}) {
+	cl.logger.Warn(cl.prefix+format, v...)
+}
+
+// Error logs an error message with context.
+func (cl *ContextLogger) Error(format string, v ...interface{}) {
+	cl.logger.Error(cl.prefix+format, v...)
+}
+
+// Debug logs a debug message with context.
+func (cl *ContextLogger) Debug(format string, v ...interface{}) {
+	cl.logger.Debug(cl.prefix+format, v...)
+}

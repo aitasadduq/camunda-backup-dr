@@ -34,6 +34,12 @@ type Config struct {
 	// Default S3
 	DefaultS3Endpoint  string
 	DefaultS3AccessKey string
+
+	// Alert Configuration
+	AlertWebhookURL string
+
+	// Backup Stuck Detection
+	BackupStuckTimeoutMinutes int // 0 = disabled
 }
 
 // Load loads configuration from environment variables with defaults
@@ -63,6 +69,12 @@ func Load() (*Config, error) {
 		// Default S3
 		DefaultS3Endpoint:  getEnv("DEFAULT_S3_ENDPOINT", ""),
 		DefaultS3AccessKey: getEnv("DEFAULT_S3_ACCESSKEY", ""),
+
+		// Alert Configuration
+		AlertWebhookURL: getEnv("ALERT_WEBHOOK_URL", ""),
+
+		// Backup Stuck Detection (default: 120 minutes = 2 hours)
+		BackupStuckTimeoutMinutes: getEnvAsInt("BACKUP_STUCK_TIMEOUT_MINUTES", 120),
 	}
 
 	// Validate configuration

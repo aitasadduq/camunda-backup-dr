@@ -4,13 +4,17 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+
+	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
 )
 
 // ErrorResponse represents an error response
 type ErrorResponse struct {
-	Error   string `json:"error"`
-	Message string `json:"message"`
-	Code    int    `json:"code"`
+	Error      string `json:"error"`
+	Message    string `json:"message"`
+	Code       int    `json:"code"`
+	Component  string `json:"component,omitempty"`
+	InstanceID string `json:"instance_id,omitempty"`
 }
 
 // SuccessResponse represents a generic success response
@@ -106,4 +110,21 @@ func writeSuccess(w http.ResponseWriter, status int, message string, data interf
 		Message: message,
 		Data:    data,
 	})
+}
+
+// writeAppError writes an error response from an AppError or falls back to generic 500.
+func writeAppError(w http.ResponseWriter, err error) {
+	status, body := utils.ToHTTPError(err)
+	resp := ErrorResponse{
+		Error:   body["error"],
+		Message: body["message"],
+		Code:    status,
+	}
+	if comp, ok := body["component"]; ok {
+		resp.Component = comp
+	}
+	if instID, ok := body["instance_id"]; ok {
+		resp.InstanceID = instID
+	}
+	writeJSON(w, status, resp)
 }
