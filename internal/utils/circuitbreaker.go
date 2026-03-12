@@ -74,7 +74,7 @@ func (cb *CircuitBreaker) OnStateChange(fn func(name string, from, to CircuitSta
 }
 
 // Execute runs the given function through the circuit breaker.
-// Returns ErrCircuitOpen if the circuit is open.
+// Returns ErrCircuitBreakerOpen if the circuit is open.
 func (cb *CircuitBreaker) Execute(fn func() error) error {
 	if err := cb.beforeCall(); err != nil {
 		return err
@@ -92,6 +92,7 @@ func (cb *CircuitBreaker) State() CircuitState {
 	defer cb.mu.Unlock()
 	// Check for auto-transition from OPEN → HALF_OPEN
 	if cb.state == CircuitOpen && time.Since(cb.lastFailureTime) >= cb.config.ResetTimeout {
+		cb.halfOpenCalls = 0
 		cb.transitionTo(CircuitHalfOpen)
 	}
 	return cb.state
@@ -193,8 +194,7 @@ func (cb *CircuitBreaker) transitionTo(newState CircuitState) {
 	old := cb.state
 	cb.state = newState
 	if cb.onStateChange != nil {
-		// Fire callback without holding lock to avoid deadlock if the
-		// callback tries to inspect the breaker.
+		// Fire callback asynchronously in a separate goroutine.
 		fn := cb.onStateChange
 		go fn(cb.name, old, newState)
 	}

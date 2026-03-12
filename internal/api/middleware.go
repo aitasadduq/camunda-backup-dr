@@ -42,11 +42,12 @@ func RecoveryMiddleware(logger *utils.Logger) Middleware {
 					// Log the panic with full stack trace
 					logger.Error("Panic recovered: %v\nStack trace:\n%s", err, debug.Stack())
 
-					// If the panic value is an AppError, use its details
-					if appErr, ok := err.(*utils.AppError); ok {
-						status, body := utils.ToHTTPError(appErr)
-						writeJSON(w, status, body)
-						return
+					// If the panic value implements error, try to extract an AppError
+					if errVal, ok := err.(error); ok {
+						if appErr := utils.IsAppError(errVal); appErr != nil {
+							writeAppError(w, appErr)
+							return
+						}
 					}
 
 					// Return a generic 500 error

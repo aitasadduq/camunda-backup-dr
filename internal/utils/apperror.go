@@ -121,7 +121,7 @@ func ToHTTPError(err error) (int, map[string]string) {
 	}
 	return http.StatusInternalServerError, map[string]string{
 		"error":   "internal_error",
-		"message": err.Error(),
+		"message": "an internal error occurred",
 	}
 }
 

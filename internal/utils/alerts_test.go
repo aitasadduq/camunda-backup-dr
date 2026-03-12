@@ -38,6 +38,7 @@ func TestAlerter_SendAlert_Disabled(t *testing.T) {
 func TestAlerter_SendAlert_Success(t *testing.T) {
 	var mu sync.Mutex
 	var received *Alert
+	done := make(chan struct{})
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var alert Alert
@@ -50,6 +51,7 @@ func TestAlerter_SendAlert_Success(t *testing.T) {
 		received = &alert
 		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
+		close(done)
 	}))
 	defer server.Close()
 
@@ -58,8 +60,11 @@ func TestAlerter_SendAlert_Success(t *testing.T) {
 
 	a.SendAlert(AlertCritical, "Test Alert", "something happened", map[string]string{"key": "val"})
 
-	// Wait for async send
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for webhook to receive alert")
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -82,8 +87,10 @@ func TestAlerter_SendAlert_Success(t *testing.T) {
 }
 
 func TestAlerter_SendAlert_ServerError(t *testing.T) {
+	done := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
+		close(done)
 	}))
 	defer server.Close()
 
@@ -92,12 +99,19 @@ func TestAlerter_SendAlert_ServerError(t *testing.T) {
 
 	// Should not panic even on server error
 	a.SendAlert(AlertWarning, "Test", "msg", nil)
-	time.Sleep(100 * time.Millisecond)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for webhook call")
+	}
 }
 
 func TestAlerter_ConvenienceMethods(t *testing.T) {
 	var mu sync.Mutex
 	var alerts []Alert
+	var received sync.WaitGroup
+	received.Add(5)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var alert Alert
@@ -106,6 +120,7 @@ func TestAlerter_ConvenienceMethods(t *testing.T) {
 		alerts = append(alerts, alert)
 		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
+		received.Done()
 	}))
 	defer server.Close()
 
@@ -118,7 +133,17 @@ func TestAlerter_ConvenienceMethods(t *testing.T) {
 	a.AlertStuckBackup("prod", "job-1", 2*time.Hour)
 	a.AlertSchedulerError("scheduler crashed")
 
-	time.Sleep(200 * time.Millisecond)
+	done := make(chan struct{})
+	go func() {
+		received.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for all alerts to be received")
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
