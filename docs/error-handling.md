@@ -123,9 +123,7 @@ err := utils.WrapError(originalErr, "backup_failed", "backup operation failed", 
 
 ## API Error Responses
 
-There are two error response formats depending on the handler path:
-
-**Standard error response** (used by most handlers via `writeError`):
+All API errors are returned as JSON with a consistent structure:
 
 ```json
 {
@@ -135,35 +133,35 @@ There are two error response formats depending on the handler path:
 }
 ```
 
-**Structured AppError response** (used by handlers via `writeAppError`):
+When an `AppError` includes component or instance context, additional fields are included:
 
 ```json
 {
   "error": "backup_failed",
   "message": "backup failed due to elasticsearch timeout",
+  "code": 500,
   "component": "elasticsearch",
   "instance_id": "prod-1"
 }
 ```
 
-> **Note:** The `writeAppError` path returns the HTTP status code in the response header but does not include a `code` field in the JSON body. The `writeError` path includes `code` in the JSON body.
+For non-`AppError` errors (unexpected internal errors), the response uses a generic message to avoid leaking internal details:
+
+```json
+{
+  "error": "internal_error",
+  "message": "an internal error occurred",
+  "code": 500
+}
+```
 
 ### Error Response Fields
-
-**Standard responses (`writeError`):**
 
 | Field | Type | Always Present | Description |
 |-------|------|----------------|-------------|
 | `error` | string | Yes | Machine-readable error code |
 | `message` | string | Yes | Human-readable description |
 | `code` | int | Yes | HTTP status code |
-
-**Structured AppError responses (`writeAppError`):**
-
-| Field | Type | Always Present | Description |
-|-------|------|----------------|-------------|
-| `error` | string | Yes | Machine-readable error code |
-| `message` | string | Yes | Human-readable description |
 | `component` | string | No | Component that caused the error |
 | `instance_id` | string | No | Related Camunda instance ID |
 
@@ -180,7 +178,7 @@ There are two error response formats depending on the handler path:
 
 ### Panic Recovery
 
-The recovery middleware catches panics in HTTP handlers. If the panic value is an `*AppError`, it returns the structured error response. Otherwise, it returns a generic `500 Internal Server Error`.
+The recovery middleware catches panics in HTTP handlers. It uses `errors.As` to extract an `*AppError` from the panic value (including wrapped errors). If found, it returns the structured error response. Otherwise, it returns a generic `500 Internal Server Error`.
 
 ---
 
@@ -251,10 +249,15 @@ The HTTP client automatically retries failed requests using **exponential backof
 For each retry attempt:
 
 ```
-jitter   = random value in [0, delay/2)
+if delay > 2ns:
+    jitter = random value in [0, delay/2)
+else:
+    jitter = 0
 waitTime = delay + jitter
 delay    = min(delay × 2, MaxRetryDelay)    // for next attempt
 ```
+
+When the delay is very small (< 2 nanoseconds), jitter is skipped to avoid edge cases.
 
 **Example progression** (3 retries):
 
@@ -346,10 +349,12 @@ The scheduler monitors running backup jobs and raises alerts when a job exceeds 
 2. On every scheduler tick (default: 1 minute), `checkForStuckJobs()` runs.
 3. For each running job, if `time.Since(RunningStartedAt) >= StuckTimeout`, the job is flagged as stuck.
 4. A `CRITICAL` alert is sent and an error is logged.
+5. The alert is **sent only once** per stuck episode — the job's `StuckAlertedAt` timestamp prevents duplicate alerts on subsequent ticks. It resets when the job finishes.
 
 ### Important Notes
 
 - **Detection only** — stuck backup detection does **not** kill or cancel the running job. It raises visibility so operators can investigate.
+- **Deduplicated** — Each stuck job triggers a single alert. Subsequent scheduler ticks do not re-alert for the same stuck episode.
 - **Disable** — Set `BACKUP_STUCK_TIMEOUT_MINUTES=0` to disable detection.
 - **Default** — 120 minutes (2 hours).
 

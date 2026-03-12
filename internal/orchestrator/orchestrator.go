@@ -67,7 +67,10 @@ func (o *Orchestrator) SetRetentionFunc(fn RetentionFunc) {
 }
 
 // SetAlerter sets the alerter used for critical failure notifications.
+// Must be called before any backups are started.
 func (o *Orchestrator) SetAlerter(alerter *utils.Alerter) {
+	o.backupMutex.Lock()
+	defer o.backupMutex.Unlock()
 	o.alerter = alerter
 }
 

@@ -31,6 +31,7 @@ type Job struct {
 	NextRun           *time.Time
 	Running           bool
 	RunningStartedAt  *time.Time // Tracks when the job started running for stuck detection
+	StuckAlertedAt    *time.Time // Tracks when a stuck alert was last sent to prevent spam
 }
 
 // Scheduler manages cron-based backup scheduling for Camunda instances
@@ -270,6 +271,7 @@ func (s *Scheduler) executeJob(ctx context.Context, job *Job) {
 			if j, exists := s.jobs[instanceID]; exists {
 				j.Running = false
 				j.RunningStartedAt = nil
+				j.StuckAlertedAt = nil
 				now := time.Now()
 				j.LastRun = &now
 				// Calculate next run time
@@ -322,11 +324,17 @@ func (s *Scheduler) checkForStuckJobs() {
 		}
 		duration := now.Sub(*job.RunningStartedAt)
 		if duration >= s.stuckTimeout {
+			// Only alert once per stuck episode (or not at all if already alerted)
+			if job.StuckAlertedAt != nil {
+				continue
+			}
 			s.logger.Error("Stuck backup detected: instance %s (job %s) has been running for %s (threshold: %s)",
 				job.CamundaInstanceID, job.ID, duration.Round(time.Second), s.stuckTimeout)
 			if s.alerter != nil {
 				s.alerter.AlertStuckBackup(job.CamundaInstanceID, job.ID, duration)
 			}
+			alertedAt := now
+			job.StuckAlertedAt = &alertedAt
 		}
 	}
 }
@@ -496,6 +504,10 @@ func deepCopyJob(job *Job) *Job {
 	if job.RunningStartedAt != nil {
 		startedCopy := *job.RunningStartedAt
 		jobCopy.RunningStartedAt = &startedCopy
+	}
+	if job.StuckAlertedAt != nil {
+		alertedCopy := *job.StuckAlertedAt
+		jobCopy.StuckAlertedAt = &alertedCopy
 	}
 	return jobCopy
 }
@@ -687,6 +699,12 @@ func (s *Scheduler) ReleaseBackupLock() {
 }
 
 // SetAlerter sets the alerter for stuck backup and scheduler error notifications.
+// Must be called before Start(); calls while the scheduler is running are ignored.
 func (s *Scheduler) SetAlerter(alerter *utils.Alerter) {
+	s.runningMutex.RLock()
+	defer s.runningMutex.RUnlock()
+	if s.running {
+		return
+	}
 	s.alerter = alerter
 }

@@ -65,7 +65,10 @@ func (c *HTTPClient) Do(ctx context.Context, opts RequestOptions) (*http.Respons
 	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
 		if attempt > 0 {
 			// Wait before retry with exponential backoff + jitter
-			jitter := time.Duration(rand.Int63n(int64(delay) / 2))
+			var jitter time.Duration
+			if int64(delay) > 2 {
+				jitter = time.Duration(rand.Int63n(int64(delay) / 2))
+			}
 			waitTime := delay + jitter
 			c.logger.Debug("Retrying request (attempt %d/%d) after %v (jitter: %v)", attempt, c.config.MaxRetries, waitTime, jitter)
 			

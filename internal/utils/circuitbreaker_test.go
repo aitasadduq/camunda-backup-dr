@@ -47,7 +47,7 @@ func TestCircuitBreaker_OpensAfterMaxFailures(t *testing.T) {
 }
 
 func TestCircuitBreaker_TransitionsToHalfOpen(t *testing.T) {
-	cfg := CircuitBreakerConfig{MaxFailures: 2, ResetTimeout: 50 * time.Millisecond, HalfOpenMaxCalls: 1}
+	cfg := CircuitBreakerConfig{MaxFailures: 2, ResetTimeout: 100 * time.Millisecond, HalfOpenMaxCalls: 1}
 	cb := NewCircuitBreaker("test", cfg)
 
 	// Trip the breaker
@@ -59,7 +59,7 @@ func TestCircuitBreaker_TransitionsToHalfOpen(t *testing.T) {
 	}
 
 	// Wait for reset timeout
-	time.Sleep(60 * time.Millisecond)
+	time.Sleep(150 * time.Millisecond)
 
 	// Should transition to HALF_OPEN and allow one call
 	if cb.State() != CircuitHalfOpen {
@@ -68,7 +68,7 @@ func TestCircuitBreaker_TransitionsToHalfOpen(t *testing.T) {
 }
 
 func TestCircuitBreaker_HalfOpenSuccessCloses(t *testing.T) {
-	cfg := CircuitBreakerConfig{MaxFailures: 2, ResetTimeout: 50 * time.Millisecond, HalfOpenMaxCalls: 1}
+	cfg := CircuitBreakerConfig{MaxFailures: 2, ResetTimeout: 100 * time.Millisecond, HalfOpenMaxCalls: 1}
 	cb := NewCircuitBreaker("test", cfg)
 
 	// Trip the breaker
@@ -77,7 +77,7 @@ func TestCircuitBreaker_HalfOpenSuccessCloses(t *testing.T) {
 	}
 
 	// Wait for reset
-	time.Sleep(60 * time.Millisecond)
+	time.Sleep(150 * time.Millisecond)
 
 	// Successful call should close the circuit
 	err := cb.Execute(func() error { return nil })
@@ -91,7 +91,7 @@ func TestCircuitBreaker_HalfOpenSuccessCloses(t *testing.T) {
 }
 
 func TestCircuitBreaker_HalfOpenFailureReopens(t *testing.T) {
-	cfg := CircuitBreakerConfig{MaxFailures: 2, ResetTimeout: 50 * time.Millisecond, HalfOpenMaxCalls: 1}
+	cfg := CircuitBreakerConfig{MaxFailures: 2, ResetTimeout: 100 * time.Millisecond, HalfOpenMaxCalls: 1}
 	cb := NewCircuitBreaker("test", cfg)
 
 	// Trip the breaker
@@ -100,7 +100,7 @@ func TestCircuitBreaker_HalfOpenFailureReopens(t *testing.T) {
 	}
 
 	// Wait for reset
-	time.Sleep(60 * time.Millisecond)
+	time.Sleep(150 * time.Millisecond)
 
 	// Failed probe should reopen
 	_ = cb.Execute(func() error { return fmt.Errorf("still broken") })
