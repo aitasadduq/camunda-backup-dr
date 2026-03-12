@@ -17,6 +17,9 @@ The project follows a layered architecture with clear separation of concerns:
 
 For detailed architecture documentation, see [docs/architecture.md](docs/architecture.md).
 For error handling, resilience patterns, and configuration reference, see [docs/error-handling.md](docs/error-handling.md).
+For API endpoint reference, see [docs/api.md](docs/api.md).
+For deployment instructions, see [docs/deployment.md](docs/deployment.md).
+For troubleshooting common issues, see [docs/troubleshooting.md](docs/troubleshooting.md).
 
 ## Project Structure
 
@@ -44,7 +47,7 @@ backup-controller/
 └── docs/               # Documentation
 ```
 
-## Current Status: Phase 1 - Project Setup and Core Infrastructure ✓
+## Current Status: Phase 12 - Testing and Documentation ✓
 
 ### Completed Features (Phase 1)
 
@@ -138,14 +141,26 @@ The application is configured via environment variables:
 ### Development
 
 ```bash
-# Run tests
-go test ./...
+# Run unit tests
+make test
+
+# Run tests with coverage report
+make test-coverage
+
+# Run integration tests (requires external services)
+make test-integration
+
+# Run end-to-end tests
+make test-e2e
+
+# Run all tests
+make test-all
 
 # Format code
 go fmt ./...
 
 # Clean build artifacts
-rm -rf build/
+make clean
 ```
 
 ### Running Integration Tests
@@ -220,11 +235,11 @@ This project is being implemented in phases:
 6. **Phase 6**: S3 Integration ✓ (COMPLETED)
 7. **Phase 7**: Scheduler Service ✓ (COMPLETED)
 8. **Phase 8**: HTTP API Layer ✓ (COMPLETED)
-9. **Phase 9**: Retention Manager (NEXT)
-10. **Phase 10**: Web UI
-11. **Phase 11**: Error Handling and Resilience
-12. **Phase 12**: Testing and Documentation
-13. **Phase 13**: Deployment
+9. **Phase 9**: Retention Manager ✓ (COMPLETED)
+10. **Phase 10**: Web UI ✓ (COMPLETED)
+11. **Phase 11**: Error Handling and Resilience ✓ (COMPLETED)
+12. **Phase 12**: Testing and Documentation ✓ (COMPLETED)
+13. **Phase 13**: Deployment (NEXT)
 
 For detailed implementation checklist, see [checklistv2.md](checklistv2.md).
 

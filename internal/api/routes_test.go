@@ -534,6 +534,237 @@ func TestRouter_StaticServing_DirectoryTraversal_Returns404(t *testing.T) {
 	}
 }
 
+// --- Method Not Allowed Tests for Resource Routes ---
+
+func TestRouter_EnableInstance_MethodNotAllowed(t *testing.T) {
+	router, cm, _, _, _, _ := newTestRouter()
+	cm.instances = []models.CamundaInstance{
+		{ID: "test-1", Name: "Test 1"},
+	}
+
+	// GET on /enable should not be allowed
+	req := httptest.NewRequest(http.MethodGet, "/api/camundas/test-1/enable", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected status %d, got %d", http.StatusMethodNotAllowed, w.Code)
+	}
+}
+
+func TestRouter_DisableInstance_MethodNotAllowed(t *testing.T) {
+	router, cm, _, _, _, _ := newTestRouter()
+	cm.instances = []models.CamundaInstance{
+		{ID: "test-1", Name: "Test 1"},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/camundas/test-1/disable", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected status %d, got %d", http.StatusMethodNotAllowed, w.Code)
+	}
+}
+
+func TestRouter_TriggerBackup_MethodNotAllowed(t *testing.T) {
+	router, cm, _, _, _, _ := newTestRouter()
+	cm.instances = []models.CamundaInstance{
+		{ID: "test-1", Name: "Test 1"},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/camundas/test-1/backup", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected status %d, got %d", http.StatusMethodNotAllowed, w.Code)
+	}
+}
+
+func TestRouter_ListOrphanedBackups_MethodNotAllowed(t *testing.T) {
+	router, cm, _, _, _, _ := newTestRouter()
+	cm.instances = []models.CamundaInstance{
+		{ID: "test-1", Name: "Test 1"},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/camundas/test-1/backups/orphaned", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected status %d, got %d", http.StatusMethodNotAllowed, w.Code)
+	}
+}
+
+func TestRouter_ListIncompleteBackups_MethodNotAllowed(t *testing.T) {
+	router, cm, _, _, _, _ := newTestRouter()
+	cm.instances = []models.CamundaInstance{
+		{ID: "test-1", Name: "Test 1"},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/camundas/test-1/backups/incomplete", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected status %d, got %d", http.StatusMethodNotAllowed, w.Code)
+	}
+}
+
+func TestRouter_ListFailedBackups_MethodNotAllowed(t *testing.T) {
+	router, cm, _, _, _, _ := newTestRouter()
+	cm.instances = []models.CamundaInstance{
+		{ID: "test-1", Name: "Test 1"},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/camundas/test-1/backups/failed", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected status %d, got %d", http.StatusMethodNotAllowed, w.Code)
+	}
+}
+
+func TestRouter_ListBackups_MethodNotAllowed(t *testing.T) {
+	router, cm, _, _, _, _ := newTestRouter()
+	cm.instances = []models.CamundaInstance{
+		{ID: "test-1", Name: "Test 1"},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/camundas/test-1/backups", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected status %d, got %d", http.StatusMethodNotAllowed, w.Code)
+	}
+}
+
+func TestRouter_CamundaResource_MethodNotAllowed(t *testing.T) {
+	router, cm, _, _, _, _ := newTestRouter()
+	cm.instances = []models.CamundaInstance{
+		{ID: "test-1", Name: "Test 1"},
+	}
+
+	// PATCH on /api/camundas/{id} should not be allowed
+	req := httptest.NewRequest(http.MethodPatch, "/api/camundas/test-1", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected status %d, got %d", http.StatusMethodNotAllowed, w.Code)
+	}
+}
+
+func TestRouter_UpdateCamundaInstance(t *testing.T) {
+	router, cm, _, _, _, _ := newTestRouter()
+	cm.instances = []models.CamundaInstance{
+		{ID: "test-1", Name: "Test 1"},
+	}
+
+	updates := models.CamundaInstance{Name: "Updated"}
+	body, _ := json.Marshal(updates)
+	req := httptest.NewRequest(http.MethodPut, "/api/camundas/test-1", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
+	}
+}
+
+func TestRouter_DeleteCamundaInstance(t *testing.T) {
+	router, cm, _, _, _, _ := newTestRouter()
+	cm.instances = []models.CamundaInstance{
+		{ID: "test-1", Name: "Test 1"},
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/camundas/test-1", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
+	}
+}
+
+func TestRouter_MethodHandler_OPTIONS(t *testing.T) {
+	router, _, _, _, _, _ := newTestRouter()
+
+	// OPTIONS on /api/status should return 204 (preflight)
+	req := httptest.NewRequest(http.MethodOptions, "/api/status", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("expected status %d for OPTIONS, got %d", http.StatusNoContent, w.Code)
+	}
+}
+
+func TestRouter_UnmatchedAPIRoute(t *testing.T) {
+	router := newTestRouterWithWebFS()
+
+	// An unknown /api/ route should get a JSON 404, not index.html
+	req := httptest.NewRequest(http.MethodGet, "/api/nonexistent", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", w.Code)
+	}
+
+	var errResp ErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("expected JSON error response, got: %s", w.Body.String())
+	}
+	if errResp.Error != "not_found" {
+		t.Errorf("expected error 'not_found', got '%s'", errResp.Error)
+	}
+}
+
+func TestRouter_StaticServing_BareCSSSlash_Returns404(t *testing.T) {
+	router := newTestRouterWithWebFS()
+
+	req := httptest.NewRequest(http.MethodGet, "/css/", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for /css/, got %d", w.Code)
+	}
+}
+
+func TestRouter_StaticServing_BareJSSlash_Returns404(t *testing.T) {
+	router := newTestRouterWithWebFS()
+
+	req := httptest.NewRequest(http.MethodGet, "/js/", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for /js/, got %d", w.Code)
+	}
+}
+
+func TestRouter_CamundaResourceTrailingSlash(t *testing.T) {
+	router, cm, _, _, _, _ := newTestRouter()
+	cm.instances = []models.CamundaInstance{
+		{ID: "test-1", Name: "Test 1"},
+	}
+
+	// Trailing slash should still work due to TrimSuffix
+	req := httptest.NewRequest(http.MethodGet, "/api/camundas/test-1/", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
+	}
+}
+
 func TestContainsDotDot(t *testing.T) {
 	tests := []struct {
 		path     string

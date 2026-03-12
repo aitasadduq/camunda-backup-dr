@@ -328,3 +328,97 @@ func TestCSRFMiddleware_AllowsOPTIONS(t *testing.T) {
 		t.Errorf("OPTIONS should be allowed without header, got %d", w.Code)
 	}
 }
+
+func TestContentTypeMiddleware_SetsJSONForAPIRoutes(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := ContentTypeMiddleware()
+	wrappedHandler := middleware(handler)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	w := httptest.NewRecorder()
+	wrappedHandler.ServeHTTP(w, req)
+
+	ct := w.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("expected Content-Type 'application/json' for /api route, got '%s'", ct)
+	}
+}
+
+func TestContentTypeMiddleware_NoContentTypeForNonAPIRoutes(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := ContentTypeMiddleware()
+	wrappedHandler := middleware(handler)
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	w := httptest.NewRecorder()
+	wrappedHandler.ServeHTTP(w, req)
+
+	ct := w.Header().Get("Content-Type")
+	if ct == "application/json" {
+		t.Errorf("expected no application/json for non-/api route, got '%s'", ct)
+	}
+}
+
+func TestContentTypeMiddleware_ShortPath(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := ContentTypeMiddleware()
+	wrappedHandler := middleware(handler)
+
+	// Path shorter than 4 characters should not trigger content type setting
+	req := httptest.NewRequest(http.MethodGet, "/ab", nil)
+	w := httptest.NewRecorder()
+	wrappedHandler.ServeHTTP(w, req)
+
+	ct := w.Header().Get("Content-Type")
+	if ct == "application/json" {
+		t.Errorf("short path should not get application/json, got '%s'", ct)
+	}
+}
+
+func TestRecoveryMiddleware_PanicWithAppError(t *testing.T) {
+	logger := utils.NewLogger("error")
+
+	appErr := utils.NewAppError("backup_failed", "Backup exploded", http.StatusBadGateway)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic(appErr)
+	})
+
+	middleware := RecoveryMiddleware(logger)
+	wrappedHandler := middleware(handler)
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	w := httptest.NewRecorder()
+
+	wrappedHandler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("expected status %d for AppError panic, got %d", http.StatusBadGateway, w.Code)
+	}
+}
+
+func TestCSRFMiddleware_AllowsHEAD(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := CSRFMiddleware()
+	wrappedHandler := middleware(handler)
+
+	req := httptest.NewRequest(http.MethodHead, "/api/status", nil)
+	w := httptest.NewRecorder()
+	wrappedHandler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("HEAD should be allowed without X-Requested-With, got %d", w.Code)
+	}
+}

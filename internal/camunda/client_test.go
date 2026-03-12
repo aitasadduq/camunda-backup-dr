@@ -186,3 +186,212 @@ func TestReadJSONResponse_ErrorStatus(t *testing.T) {
 		t.Error("Expected error for non-2xx status code")
 	}
 }
+
+func TestHTTPClient_Put_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"updated": true}`))
+	}))
+	defer server.Close()
+
+	client, _ := setupTestHTTPClient()
+	ctx := context.Background()
+
+	body := map[string]string{"name": "updated"}
+	resp, err := client.Put(ctx, server.URL, nil, body)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestHTTPClient_Put_WithHeaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if r.Header.Get("X-Custom-Header") != "test-value" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := setupTestHTTPClient()
+	ctx := context.Background()
+
+	headers := map[string]string{"X-Custom-Header": "test-value"}
+	resp, err := client.Put(ctx, server.URL, headers, nil)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestHTTPClient_Delete_Success(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client, _ := setupTestHTTPClient()
+	ctx := context.Background()
+
+	resp, err := client.Delete(ctx, server.URL, nil)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("Expected status 204, got %d", resp.StatusCode)
+	}
+}
+
+func TestHTTPClient_Delete_WithHeaders(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer token123" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := setupTestHTTPClient()
+	ctx := context.Background()
+
+	headers := map[string]string{"Authorization": "Bearer token123"}
+	resp, err := client.Delete(ctx, server.URL, headers)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestReadJSONResponse_EmptyBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		// Empty body
+	}))
+	defer server.Close()
+
+	client := &http.Client{}
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("Failed to make request: %v", err)
+	}
+
+	var result map[string]interface{}
+	err = ReadJSONResponse(resp, &result)
+	if err != nil {
+		t.Fatalf("Expected no error for empty body, got: %v", err)
+	}
+}
+
+func TestReadJSONResponse_InvalidJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("not valid json"))
+	}))
+	defer server.Close()
+
+	client := &http.Client{}
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("Failed to make request: %v", err)
+	}
+
+	var result map[string]interface{}
+	err = ReadJSONResponse(resp, &result)
+	if err == nil {
+		t.Error("Expected error for invalid JSON body")
+	}
+}
+
+func TestHTTPClient_Do_ContextCancellation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := setupTestHTTPClient()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	_, err := client.Get(ctx, server.URL, nil)
+	if err == nil {
+		t.Error("Expected error for cancelled context")
+	}
+}
+
+func TestHTTPClient_Post_WithNilBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client, _ := setupTestHTTPClient()
+	ctx := context.Background()
+
+	resp, err := client.Post(ctx, server.URL, nil, nil)
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestReadJSONResponse_ServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error": "internal server error"}`))
+	}))
+	defer server.Close()
+
+	client := &http.Client{}
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("Failed to make request: %v", err)
+	}
+
+	var result map[string]interface{}
+	err = ReadJSONResponse(resp, &result)
+	if err == nil {
+		t.Error("Expected error for 500 status code")
+	}
+}
