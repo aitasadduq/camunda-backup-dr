@@ -632,3 +632,182 @@ func TestManager_GetEnabledInstances_AllEnvVarsNormalized(t *testing.T) {
 		}
 	}
 }
+
+// --- Error path tests for manager functions ---
+
+func TestManager_EnableInstance_NotFound(t *testing.T) {
+	manager, _, cleanup := setupTestManager(t)
+	defer cleanup()
+
+	err := manager.EnableInstance("nonexistent")
+	if err != utils.ErrCamundaInstanceNotFound {
+		t.Errorf("Expected ErrCamundaInstanceNotFound, got %v", err)
+	}
+}
+
+func TestManager_DisableInstance_NotFound(t *testing.T) {
+	manager, _, cleanup := setupTestManager(t)
+	defer cleanup()
+
+	err := manager.DisableInstance("nonexistent")
+	if err != utils.ErrCamundaInstanceNotFound {
+		t.Errorf("Expected ErrCamundaInstanceNotFound, got %v", err)
+	}
+}
+
+func TestManager_UpdateComponentConfig_InstanceNotFound(t *testing.T) {
+	manager, _, cleanup := setupTestManager(t)
+	defer cleanup()
+
+	err := manager.UpdateComponentConfig("nonexistent", types.ComponentZeebe, true)
+	if err != utils.ErrCamundaInstanceNotFound {
+		t.Errorf("Expected ErrCamundaInstanceNotFound, got %v", err)
+	}
+}
+
+func TestManager_UpdateComponentConfig_AddNewComponent(t *testing.T) {
+	manager, _, cleanup := setupTestManager(t)
+	defer cleanup()
+
+	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
+	instance.BackupIDS3Endpoint = "https://s3.example.com"
+	instance.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
+	err := manager.CreateInstance(instance)
+	if err != nil {
+		t.Fatalf("Failed to create instance: %v", err)
+	}
+
+	// Add a new component that doesn't exist yet in the components list
+	err = manager.UpdateComponentConfig("camunda-a", types.ComponentElasticsearch, true)
+	if err != nil {
+		t.Fatalf("Failed to update component config: %v", err)
+	}
+
+	retrieved, err := manager.GetInstance("camunda-a")
+	if err != nil {
+		t.Fatalf("Failed to get instance: %v", err)
+	}
+
+	if !retrieved.IsComponentEnabled(types.ComponentElasticsearch) {
+		t.Error("Expected Elasticsearch component to be enabled")
+	}
+}
+
+func TestManager_EnableInstance_SaveError(t *testing.T) {
+	manager, tempDir, cleanup := setupTestManager(t)
+	defer cleanup()
+
+	instance := models.NewCamundaInstance("camunda-a", "Test", "https://test.example.com")
+	instance.BackupIDS3Endpoint = "https://s3.example.com"
+	instance.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
+	if err := manager.CreateInstance(instance); err != nil {
+		t.Fatalf("Failed to create instance: %v", err)
+	}
+
+	// Remove the data directory to cause SaveConfiguration to fail
+	os.RemoveAll(tempDir)
+
+	err := manager.EnableInstance("camunda-a")
+	if err == nil {
+		t.Error("Expected error when save fails")
+	}
+}
+
+func TestManager_DisableInstance_SaveError(t *testing.T) {
+	manager, tempDir, cleanup := setupTestManager(t)
+	defer cleanup()
+
+	instance := models.NewCamundaInstance("camunda-a", "Test", "https://test.example.com")
+	instance.BackupIDS3Endpoint = "https://s3.example.com"
+	instance.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
+	if err := manager.CreateInstance(instance); err != nil {
+		t.Fatalf("Failed to create instance: %v", err)
+	}
+
+	// Remove the data directory to cause SaveConfiguration to fail
+	os.RemoveAll(tempDir)
+
+	err := manager.DisableInstance("camunda-a")
+	if err == nil {
+		t.Error("Expected error when save fails")
+	}
+}
+
+func TestManager_DeleteInstance_SaveError(t *testing.T) {
+	manager, tempDir, cleanup := setupTestManager(t)
+	defer cleanup()
+
+	instance := models.NewCamundaInstance("camunda-a", "Test", "https://test.example.com")
+	instance.BackupIDS3Endpoint = "https://s3.example.com"
+	instance.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
+	if err := manager.CreateInstance(instance); err != nil {
+		t.Fatalf("Failed to create instance: %v", err)
+	}
+
+	// Remove the data directory to cause SaveConfiguration to fail
+	os.RemoveAll(tempDir)
+
+	err := manager.DeleteInstance("camunda-a")
+	if err == nil {
+		t.Error("Expected error when save fails")
+	}
+}
+
+func TestManager_UpdateInstance_SaveError(t *testing.T) {
+	manager, tempDir, cleanup := setupTestManager(t)
+	defer cleanup()
+
+	instance := models.NewCamundaInstance("camunda-a", "Test", "https://test.example.com")
+	instance.BackupIDS3Endpoint = "https://s3.example.com"
+	instance.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
+	if err := manager.CreateInstance(instance); err != nil {
+		t.Fatalf("Failed to create instance: %v", err)
+	}
+
+	// Remove the data directory to cause SaveConfiguration to fail
+	os.RemoveAll(tempDir)
+
+	updated := models.NewCamundaInstance("camunda-a", "Updated", "https://updated.example.com")
+	updated.BackupIDS3Endpoint = "https://s3.example.com"
+	updated.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
+	err := manager.UpdateInstance("camunda-a", updated)
+	if err == nil {
+		t.Error("Expected error when save fails")
+	}
+}
+
+func TestManager_CreateInstance_SaveError(t *testing.T) {
+	manager, tempDir, cleanup := setupTestManager(t)
+	defer cleanup()
+
+	// Remove the data directory to cause SaveConfiguration to fail
+	os.RemoveAll(tempDir)
+
+	instance := models.NewCamundaInstance("camunda-a", "Test", "https://test.example.com")
+	instance.BackupIDS3Endpoint = "https://s3.example.com"
+	instance.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
+	err := manager.CreateInstance(instance)
+	if err == nil {
+		t.Error("Expected error when save fails")
+	}
+}
+
+func TestManager_UpdateComponentConfig_SaveError(t *testing.T) {
+	manager, tempDir, cleanup := setupTestManager(t)
+	defer cleanup()
+
+	instance := models.NewCamundaInstance("camunda-a", "Test", "https://test.example.com")
+	instance.BackupIDS3Endpoint = "https://s3.example.com"
+	instance.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
+	if err := manager.CreateInstance(instance); err != nil {
+		t.Fatalf("Failed to create instance: %v", err)
+	}
+
+	// Remove the data directory to cause SaveConfiguration to fail
+	os.RemoveAll(tempDir)
+
+	err := manager.UpdateComponentConfig("camunda-a", types.ComponentOptimize, false)
+	if err == nil {
+		t.Error("Expected error when save fails")
+	}
+}

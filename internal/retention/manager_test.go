@@ -16,14 +16,16 @@ import (
 // --- Mock storage implementations ---
 
 type mockS3Storage struct {
-	mu              sync.Mutex
-	backupHistory   map[string]map[string]*models.BackupHistory
-	orphaned        map[string]map[string]*models.BackupHistory
-	incomplete      map[string]map[string]*models.BackupHistory
-	latestBackupIDs map[string]string
-	listErr         error
-	deleteErr       error
-	moveErr         error
+	mu                sync.Mutex
+	backupHistory     map[string]map[string]*models.BackupHistory
+	orphaned          map[string]map[string]*models.BackupHistory
+	incomplete        map[string]map[string]*models.BackupHistory
+	latestBackupIDs   map[string]string
+	listErr           error
+	deleteErr         error
+	moveErr           error
+	incompleteListErr error
+	orphanedListErr   error
 }
 
 func newMockS3Storage() *mockS3Storage {
@@ -165,6 +167,9 @@ func (m *mockS3Storage) MoveToIncomplete(camundaInstanceID, backupID string) err
 func (m *mockS3Storage) ListOrphanedBackups(camundaInstanceID string) ([]*models.BackupHistory, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.orphanedListErr != nil {
+		return nil, m.orphanedListErr
+	}
 	var result []*models.BackupHistory
 	for _, h := range m.orphaned[camundaInstanceID] {
 		result = append(result, h)
@@ -175,6 +180,9 @@ func (m *mockS3Storage) ListOrphanedBackups(camundaInstanceID string) ([]*models
 func (m *mockS3Storage) ListIncompleteBackups(camundaInstanceID string) ([]*models.BackupHistory, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.incompleteListErr != nil {
+		return nil, m.incompleteListErr
+	}
 	var result []*models.BackupHistory
 	for _, h := range m.incomplete[camundaInstanceID] {
 		result = append(result, h)
@@ -639,5 +647,165 @@ func TestDeleteBackup_ListErrorPreventsDelete(t *testing.T) {
 	err := mgr.DeleteBackup("inst-1", "b1")
 	if err == nil {
 		t.Fatal("expected error when ListBackupHistory fails")
+	}
+}
+
+// --- Additional coverage tests for cleanupIncompleteBackups ---
+
+func TestCleanupIncompleteBackups_ListIncompleteError(t *testing.T) {
+	mgr, s3, _ := newTestManager()
+	s3.incompleteListErr = fmt.Errorf("S3 list incomplete error")
+	result := mgr.ApplyRetention("inst-1", 5)
+	hasErr := false
+	for _, e := range result.Errors {
+		if strings.Contains(e, "failed to list incomplete backups") {
+			hasErr = true
+			break
+		}
+	}
+	if !hasErr {
+		t.Errorf("expected error about listing incomplete backups, got: %v", result.Errors)
+	}
+}
+
+func TestCleanupIncompleteBackups_ListCompletedErrorDuringCleanup(t *testing.T) {
+	mgr, s3, _ := newTestManager()
+	now := time.Now()
+	// Add an incomplete backup so the cleanup phase is entered
+	s3.addIncomplete("inst-1", "b-inc", now.Add(-1*time.Hour))
+	// Set listErr so ListBackupHistory (for completed) fails during cleanup.
+	// Note: this also affects applyKeepLastN but that's OK — both will record errors.
+	s3.listErr = fmt.Errorf("S3 list completed error")
+	result := mgr.ApplyRetention("inst-1", 5)
+	hasErr := false
+	for _, e := range result.Errors {
+		if strings.Contains(e, "failed to list completed backups for incomplete cleanup") {
+			hasErr = true
+			break
+		}
+	}
+	if !hasErr {
+		t.Errorf("expected error about listing completed backups for incomplete cleanup, got: %v", result.Errors)
+	}
+}
+
+func TestCleanupIncompleteBackups_DeleteError(t *testing.T) {
+	mgr, s3, _ := newTestManager()
+	now := time.Now()
+	s3.addBackup("inst-1", "b-completed", types.BackupStatusCompleted, now)
+	s3.addIncomplete("inst-1", "b-inc-old", now.Add(-2*time.Hour))
+	s3.deleteErr = fmt.Errorf("delete permission denied")
+	result := mgr.ApplyRetention("inst-1", 5)
+	hasErr := false
+	for _, e := range result.Errors {
+		if strings.Contains(e, "failed to delete incomplete backup") {
+			hasErr = true
+			break
+		}
+	}
+	if !hasErr {
+		t.Errorf("expected error about deleting incomplete backup, got: %v", result.Errors)
+	}
+	if len(result.CleanedIncomplete) != 0 {
+		t.Errorf("expected 0 cleaned incomplete on delete error, got %d", len(result.CleanedIncomplete))
+	}
+}
+
+func TestCleanupIncompleteBackups_IncompleteNewerThanCompleted(t *testing.T) {
+	mgr, s3, _ := newTestManager()
+	now := time.Now()
+	// Completed backup is older than the incomplete
+	s3.addBackup("inst-1", "b-completed", types.BackupStatusCompleted, now.Add(-3*time.Hour))
+	s3.addIncomplete("inst-1", "b-inc-newer", now)
+	result := mgr.ApplyRetention("inst-1", 5)
+	// The incomplete is newer than the most recent completed, so it should NOT be cleaned
+	if len(result.CleanedIncomplete) != 0 {
+		t.Errorf("expected 0 cleaned incomplete (newer than completed), got %d: %v",
+			len(result.CleanedIncomplete), result.CleanedIncomplete)
+	}
+	if len(result.Errors) != 0 {
+		t.Errorf("expected 0 errors, got %v", result.Errors)
+	}
+}
+
+// --- Additional coverage tests for DeleteBackup ---
+
+func TestDeleteBackup_DeleteFromMainHistoryError_FallsThroughToOrphaned(t *testing.T) {
+	mgr, s3, _ := newTestManager()
+	now := time.Now()
+	// Backup exists in orphaned but not in main history
+	s3.addOrphaned("inst-1", "b-orphan", now.Add(-5*time.Hour))
+	// Set deleteErr so DeleteBackupHistory fails for both the initial main-history
+	// check and the orphaned deletion
+	s3.deleteErr = fmt.Errorf("delete failed")
+	err := mgr.DeleteBackup("inst-1", "b-orphan")
+	if err == nil {
+		t.Fatal("expected error when DeleteBackupHistory fails for orphaned backup")
+	}
+	if !strings.Contains(err.Error(), "failed to delete orphaned backup") {
+		t.Errorf("expected 'failed to delete orphaned backup' error, got: %v", err)
+	}
+}
+
+func TestDeleteBackup_OrphanedListError_FallsThroughToIncomplete(t *testing.T) {
+	mgr, s3, _ := newTestManager()
+	now := time.Now()
+	// Backup only exists in incomplete
+	s3.addIncomplete("inst-1", "b-inc", now.Add(-5*time.Hour))
+	// Make orphaned list fail — should skip orphaned and check incomplete
+	s3.orphanedListErr = fmt.Errorf("orphaned list error")
+	err := mgr.DeleteBackup("inst-1", "b-inc")
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+}
+
+func TestDeleteBackup_IncompleteListError_ReturnsNotFound(t *testing.T) {
+	mgr, s3, _ := newTestManager()
+	// Backup doesn't exist anywhere; incomplete list also errors
+	s3.incompleteListErr = fmt.Errorf("incomplete list error")
+	err := mgr.DeleteBackup("inst-1", "nonexistent")
+	if err != utils.ErrBackupNotFound {
+		t.Errorf("expected ErrBackupNotFound, got %v", err)
+	}
+}
+
+func TestDeleteBackup_DeleteIncompleteError(t *testing.T) {
+	mgr, s3, _ := newTestManager()
+	now := time.Now()
+	// Backup only exists in incomplete
+	s3.addIncomplete("inst-1", "b-inc", now.Add(-5*time.Hour))
+	// Make all delete calls fail
+	s3.deleteErr = fmt.Errorf("delete failed")
+	// Also make orphaned listing fail so we skip straight to incomplete
+	s3.orphanedListErr = fmt.Errorf("orphaned list error")
+	err := mgr.DeleteBackup("inst-1", "b-inc")
+	if err == nil {
+		t.Fatal("expected error when DeleteBackupHistory fails for incomplete backup")
+	}
+	if !strings.Contains(err.Error(), "failed to delete incomplete backup") {
+		t.Errorf("expected 'failed to delete incomplete backup' error, got: %v", err)
+	}
+}
+
+func TestDeleteBackup_NoCompletedBackups_AllowsDelete(t *testing.T) {
+	mgr, s3, _ := newTestManager()
+	now := time.Now()
+	// Only orphaned backups exist (no completed)
+	s3.addOrphaned("inst-1", "b-orphan", now.Add(-5*time.Hour))
+	err := mgr.DeleteBackup("inst-1", "b-orphan")
+	if err != nil {
+		t.Fatalf("expected nil error when no completed backups exist, got %v", err)
+	}
+}
+
+func TestDeleteBackup_OrphanedAndIncompleteBothSkipped_ReturnsNotFound(t *testing.T) {
+	mgr, s3, _ := newTestManager()
+	// Both orphaned and incomplete lists error
+	s3.orphanedListErr = fmt.Errorf("orphaned list error")
+	s3.incompleteListErr = fmt.Errorf("incomplete list error")
+	err := mgr.DeleteBackup("inst-1", "nonexistent")
+	if err != utils.ErrBackupNotFound {
+		t.Errorf("expected ErrBackupNotFound, got %v", err)
 	}
 }

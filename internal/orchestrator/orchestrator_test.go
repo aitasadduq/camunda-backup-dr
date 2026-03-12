@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2155,5 +2156,630 @@ func TestExecuteElasticsearchBackup_WithSnapshotNamePrefix(t *testing.T) {
 	// Verify the snapshot name includes the prefix
 	if !strings.HasPrefix(capturedSnapshotName, "my-prefix-") {
 		t.Errorf("Expected snapshot name to start with 'my-prefix-', got: %s", capturedSnapshotName)
+	}
+}
+
+// =============================================================================
+// Additional coverage tests
+// =============================================================================
+
+func TestExecuteBackup_NilInstance(t *testing.T) {
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, setupTestConfig(), logger, 100*time.Millisecond, 50)
+
+	ctx := context.Background()
+	req := BackupRequest{
+		CamundaInstance: nil,
+		TriggerType:     types.TriggerTypeManual,
+	}
+
+	_, err := orch.ExecuteBackup(ctx, req)
+	if err == nil {
+		t.Fatal("Expected error for nil instance")
+	}
+	if !strings.Contains(err.Error(), "camunda instance is nil") {
+		t.Errorf("Expected 'camunda instance is nil' error, got: %v", err)
+	}
+}
+
+func TestExecuteBackup_BackupAlreadyInProgress(t *testing.T) {
+	// Create mock server that delays so the backup stays "running"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"message": "triggered"})
+		} else if r.Method == http.MethodGet {
+			// Simulate slow polling
+			time.Sleep(2 * time.Second)
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"state": "COMPLETED"})
+		}
+	}))
+	defer server.Close()
+
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, setupTestConfig(), logger, 100*time.Millisecond, 50)
+
+	instance := setupTestInstance("test-instance", "Test")
+	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentZeebe, Enabled: true},
+	}
+
+	// Start first backup in background
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		orch.ExecuteBackup(ctx, BackupRequest{
+			CamundaInstance: instance,
+			TriggerType:     types.TriggerTypeManual,
+		})
+	}()
+
+	// Wait a short time for the first backup to acquire the lock
+	time.Sleep(200 * time.Millisecond)
+
+	// Try second backup — should fail
+	ctx := context.Background()
+	_, err := orch.ExecuteBackup(ctx, BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+	})
+	if err == nil {
+		t.Fatal("Expected error for concurrent backup")
+	}
+	if !strings.Contains(err.Error(), "backup already in progress") {
+		t.Errorf("Expected 'backup already in progress' error, got: %v", err)
+	}
+
+	<-done
+}
+
+// failingStoreLatestS3 fails on StoreLatestBackupID
+type failingStoreLatestS3 struct {
+	*mockS3Storage
+}
+
+func (f *failingStoreLatestS3) StoreLatestBackupID(camundaInstanceID, backupID string) error {
+	return fmt.Errorf("simulated StoreLatestBackupID failure")
+}
+
+func TestExecuteBackup_StoreLatestBackupIDFailure(t *testing.T) {
+	fileStorage := newMockFileStorage()
+	s3Storage := &failingStoreLatestS3{mockS3Storage: newMockS3Storage()}
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, setupTestConfig(), logger, 100*time.Millisecond, 50)
+
+	instance := setupTestInstance("test-instance", "Test")
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentZeebe, Enabled: true},
+	}
+
+	ctx := context.Background()
+	execution, _ := orch.ExecuteBackup(ctx, BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+	})
+
+	// Should return the execution with failed status
+	if execution == nil {
+		t.Fatal("Expected execution to be returned even on failure")
+	}
+	if execution.Status != types.BackupStatusFailed {
+		t.Errorf("Expected status FAILED, got: %s", execution.Status)
+	}
+	if !strings.Contains(execution.ErrorMessage, "Failed to store backup ID in S3") {
+		t.Errorf("Expected error message about S3 failure, got: %s", execution.ErrorMessage)
+	}
+}
+
+func TestSetAlerter(t *testing.T) {
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, setupTestConfig(), logger, 100*time.Millisecond, 50)
+
+	alerter := utils.NewAlerter("http://example.com/webhook", logger)
+	orch.SetAlerter(alerter)
+
+	// Verify alerter was set
+	if orch.alerter == nil {
+		t.Error("Expected alerter to be set")
+	}
+}
+
+func TestSetRetentionFunc(t *testing.T) {
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, setupTestConfig(), logger, 100*time.Millisecond, 50)
+
+	orch.SetRetentionFunc(func(camundaInstanceID string, retentionCount int) {})
+
+	if orch.retentionFunc == nil {
+		t.Error("Expected retentionFunc to be set")
+	}
+}
+
+func TestIsBackupRunning(t *testing.T) {
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, setupTestConfig(), logger, 100*time.Millisecond, 50)
+
+	// Initially not running
+	if orch.IsBackupRunning() {
+		t.Error("Expected backup to not be running initially")
+	}
+}
+
+func TestSetRetentionFunc_CalledAfterSuccessfulBackup(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"message": "triggered"})
+		} else if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"state": "COMPLETED"})
+		}
+	}))
+	defer server.Close()
+
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, setupTestConfig(), logger, 100*time.Millisecond, 50)
+
+	retentionCalled := make(chan struct{}, 1)
+	orch.SetRetentionFunc(func(camundaInstanceID string, retentionCount int) {
+		retentionCalled <- struct{}{}
+	})
+
+	instance := setupTestInstance("test-instance", "Test")
+	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
+	instance.RetentionCount = 5
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentZeebe, Enabled: true},
+	}
+
+	ctx := context.Background()
+	execution, err := orch.ExecuteBackup(ctx, BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+	})
+
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if execution.Status != types.BackupStatusCompleted {
+		t.Errorf("Expected COMPLETED, got: %s", execution.Status)
+	}
+
+	// Wait for retention function to be called (it runs async)
+	select {
+	case <-retentionCalled:
+		// success
+	case <-time.After(2 * time.Second):
+		t.Error("Retention function was not called after successful backup")
+	}
+}
+
+// failingMoveToIncompleteS3 fails on MoveToIncomplete
+type failingMoveToIncompleteS3 struct {
+	*mockS3Storage
+}
+
+func (f *failingMoveToIncompleteS3) MoveToIncomplete(camundaInstanceID, backupID string) error {
+	return fmt.Errorf("simulated MoveToIncomplete failure")
+}
+
+func TestHandleBackupFailure_MoveToIncompleteError_WithAlerter(t *testing.T) {
+	// Create a server that fails on requests (to trigger handleBackupFailure)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "fail"})
+		}
+	}))
+	defer server.Close()
+
+	// Create an alert webhook server to verify alerts are sent
+	var alertReceived int32
+	alertServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&alertReceived, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer alertServer.Close()
+
+	fileStorage := newMockFileStorage()
+	s3Storage := &failingMoveToIncompleteS3{mockS3Storage: newMockS3Storage()}
+	clientCfg := camunda.DefaultHTTPClientConfig()
+	clientCfg.MaxRetries = 0
+	httpClient := camunda.NewHTTPClient(clientCfg, utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, setupTestConfig(), logger, 100*time.Millisecond, 50)
+
+	// Set alerter with real webhook server
+	alerter := utils.NewAlerter(alertServer.URL, logger)
+	orch.SetAlerter(alerter)
+
+	instance := setupTestInstance("test-instance", "Test")
+	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
+	instance.OperateBackupEndpoint = ""
+	instance.TasklistBackupEndpoint = ""
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentZeebe, Enabled: true},
+	}
+
+	ctx := context.Background()
+	execution, err := orch.ExecuteBackup(ctx, BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+		BackupReason:    "Test MoveToIncomplete failure with alerter",
+	})
+
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if execution.Status != types.BackupStatusFailed {
+		t.Errorf("Expected FAILED, got: %s", execution.Status)
+	}
+
+	// Wait for async alerts to be processed
+	time.Sleep(500 * time.Millisecond)
+	received := atomic.LoadInt32(&alertReceived)
+	if received < 1 {
+		t.Errorf("Expected at least 1 alert to be sent, got %d", received)
+	}
+}
+
+func TestHandleBackupFailure_MoveToIncompleteSuccess_WithAlerter(t *testing.T) {
+	// Create a server that fails on Zeebe
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "fail"})
+		}
+	}))
+	defer server.Close()
+
+	// Create alert webhook
+	var alertReceived int32
+	alertServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&alertReceived, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer alertServer.Close()
+
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	clientCfg := camunda.DefaultHTTPClientConfig()
+	clientCfg.MaxRetries = 0
+	httpClient := camunda.NewHTTPClient(clientCfg, utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, setupTestConfig(), logger, 100*time.Millisecond, 50)
+
+	alerter := utils.NewAlerter(alertServer.URL, logger)
+	orch.SetAlerter(alerter)
+
+	instance := setupTestInstance("test-instance", "Test")
+	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
+	instance.OperateBackupEndpoint = ""
+	instance.TasklistBackupEndpoint = ""
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentZeebe, Enabled: true},
+	}
+
+	ctx := context.Background()
+	execution, err := orch.ExecuteBackup(ctx, BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+	})
+
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if execution.Status != types.BackupStatusFailed {
+		t.Errorf("Expected FAILED, got: %s", execution.Status)
+	}
+
+	// Wait for async alert
+	time.Sleep(500 * time.Millisecond)
+	received := atomic.LoadInt32(&alertReceived)
+	if received < 1 {
+		t.Errorf("Expected at least 1 alert for backup failure, got %d", received)
+	}
+}
+
+func TestHandleBackupFailure_NoAlerter(t *testing.T) {
+	// Server that fails
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	clientCfg := camunda.DefaultHTTPClientConfig()
+	clientCfg.MaxRetries = 0
+	httpClient := camunda.NewHTTPClient(clientCfg, utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, setupTestConfig(), logger, 100*time.Millisecond, 50)
+	// Note: no alerter set
+
+	instance := setupTestInstance("test-instance", "Test")
+	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
+	instance.OperateBackupEndpoint = ""
+	instance.TasklistBackupEndpoint = ""
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentZeebe, Enabled: true},
+	}
+
+	ctx := context.Background()
+	execution, err := orch.ExecuteBackup(ctx, BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+	})
+
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if execution.Status != types.BackupStatusFailed {
+		t.Errorf("Expected FAILED, got: %s", execution.Status)
+	}
+}
+
+// failingFileStorage returns errors for log writes
+type failingFileStorage struct {
+	*mockFileStorage
+	failWrite bool
+}
+
+func (f *failingFileStorage) WriteToLogFile(camundaInstanceID, backupID, message string) error {
+	if f.failWrite {
+		return fmt.Errorf("simulated log write failure")
+	}
+	return f.mockFileStorage.WriteToLogFile(camundaInstanceID, backupID, message)
+}
+
+func TestWriteLog_FileWriteError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusOK)
+		} else if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"state": "COMPLETED"})
+		}
+	}))
+	defer server.Close()
+
+	base := newMockFileStorage()
+	fileStorage := &failingFileStorage{mockFileStorage: base, failWrite: true}
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, setupTestConfig(), logger, 100*time.Millisecond, 50)
+
+	instance := setupTestInstance("test-instance", "Test")
+	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
+	instance.OperateBackupEndpoint = ""
+	instance.TasklistBackupEndpoint = ""
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentZeebe, Enabled: true},
+	}
+
+	ctx := context.Background()
+	execution, err := orch.ExecuteBackup(ctx, BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+	})
+
+	// Backup should still complete even if log writes fail
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if execution.Status != types.BackupStatusCompleted {
+		t.Errorf("Expected COMPLETED despite log write failures, got: %s", execution.Status)
+	}
+}
+
+func TestExecuteZeebeBackup_TriggerFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "internal error"})
+	}))
+	defer server.Close()
+
+	clientCfg := camunda.DefaultHTTPClientConfig()
+	clientCfg.MaxRetries = 0
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(clientCfg, utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, setupTestConfig(), logger, 100*time.Millisecond, 50)
+
+	instance := setupTestInstance("test-instance", "Test")
+	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
+	instance.OperateBackupEndpoint = ""
+	instance.TasklistBackupEndpoint = ""
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentZeebe, Enabled: true},
+	}
+
+	ctx := context.Background()
+	execution, err := orch.ExecuteBackup(ctx, BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+	})
+
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if execution.Status != types.BackupStatusFailed {
+		t.Errorf("Expected FAILED, got: %s", execution.Status)
+	}
+	if execution.ComponentStatus[types.ComponentZeebe] != types.ComponentStatusFailed {
+		t.Errorf("Expected Zeebe FAILED, got: %s", execution.ComponentStatus[types.ComponentZeebe])
+	}
+}
+
+func TestExecuteTasklistBackup_TriggerFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]string{"error": "internal error"})
+	}))
+	defer server.Close()
+
+	clientCfg := camunda.DefaultHTTPClientConfig()
+	clientCfg.MaxRetries = 0
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(clientCfg, utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, setupTestConfig(), logger, 100*time.Millisecond, 50)
+
+	instance := setupTestInstance("test-instance", "Test")
+	instance.ZeebeBackupEndpoint = ""
+	instance.OperateBackupEndpoint = ""
+	instance.TasklistBackupEndpoint = server.URL + "/tasklist/backup"
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentTasklist, Enabled: true},
+	}
+
+	ctx := context.Background()
+	execution, err := orch.ExecuteBackup(ctx, BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+	})
+
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if execution.Status != types.BackupStatusFailed {
+		t.Errorf("Expected FAILED, got: %s", execution.Status)
+	}
+	if execution.ComponentStatus[types.ComponentTasklist] != types.ComponentStatusFailed {
+		t.Errorf("Expected Tasklist FAILED, got: %s", execution.ComponentStatus[types.ComponentTasklist])
+	}
+}
+
+func TestExecuteTasklistBackup_Skipped(t *testing.T) {
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, setupTestConfig(), logger, 100*time.Millisecond, 50)
+
+	instance := setupTestInstance("test-instance", "Test")
+	instance.ZeebeBackupEndpoint = ""
+	instance.OperateBackupEndpoint = ""
+	instance.TasklistBackupEndpoint = "" // No endpoint
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentTasklist, Enabled: true},
+	}
+
+	ctx := context.Background()
+	execution, err := orch.ExecuteBackup(ctx, BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+	})
+
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if execution.ComponentStatus[types.ComponentTasklist] != types.ComponentStatusSkipped {
+		t.Errorf("Expected Tasklist SKIPPED, got: %s", execution.ComponentStatus[types.ComponentTasklist])
+	}
+}
+
+// failingDeleteLogFileStorage fails on DeleteLogFile
+type failingDeleteLogFileStorage struct {
+	*mockFileStorage
+}
+
+func (f *failingDeleteLogFileStorage) DeleteLogFile(camundaInstanceID, backupID string) error {
+	return fmt.Errorf("simulated DeleteLogFile failure")
+}
+
+func TestExecuteBackup_StoreLatestBackupIDFailure_DeleteLogFileError(t *testing.T) {
+	base := newMockFileStorage()
+	fileStorage := &failingDeleteLogFileStorage{mockFileStorage: base}
+	s3Storage := &failingStoreLatestS3{mockS3Storage: newMockS3Storage()}
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, setupTestConfig(), logger, 100*time.Millisecond, 50)
+
+	instance := setupTestInstance("test-instance", "Test")
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentZeebe, Enabled: true},
+	}
+
+	ctx := context.Background()
+	execution, _ := orch.ExecuteBackup(ctx, BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+	})
+
+	if execution == nil {
+		t.Fatal("Expected execution even on failure")
+	}
+	if execution.Status != types.BackupStatusFailed {
+		t.Errorf("Expected FAILED, got: %s", execution.Status)
+	}
+}
+
+func TestExecuteBackup_HandleBackupFailure_ErrorMessagePreserved(t *testing.T) {
+	// Server that fails
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	clientCfg := camunda.DefaultHTTPClientConfig()
+	clientCfg.MaxRetries = 0
+	httpClient := camunda.NewHTTPClient(clientCfg, utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, setupTestConfig(), logger, 100*time.Millisecond, 50)
+
+	instance := setupTestInstance("test-instance", "Test")
+	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
+	instance.OperateBackupEndpoint = ""
+	instance.TasklistBackupEndpoint = ""
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentZeebe, Enabled: true},
+	}
+
+	ctx := context.Background()
+	execution, err := orch.ExecuteBackup(ctx, BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+	})
+
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+
+	// Verify backup history was stored with failed status
+	history, _ := s3Storage.GetBackupHistory(instance.ID, execution.BackupID)
+	if history == nil {
+		t.Fatal("Expected backup history to be stored")
+	}
+	if history.Status != types.BackupStatusFailed {
+		t.Errorf("Expected history FAILED, got: %s", history.Status)
 	}
 }

@@ -169,6 +169,96 @@ func TestCircuitBreaker_Name(t *testing.T) {
 	}
 }
 
+func TestCircuitBreaker_HalfOpenProbeLimitRejectsExtraCalls(t *testing.T) {
+	cfg := CircuitBreakerConfig{MaxFailures: 2, ResetTimeout: 100 * time.Millisecond, HalfOpenMaxCalls: 1}
+	cb := NewCircuitBreaker("test", cfg)
+
+	// Trip the breaker
+	for i := 0; i < 2; i++ {
+		_ = cb.Execute(func() error { return fmt.Errorf("fail") })
+	}
+	if cb.State() != CircuitOpen {
+		t.Fatalf("expected OPEN, got %s", cb.State())
+	}
+
+	// Wait for reset timeout so OPEN → HALF_OPEN transition is eligible
+	time.Sleep(150 * time.Millisecond)
+
+	// First beforeCall: transitions OPEN → HALF_OPEN and allows the call
+	if err := cb.beforeCall(); err != nil {
+		t.Fatalf("first half-open call should be allowed: %v", err)
+	}
+
+	// Second beforeCall: probe limit reached, should be rejected
+	err := cb.beforeCall()
+	if err == nil {
+		t.Fatal("expected rejection when half-open probe limit is reached")
+	}
+	if !errors.Is(err, ErrCircuitBreakerOpen) {
+		t.Fatalf("expected ErrCircuitBreakerOpen, got: %v", err)
+	}
+	if got := err.Error(); !containsSubstring(got, "half-open probe limit reached") {
+		t.Errorf("error message should mention probe limit, got: %q", got)
+	}
+}
+
+func TestCircuitBreaker_HalfOpenMultipleProbes(t *testing.T) {
+	// With HalfOpenMaxCalls=3, three probes should be allowed before rejection
+	cfg := CircuitBreakerConfig{MaxFailures: 1, ResetTimeout: 50 * time.Millisecond, HalfOpenMaxCalls: 3}
+	cb := NewCircuitBreaker("multi-probe", cfg)
+
+	_ = cb.Execute(func() error { return fmt.Errorf("fail") })
+	time.Sleep(80 * time.Millisecond)
+
+	// First three beforeCall invocations should succeed
+	for i := 0; i < 3; i++ {
+		if err := cb.beforeCall(); err != nil {
+			t.Fatalf("beforeCall #%d should be allowed, got: %v", i+1, err)
+		}
+	}
+
+	// Fourth should be rejected
+	if err := cb.beforeCall(); err == nil {
+		t.Fatal("fourth call should be rejected")
+	}
+}
+
+func TestCircuitBreaker_TransitionTo_NoOp(t *testing.T) {
+	// Calling Reset on an already-closed circuit exercises the transitionTo
+	// no-op path (state == newState → early return).
+	var called atomic.Int32
+	cfg := DefaultCircuitBreakerConfig()
+	cb := NewCircuitBreaker("noop-test", cfg)
+
+	cb.OnStateChange(func(name string, from, to CircuitState) {
+		called.Add(1)
+	})
+
+	// Circuit is already CLOSED; Reset calls transitionTo(CircuitClosed) which
+	// should be a no-op — the callback must NOT fire.
+	cb.Reset()
+
+	time.Sleep(20 * time.Millisecond)
+
+	if called.Load() != 0 {
+		t.Error("transitionTo should be a no-op when state is unchanged; callback should not fire")
+	}
+}
+
+// containsSubstring is a small helper to keep assertions readable.
+func containsSubstring(s, substr string) bool {
+	return len(s) >= len(substr) && containsCheck(s, substr)
+}
+
+func containsCheck(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
 func TestCircuitState_String(t *testing.T) {
 	tests := []struct {
 		state CircuitState

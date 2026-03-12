@@ -341,3 +341,90 @@ func TestCronExpression_RealWorldSchedules(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// parseField edge cases
+// ---------------------------------------------------------------------------
+
+func TestParseField_RangeWithStep(t *testing.T) {
+	// 1-10/2 → 1, 3, 5, 7, 9
+	field, err := parseField("1-10/2", 0, 59)
+	if err != nil {
+		t.Fatalf("Failed to parse 1-10/2: %v", err)
+	}
+
+	expected := []int{1, 3, 5, 7, 9}
+	if len(field.values) != len(expected) {
+		t.Errorf("Expected %d values, got %d", len(expected), len(field.values))
+	}
+	for _, v := range expected {
+		if !field.values[v] {
+			t.Errorf("Expected value %d to be present", v)
+		}
+	}
+}
+
+func TestParseField_StepWithExplicitStart(t *testing.T) {
+	// 5/10 for minutes → 5, 15, 25, 35, 45, 55
+	field, err := parseField("5/10", 0, 59)
+	if err != nil {
+		t.Fatalf("Failed to parse 5/10: %v", err)
+	}
+
+	expected := []int{5, 15, 25, 35, 45, 55}
+	if len(field.values) != len(expected) {
+		t.Errorf("Expected %d values, got %d", len(expected), len(field.values))
+	}
+	for _, v := range expected {
+		if !field.values[v] {
+			t.Errorf("Expected value %d to be present", v)
+		}
+	}
+}
+
+func TestParseField_InvalidStepFormats(t *testing.T) {
+	tests := []struct {
+		name  string
+		field string
+	}{
+		{"too many slashes", "1/2/3"},
+		{"zero step", "*/0"},
+		{"negative step", "*/-1"},
+		{"non-numeric step", "*/abc"},
+		{"invalid range start in step", "a-10/2"},
+		{"invalid range end in step", "1-b/2"},
+		{"invalid range format in step", "1-2-3/2"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseField(tt.field, 0, 59)
+			if err == nil {
+				t.Errorf("parseField(%q) expected error, got nil", tt.field)
+			}
+		})
+	}
+}
+
+func TestParseField_CommaWithMixedFormats(t *testing.T) {
+	// Mix: single value, range, step-from-start
+	// "0,10-15,30/10" → 0, 10..15, 30 40 50
+	field, err := parseField("0,10-15,30/10", 0, 59)
+	if err != nil {
+		t.Fatalf("Failed to parse mixed format: %v", err)
+	}
+
+	expected := map[int]bool{
+		0: true, 10: true, 11: true, 12: true, 13: true, 14: true, 15: true,
+		30: true, 40: true, 50: true,
+	}
+
+	for v := range expected {
+		if !field.values[v] {
+			t.Errorf("Expected value %d to be present", v)
+		}
+	}
+	if len(field.values) != len(expected) {
+		t.Errorf("Expected %d values, got %d", len(expected), len(field.values))
+	}
+}
