@@ -66,9 +66,15 @@ func TestServer_StartAndShutdown(t *testing.T) {
 		t.Fatal("expected listener to be set after Start")
 	}
 
-	// Make a request to verify the server is serving
-	addr := s.listener.Addr().String()
-	resp, err := http.Get(fmt.Sprintf("http://%s/healthz", addr))
+	// Make a request to verify the server is serving.
+	// Extract the chosen port and connect via 127.0.0.1 to avoid using
+	// wildcard addresses like "[::]:port" or "0.0.0.0:port", which are
+	// not valid connect targets on some platforms.
+	tcpAddr, ok := s.listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("listener address is not *net.TCPAddr: %T", s.listener.Addr())
+	}
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", tcpAddr.Port))
 	if err != nil {
 		t.Fatalf("failed to reach server: %v", err)
 	}

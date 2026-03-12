@@ -1,4 +1,4 @@
-.PHONY: build clean run test test-coverage test-integration test-e2e help
+.PHONY: build clean run test test-coverage test-integration test-e2e help test-all deps lint fmt
 
 # Binary name
 BINARY_NAME=backup-controller
