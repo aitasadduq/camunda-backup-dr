@@ -272,47 +272,30 @@ docker run -d \
 
 ### Docker Compose (development)
 
-```yaml
-services:
-  backup-controller:
-    build: .
-    ports:
-      - "8080:8080"
-    volumes:
-      - backup-data:/data
-    environment:
-      LOG_LEVEL: debug
-      DEFAULT_S3_ENDPOINT: http://minio:9000
-      DEFAULT_S3_ACCESSKEY: minioadmin
-      DEFAULT_S3_SECRETKEY: minioadmin
-      DEFAULT_ELASTICSEARCH_ENDPOINT: http://elasticsearch:9200
-      DEFAULT_ELASTICSEARCH_USERNAME: elastic
-    depends_on:
-      - minio
-      - elasticsearch
+The development compose file at `deployments/docker-compose.yaml` uses [Docker Compose profiles](https://docs.docker.com/compose/how-tos/profiles/) to make support services optional. The backup controller always runs; Elasticsearch and MinIO only start when their profiles are activated.
 
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+```bash
+# Backup controller only
+docker compose up
 
-  elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
-    ports:
-      - "9200:9200"
-    environment:
-      discovery.type: single-node
-      ELASTIC_PASSWORD: changeme
-      xpack.security.enabled: "true"
+# Backup controller + MinIO
+docker compose --profile minio up
 
-volumes:
-  backup-data:
+# Backup controller + MinIO + Elasticsearch
+docker compose --profile minio --profile elasticsearch up
+
+# All services (shorthand)
+docker compose --profile all up
 ```
+
+| Profile | Services started |
+|---------|-----------------|
+| _(none)_ | `backup-controller` |
+| `minio` | `backup-controller`, `minio`, `minio-mc` |
+| `elasticsearch` | `backup-controller`, `minio`, `elasticsearch` |
+| `all` | All services |
+
+> **Note:** The `elasticsearch` profile also requires the `minio` profile because Elasticsearch depends on MinIO for S3-based snapshot storage. If you activate `elasticsearch` without `minio`, Docker Compose will report a dependency error.
 
 ---
 

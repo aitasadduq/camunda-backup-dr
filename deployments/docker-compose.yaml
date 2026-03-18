@@ -1,4 +1,20 @@
 services:
+  backup-controller:
+    build:
+      context: ../
+      dockerfile: deployments/Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - backup_data:/data
+    environment:
+      LOG_LEVEL: debug
+      DEFAULT_S3_ENDPOINT: http://minio:9000
+      DEFAULT_S3_ACCESSKEY: localminio
+      DEFAULT_ELASTICSEARCH_ENDPOINT: http://elasticsearch:9200
+      DEFAULT_ELASTICSEARCH_USERNAME: elastic
+    restart: unless-stopped
+
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
@@ -10,6 +26,9 @@ services:
       MINIO_ROOT_PASSWORD: localminio12345
     volumes:
       - minio_data:/data
+    profiles:
+      - minio
+      - all
     restart: unless-stopped
 
   minio-mc:
@@ -22,6 +41,9 @@ services:
       - |
         until mc alias set local http://minio:9000 localminio localminio12345; do sleep 1; done
         mc mb -p local/es-snapshots || true
+    profiles:
+      - minio
+      - all
     restart: "no"
 
   elasticsearch:
@@ -42,9 +64,14 @@ services:
       - es_data:/usr/share/elasticsearch/data
     depends_on:
       - minio
+    profiles:
+      - elasticsearch
+      - all
     restart: unless-stopped
 
 volumes:
+  backup_data:
+    driver: local
   minio_data:
     driver: local
   es_data:
