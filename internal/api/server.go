@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/aitasadduq/camunda-backup-dr/internal/config"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
 )
 
@@ -32,8 +33,9 @@ func NewServer(
 	logFileReader LogFileReader,
 	logger *utils.Logger,
 	webFS fs.FS,
+	cfg *config.Config,
 ) *Server {
-	handlers := NewHandlers(camundaManager, orchestrator, historyProvider, scheduler, retentionManager, logFileReader, logger)
+	handlers := NewHandlers(camundaManager, orchestrator, historyProvider, scheduler, retentionManager, logFileReader, logger, cfg)
 	router := NewRouter(handlers, webFS)
 
 	// Apply middleware chain

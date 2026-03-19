@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aitasadduq/camunda-backup-dr/internal/config"
 	"github.com/aitasadduq/camunda-backup-dr/internal/models"
 	"github.com/aitasadduq/camunda-backup-dr/internal/orchestrator"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
@@ -71,6 +72,7 @@ type Handlers struct {
 	retentionManager RetentionManager
 	logFileReader    LogFileReader
 	logger           *utils.Logger
+	cfg              *config.Config
 }
 
 // NewHandlers creates a new handlers instance
@@ -82,6 +84,7 @@ func NewHandlers(
 	retentionManager RetentionManager,
 	logFileReader LogFileReader,
 	logger *utils.Logger,
+	cfg *config.Config,
 ) *Handlers {
 	return &Handlers{
 		camundaManager:   camundaManager,
@@ -91,7 +94,48 @@ func NewHandlers(
 		retentionManager: retentionManager,
 		logFileReader:    logFileReader,
 		logger:           logger,
+		cfg:              cfg,
 	}
+}
+
+// GetDefaultsHandler returns configuration defaults for the UI to pre-populate form fields.
+// Sensitive values (passwords, secret keys) are never exposed.
+func (h *Handlers) GetDefaultsHandler(w http.ResponseWriter, r *http.Request) {
+	defaults := map[string]interface{}{
+		"schedule":                              "0 2 * * *",
+		"retention_count":                       7,
+		"success_history_count":                 30,
+		"failure_history_count":                 30,
+		"elasticsearch_endpoint":                "",
+		"elasticsearch_username":                "",
+		"elasticsearch_snapshot_repository":      "camunda-backup",
+		"elasticsearch_snapshot_name_prefix":     "",
+		"s3_endpoint":                           "",
+		"s3_accesskey":                          "",
+	}
+
+	if h.cfg != nil {
+		defaults["elasticsearch_endpoint"] = h.cfg.DefaultElasticsearchEndpoint
+		defaults["elasticsearch_username"] = h.cfg.DefaultElasticsearchUsername
+		defaults["elasticsearch_snapshot_repository"] = h.cfg.DefaultElasticsearchSnapshotRepository
+		defaults["elasticsearch_snapshot_name_prefix"] = h.cfg.DefaultElasticsearchSnapshotNamePrefix
+		defaults["s3_endpoint"] = h.cfg.DefaultS3Endpoint
+		defaults["s3_accesskey"] = h.cfg.DefaultS3AccessKey
+		if h.cfg.DefaultSchedule != "" {
+			defaults["schedule"] = h.cfg.DefaultSchedule
+		}
+		if h.cfg.DefaultRetentionCount > 0 {
+			defaults["retention_count"] = h.cfg.DefaultRetentionCount
+		}
+		if h.cfg.DefaultSuccessHistory > 0 {
+			defaults["success_history_count"] = h.cfg.DefaultSuccessHistory
+		}
+		if h.cfg.DefaultFailureHistory > 0 {
+			defaults["failure_history_count"] = h.cfg.DefaultFailureHistory
+		}
+	}
+
+	writeJSON(w, http.StatusOK, defaults)
 }
 
 // HealthzHandler handles health check requests
@@ -231,6 +275,16 @@ func (h *Handlers) CreateCamundaInstanceHandler(w http.ResponseWriter, r *http.R
 	}
 	if instance.FailureHistoryCount == 0 {
 		instance.FailureHistoryCount = 30
+	}
+
+	// Apply default Elasticsearch config from environment
+	if h.cfg != nil {
+		if instance.ElasticsearchEndpoint == "" && h.cfg.DefaultElasticsearchEndpoint != "" {
+			instance.ElasticsearchEndpoint = h.cfg.DefaultElasticsearchEndpoint
+		}
+		if instance.ElasticsearchUsername == "" && h.cfg.DefaultElasticsearchUsername != "" {
+			instance.ElasticsearchUsername = h.cfg.DefaultElasticsearchUsername
+		}
 	}
 	if len(instance.Components) == 0 {
 		instance.Components = []models.CamundaComponentConfig{

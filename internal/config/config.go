@@ -35,6 +35,9 @@ type Config struct {
 	DefaultS3Endpoint  string
 	DefaultS3AccessKey string
 
+	// Default Elasticsearch Password (falls back when no instance-specific var is set)
+	DefaultElasticsearchPassword string
+
 	// Alert Configuration
 	AlertWebhookURL string
 
@@ -69,6 +72,9 @@ func Load() (*Config, error) {
 		// Default S3
 		DefaultS3Endpoint:  getEnv("DEFAULT_S3_ENDPOINT", ""),
 		DefaultS3AccessKey: getEnv("DEFAULT_S3_ACCESSKEY", ""),
+
+		// Default Elasticsearch Password
+		DefaultElasticsearchPassword: getEnv("DEFAULT_ELASTICSEARCH_PASSWORD", ""),
 
 		// Alert Configuration
 		AlertWebhookURL: getEnv("ALERT_WEBHOOK_URL", ""),
@@ -149,9 +155,13 @@ func NormalizeForEnvVar(camundaInstanceID string) string {
 	return strings.ToUpper(strings.ReplaceAll(camundaInstanceID, "-", "_"))
 }
 
-// GetElasticsearchPassword retrieves Elasticsearch password for a specific Camunda instance
+// GetElasticsearchPassword retrieves Elasticsearch password for a specific Camunda instance.
+// First checks for instance-specific env var, then falls back to DefaultElasticsearchPassword.
 func (c *Config) GetElasticsearchPassword(camundaInstanceID string) string {
-	return os.Getenv("ELASTICSEARCH_PASSWORD_" + NormalizeForEnvVar(camundaInstanceID))
+	if pw := os.Getenv("ELASTICSEARCH_PASSWORD_" + NormalizeForEnvVar(camundaInstanceID)); pw != "" {
+		return pw
+	}
+	return c.DefaultElasticsearchPassword
 }
 
 // GetElasticsearchSnapshotRepository retrieves the snapshot repository name for a Camunda instance.

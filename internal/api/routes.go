@@ -40,6 +40,11 @@ func (r *Router) registerRoutes() {
 		http.MethodPost: r.handlers.CheckEndpointHandler,
 	}))
 
+	// Configuration defaults (for UI form pre-population)
+	r.mux.HandleFunc("/api/defaults", r.methodHandler(map[string]http.HandlerFunc{
+		http.MethodGet: r.handlers.GetDefaultsHandler,
+	}))
+
 	// Camunda instances - collection endpoints
 	r.mux.HandleFunc("/api/camundas", r.methodHandler(map[string]http.HandlerFunc{
 		http.MethodGet:  r.handlers.ListCamundaInstancesHandler,

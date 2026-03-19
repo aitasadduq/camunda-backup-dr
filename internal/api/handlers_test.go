@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/aitasadduq/camunda-backup-dr/internal/config"
 	"github.com/aitasadduq/camunda-backup-dr/internal/models"
 	"github.com/aitasadduq/camunda-backup-dr/internal/orchestrator"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
@@ -256,7 +258,7 @@ func newTestHandlers() (*Handlers, *mockCamundaManager, *mockOrchestrator, *mock
 	sched := &mockScheduler{running: true}
 	ret := &mockRetentionManager{}
 	lfr := &mockLogFileReader{logs: make(map[string]string)}
-	handlers := NewHandlers(cm, orch, hist, sched, ret, lfr, logger)
+	handlers := NewHandlers(cm, orch, hist, sched, ret, lfr, logger, nil)
 	return handlers, cm, orch, hist, sched, ret, lfr
 }
 
@@ -1571,7 +1573,7 @@ func TestDeleteBackupHandler_NilRetentionManager(t *testing.T) {
 	hist := &mockHistoryProvider{}
 	sched := &mockScheduler{running: true}
 	lfr := &mockLogFileReader{logs: make(map[string]string)}
-	handlers := NewHandlers(cm, orch, hist, sched, nil, lfr, logger) // nil retentionManager
+	handlers := NewHandlers(cm, orch, hist, sched, nil, lfr, logger, nil) // nil retentionManager
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/camundas/test-1/backups/backup-1", nil)
 	w := httptest.NewRecorder()
@@ -1621,7 +1623,7 @@ func TestListOrphanedBackupsHandler_NilRetentionManager(t *testing.T) {
 	hist := &mockHistoryProvider{}
 	sched := &mockScheduler{running: true}
 	lfr := &mockLogFileReader{logs: make(map[string]string)}
-	handlers := NewHandlers(cm, orch, hist, sched, nil, lfr, logger) // nil retentionManager
+	handlers := NewHandlers(cm, orch, hist, sched, nil, lfr, logger, nil) // nil retentionManager
 
 	req := httptest.NewRequest(http.MethodGet, "/api/camundas/test-1/backups/orphaned", nil)
 	w := httptest.NewRecorder()
@@ -1702,7 +1704,7 @@ func TestListIncompleteBackupsHandler_NilRetentionManager(t *testing.T) {
 	hist := &mockHistoryProvider{}
 	sched := &mockScheduler{running: true}
 	lfr := &mockLogFileReader{logs: make(map[string]string)}
-	handlers := NewHandlers(cm, orch, hist, sched, nil, lfr, logger) // nil retentionManager
+	handlers := NewHandlers(cm, orch, hist, sched, nil, lfr, logger, nil) // nil retentionManager
 
 	req := httptest.NewRequest(http.MethodGet, "/api/camundas/test-1/backups/incomplete", nil)
 	w := httptest.NewRecorder()
@@ -1783,7 +1785,7 @@ func TestListFailedBackupsHandler_NilRetentionManager(t *testing.T) {
 	hist := &mockHistoryProvider{}
 	sched := &mockScheduler{running: true}
 	lfr := &mockLogFileReader{logs: make(map[string]string)}
-	handlers := NewHandlers(cm, orch, hist, sched, nil, lfr, logger) // nil retentionManager
+	handlers := NewHandlers(cm, orch, hist, sched, nil, lfr, logger, nil) // nil retentionManager
 
 	req := httptest.NewRequest(http.MethodGet, "/api/camundas/test-1/backups/failed", nil)
 	w := httptest.NewRecorder()
@@ -1857,7 +1859,7 @@ func TestReadyzHandler_NilScheduler(t *testing.T) {
 	hist := &mockHistoryProvider{}
 	ret := &mockRetentionManager{}
 	lfr := &mockLogFileReader{logs: make(map[string]string)}
-	handlers := NewHandlers(cm, orch, hist, nil, ret, lfr, logger) // nil scheduler
+	handlers := NewHandlers(cm, orch, hist, nil, ret, lfr, logger, nil) // nil scheduler
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	w := httptest.NewRecorder()
@@ -1909,7 +1911,7 @@ func TestReadyzHandler_NilCamundaManager(t *testing.T) {
 	sched := &mockScheduler{running: true}
 	ret := &mockRetentionManager{}
 	lfr := &mockLogFileReader{logs: make(map[string]string)}
-	handlers := NewHandlers(nil, orch, hist, sched, ret, lfr, logger) // nil camundaManager
+	handlers := NewHandlers(nil, orch, hist, sched, ret, lfr, logger, nil) // nil camundaManager
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	w := httptest.NewRecorder()
@@ -1954,7 +1956,7 @@ func TestGetBackupLogsHandler_NilLogFileReader(t *testing.T) {
 	hist := &mockHistoryProvider{}
 	sched := &mockScheduler{running: true}
 	ret := &mockRetentionManager{}
-	handlers := NewHandlers(cm, orch, hist, sched, ret, nil, logger) // nil logFileReader
+	handlers := NewHandlers(cm, orch, hist, sched, ret, nil, logger, nil) // nil logFileReader
 
 	req := httptest.NewRequest(http.MethodGet, "/api/camundas/test-1/backups/backup-1/logs", nil)
 	w := httptest.NewRecorder()
@@ -2016,7 +2018,7 @@ func TestSystemStatusHandler_NilScheduler(t *testing.T) {
 	hist := &mockHistoryProvider{}
 	ret := &mockRetentionManager{}
 	lfr := &mockLogFileReader{logs: make(map[string]string)}
-	handlers := NewHandlers(cm, orch, hist, nil, ret, lfr, logger) // nil scheduler
+	handlers := NewHandlers(cm, orch, hist, nil, ret, lfr, logger, nil) // nil scheduler
 
 	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 	w := httptest.NewRecorder()
@@ -2099,5 +2101,150 @@ func TestSystemStatusHandler_DisabledInstances(t *testing.T) {
 	}
 	if resp.CamundaInstances.Disabled != 2 {
 		t.Errorf("expected 2 disabled, got %d", resp.CamundaInstances.Disabled)
+	}
+}
+
+func TestGetDefaultsHandler(t *testing.T) {
+	logger := utils.NewLogger("error")
+	cfg := &config.Config{
+		DefaultSchedule:                        "0 3 * * *",
+		DefaultRetentionCount:                  14,
+		DefaultSuccessHistory:                  60,
+		DefaultFailureHistory:                  90,
+		DefaultElasticsearchEndpoint:           "http://es:9200",
+		DefaultElasticsearchUsername:            "elastic",
+		DefaultElasticsearchSnapshotRepository: "my-repo",
+		DefaultElasticsearchSnapshotNamePrefix: "snap-",
+		DefaultS3Endpoint:                      "http://minio:9000",
+		DefaultS3AccessKey:                     "AKID",
+	}
+	handlers := NewHandlers(nil, nil, nil, nil, nil, nil, logger, cfg)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/defaults", nil)
+	w := httptest.NewRecorder()
+	handlers.GetDefaultsHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var defaults map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &defaults); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	checks := map[string]interface{}{
+		"schedule":                          "0 3 * * *",
+		"retention_count":                   float64(14),
+		"success_history_count":             float64(60),
+		"failure_history_count":             float64(90),
+		"elasticsearch_endpoint":            "http://es:9200",
+		"elasticsearch_username":            "elastic",
+		"elasticsearch_snapshot_repository":  "my-repo",
+		"elasticsearch_snapshot_name_prefix": "snap-",
+		"s3_endpoint":                       "http://minio:9000",
+		"s3_accesskey":                      "AKID",
+	}
+	for key, want := range checks {
+		if got := defaults[key]; got != want {
+			t.Errorf("defaults[%q] = %v, want %v", key, got, want)
+		}
+	}
+}
+
+func TestGetDefaultsHandler_NilConfig(t *testing.T) {
+	logger := utils.NewLogger("error")
+	handlers := NewHandlers(nil, nil, nil, nil, nil, nil, logger, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/defaults", nil)
+	w := httptest.NewRecorder()
+	handlers.GetDefaultsHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var defaults map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &defaults); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// Should return hardcoded defaults when cfg is nil
+	if defaults["schedule"] != "0 2 * * *" {
+		t.Errorf("expected hardcoded schedule default, got %v", defaults["schedule"])
+	}
+}
+
+func TestCreateCamundaInstanceHandler_ESDefaults(t *testing.T) {
+	logger := utils.NewLogger("error")
+	cm := &mockCamundaManager{instances: []models.CamundaInstance{}}
+	sched := &mockScheduler{running: true}
+	cfg := &config.Config{
+		DefaultElasticsearchEndpoint: "http://es-default:9200",
+		DefaultElasticsearchUsername: "admin",
+	}
+	handlers := NewHandlers(cm, nil, nil, sched, nil, nil, logger, cfg)
+
+	body := `{
+		"id": "a",
+		"name": "Test",
+		"base_url": "http://camunda.local",
+		"s3_endpoint": "http://s3.local",
+		"s3_accesskey": "key"
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/api/camundas", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handlers.CreateCamundaInstanceHandler(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	if len(cm.instances) != 1 {
+		t.Fatalf("expected 1 instance, got %d", len(cm.instances))
+	}
+	inst := cm.instances[0]
+	if inst.ElasticsearchEndpoint != "http://es-default:9200" {
+		t.Errorf("ES endpoint = %q, want default", inst.ElasticsearchEndpoint)
+	}
+	if inst.ElasticsearchUsername != "admin" {
+		t.Errorf("ES username = %q, want default", inst.ElasticsearchUsername)
+	}
+}
+
+func TestCreateCamundaInstanceHandler_ESExplicitOverridesDefaults(t *testing.T) {
+	logger := utils.NewLogger("error")
+	cm := &mockCamundaManager{instances: []models.CamundaInstance{}}
+	sched := &mockScheduler{running: true}
+	cfg := &config.Config{
+		DefaultElasticsearchEndpoint: "http://es-default:9200",
+		DefaultElasticsearchUsername: "admin",
+	}
+	handlers := NewHandlers(cm, nil, nil, sched, nil, nil, logger, cfg)
+
+	body := `{
+		"id": "b",
+		"name": "Test",
+		"base_url": "http://camunda.local",
+		"elasticsearch_endpoint": "http://es-custom:9200",
+		"elasticsearch_username": "custom-user",
+		"s3_endpoint": "http://s3.local",
+		"s3_accesskey": "key"
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/api/camundas", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handlers.CreateCamundaInstanceHandler(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	inst := cm.instances[0]
+	if inst.ElasticsearchEndpoint != "http://es-custom:9200" {
+		t.Errorf("ES endpoint = %q, want explicit value", inst.ElasticsearchEndpoint)
+	}
+	if inst.ElasticsearchUsername != "custom-user" {
+		t.Errorf("ES username = %q, want explicit value", inst.ElasticsearchUsername)
 	}
 }

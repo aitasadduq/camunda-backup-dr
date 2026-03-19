@@ -162,8 +162,9 @@ Once running:
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `DEFAULT_ELASTICSEARCH_ENDPOINT` | string | _(empty)_ | Elasticsearch URL (e.g. `http://es:9200`) |
-| `DEFAULT_ELASTICSEARCH_USERNAME` | string | _(empty)_ | Elasticsearch username |
+| `DEFAULT_ELASTICSEARCH_ENDPOINT` | string | _(empty)_ | Elasticsearch URL (e.g. `http://es:9200`). Pre-populates new instance forms. |
+| `DEFAULT_ELASTICSEARCH_USERNAME` | string | _(empty)_ | Elasticsearch username. Pre-populates new instance forms. |
+| `DEFAULT_ELASTICSEARCH_PASSWORD` | string | _(empty)_ | Global fallback Elasticsearch password. Used when no instance-specific `ELASTICSEARCH_PASSWORD_<ID>` is set. |
 | `DEFAULT_ELASTICSEARCH_SNAPSHOT_REPOSITORY` | string | `camunda-backup` | Snapshot repository name |
 | `DEFAULT_ELASTICSEARCH_SNAPSHOT_NAME_PREFIX` | string | _(empty)_ | Prefix for snapshot names |
 
@@ -197,7 +198,7 @@ Credentials are set per Camunda instance using a naming convention. The instance
 
 | Variable Pattern | Description |
 |-----------------|-------------|
-| `ELASTICSEARCH_PASSWORD_<ID>` | Elasticsearch password for the instance |
+| `ELASTICSEARCH_PASSWORD_<ID>` | Elasticsearch password for the instance (falls back to `DEFAULT_ELASTICSEARCH_PASSWORD`) |
 | `ELASTICSEARCH_SNAPSHOT_REPOSITORY_<ID>` | Snapshot repository override (falls back to default) |
 | `ELASTICSEARCH_SNAPSHOT_NAME_PREFIX_<ID>` | Snapshot name prefix override (falls back to default) |
 | `S3_SECRETKEY_<ID>` | S3 secret key for the instance |

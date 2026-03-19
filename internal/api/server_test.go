@@ -21,7 +21,7 @@ func TestNewServer(t *testing.T) {
 	ret := &mockRetentionManager{}
 	lfr := &mockLogFileReader{logs: make(map[string]string)}
 
-	s := NewServer(0, cm, orch, hist, sched, ret, lfr, logger, nil)
+	s := NewServer(0, cm, orch, hist, sched, ret, lfr, logger, nil, nil)
 
 	if s == nil {
 		t.Fatal("expected non-nil server")
@@ -50,7 +50,7 @@ func TestServer_StartAndShutdown(t *testing.T) {
 	lfr := &mockLogFileReader{logs: make(map[string]string)}
 
 	// Use port 0 to let the OS assign a free port
-	s := NewServer(0, cm, orch, hist, sched, ret, lfr, logger, nil)
+	s := NewServer(0, cm, orch, hist, sched, ret, lfr, logger, nil, nil)
 
 	if err := s.Start(); err != nil {
 		t.Fatalf("failed to start server: %v", err)
@@ -94,7 +94,7 @@ func TestServer_Shutdown_NilContext(t *testing.T) {
 	ret := &mockRetentionManager{}
 	lfr := &mockLogFileReader{logs: make(map[string]string)}
 
-	s := NewServer(0, cm, orch, hist, sched, ret, lfr, logger, nil)
+	s := NewServer(0, cm, orch, hist, sched, ret, lfr, logger, nil, nil)
 
 	if err := s.Start(); err != nil {
 		t.Fatalf("failed to start server: %v", err)
@@ -115,7 +115,7 @@ func TestServer_GetPort(t *testing.T) {
 	ret := &mockRetentionManager{}
 	lfr := &mockLogFileReader{logs: make(map[string]string)}
 
-	s := NewServer(9876, cm, orch, hist, sched, ret, lfr, logger, nil)
+	s := NewServer(9876, cm, orch, hist, sched, ret, lfr, logger, nil, nil)
 
 	if s.GetPort() != 9876 {
 		t.Errorf("expected port 9876, got %d", s.GetPort())
@@ -139,7 +139,7 @@ func TestServer_Start_PortConflict(t *testing.T) {
 	defer listener.Close()
 	port := listener.Addr().(*net.TCPAddr).Port
 
-	s := NewServer(port, cm, orch, hist, sched, ret, lfr, logger, nil)
+	s := NewServer(port, cm, orch, hist, sched, ret, lfr, logger, nil, nil)
 
 	if err := s.Start(); err == nil {
 		t.Error("expected error when starting on occupied port")
