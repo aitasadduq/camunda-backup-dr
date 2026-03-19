@@ -8,6 +8,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/aitasadduq/camunda-backup-dr/internal/config"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
 )
 
@@ -20,7 +21,7 @@ func setupCheckEndpointHandlers(t *testing.T) *Handlers {
 	t.Cleanup(func() { isBlockedHost = origBlockedHost })
 	// Also disable DialContext-level SSRF check for local test servers
 	t.Setenv("PROBE_ALLOW_PRIVATE_IPS", "true")
-	return NewHandlers(nil, nil, nil, nil, nil, nil, logger, nil)
+	return NewHandlers(nil, nil, nil, nil, nil, nil, logger, &config.Config{})
 }
 
 func doCheckEndpoint(t *testing.T, h *Handlers, body EndpointCheckRequest) (*httptest.ResponseRecorder, EndpointCheckResponse) {

@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aitasadduq/camunda-backup-dr/internal/config"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -152,19 +151,17 @@ func (h *Handlers) CheckEndpointHandler(w http.ResponseWriter, r *http.Request) 
 	var result EndpointCheckResponse
 	switch req.Type {
 	case "elasticsearch":
-		// Look up password from env var if instance_id is provided
+		// Look up password: request body > instance-specific env var > default
 		password := req.Password
-		if password == "" && req.InstanceID != "" {
-			envKey := "ELASTICSEARCH_PASSWORD_" + config.NormalizeForEnvVar(req.InstanceID)
-			password = os.Getenv(envKey)
+		if password == "" && req.InstanceID != "" && h.cfg != nil {
+			password = h.cfg.GetElasticsearchPassword(req.InstanceID)
 		}
 		result = probeElasticsearch(req.URL, req.Username, password)
 	case "s3":
-		// Look up secret key from env var if instance_id is provided
+		// Look up secret key: instance-specific env var > default
 		secretKey := ""
-		if req.InstanceID != "" {
-			envKey := "S3_SECRETKEY_" + config.NormalizeForEnvVar(req.InstanceID)
-			secretKey = os.Getenv(envKey)
+		if req.InstanceID != "" && h.cfg != nil {
+			secretKey = h.cfg.GetS3SecretKey(req.InstanceID)
 		}
 		result = probeS3(req.URL, req.AccessKey, secretKey)
 	case "camunda":

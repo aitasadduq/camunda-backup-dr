@@ -87,7 +87,7 @@ func clearLoadEnvVars(t *testing.T) {
 		"DEFAULT_BACKUP_POLL_INTERVAL", "DEFAULT_BACKUP_MAX_ATTEMPTS",
 		"DEFAULT_ELASTICSEARCH_ENDPOINT", "DEFAULT_ELASTICSEARCH_USERNAME",
 		"DEFAULT_ELASTICSEARCH_SNAPSHOT_REPOSITORY", "DEFAULT_ELASTICSEARCH_SNAPSHOT_NAME_PREFIX",
-		"DEFAULT_S3_ENDPOINT", "DEFAULT_S3_ACCESSKEY",
+		"DEFAULT_S3_ENDPOINT", "DEFAULT_S3_ACCESSKEY", "DEFAULT_S3_SECRETKEY",
 		"DEFAULT_ELASTICSEARCH_PASSWORD",
 		"ALERT_WEBHOOK_URL", "BACKUP_STUCK_TIMEOUT_MINUTES",
 	}
@@ -159,6 +159,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.DefaultS3AccessKey != "" {
 		t.Errorf("DefaultS3AccessKey = %q, want empty", cfg.DefaultS3AccessKey)
 	}
+	if cfg.DefaultS3SecretKey != "" {
+		t.Errorf("DefaultS3SecretKey = %q, want empty", cfg.DefaultS3SecretKey)
+	}
 	if cfg.DefaultElasticsearchPassword != "" {
 		t.Errorf("DefaultElasticsearchPassword = %q, want empty", cfg.DefaultElasticsearchPassword)
 	}
@@ -192,6 +195,7 @@ func TestLoad_EnvVarOverrides(t *testing.T) {
 	t.Setenv("DEFAULT_ELASTICSEARCH_SNAPSHOT_NAME_PREFIX", "snap-")
 	t.Setenv("DEFAULT_S3_ENDPOINT", "http://s3:9000")
 	t.Setenv("DEFAULT_S3_ACCESSKEY", "AKID")
+	t.Setenv("DEFAULT_S3_SECRETKEY", "s3-global-secret")
 	t.Setenv("DEFAULT_ELASTICSEARCH_PASSWORD", "es-global-pass")
 	t.Setenv("ALERT_WEBHOOK_URL", "https://hooks.example.com/alert")
 	t.Setenv("BACKUP_STUCK_TIMEOUT_MINUTES", "60")
@@ -221,6 +225,7 @@ func TestLoad_EnvVarOverrides(t *testing.T) {
 		{"DefaultElasticsearchSnapshotNamePrefix", cfg.DefaultElasticsearchSnapshotNamePrefix, "snap-"},
 		{"DefaultS3Endpoint", cfg.DefaultS3Endpoint, "http://s3:9000"},
 		{"DefaultS3AccessKey", cfg.DefaultS3AccessKey, "AKID"},
+		{"DefaultS3SecretKey", cfg.DefaultS3SecretKey, "s3-global-secret"},
 		{"DefaultElasticsearchPassword", cfg.DefaultElasticsearchPassword, "es-global-pass"},
 		{"AlertWebhookURL", cfg.AlertWebhookURL, "https://hooks.example.com/alert"},
 		{"BackupStuckTimeoutMinutes", cfg.BackupStuckTimeoutMinutes, 60},
@@ -732,7 +737,7 @@ func TestGetS3SecretKey(t *testing.T) {
 			expected:   "long-secret-key",
 		},
 		{
-			name:       "missing env var returns empty",
+			name:       "missing env var falls back to default secret key",
 			instanceID: "nonexistent-instance",
 			envKey:     "",
 			envValue:   "",
@@ -751,6 +756,23 @@ func TestGetS3SecretKey(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("falls back to DefaultS3SecretKey when no instance var", func(t *testing.T) {
+		cfgWithDefault := &Config{DefaultS3SecretKey: "global-s3-secret"}
+		result := cfgWithDefault.GetS3SecretKey("no-env-set")
+		if result != "global-s3-secret" {
+			t.Errorf("GetS3SecretKey fallback = %q, want %q", result, "global-s3-secret")
+		}
+	})
+
+	t.Run("instance-specific var takes precedence over default", func(t *testing.T) {
+		cfgWithDefault := &Config{DefaultS3SecretKey: "global-s3-secret"}
+		setEnvForTest(t, "S3_SECRETKEY_OVERRIDE_TEST", "instance-specific-secret")
+		result := cfgWithDefault.GetS3SecretKey("override-test")
+		if result != "instance-specific-secret" {
+			t.Errorf("GetS3SecretKey precedence = %q, want %q", result, "instance-specific-secret")
+		}
+	})
 }
 
 func TestGetElasticsearchSnapshotRepository(t *testing.T) {
