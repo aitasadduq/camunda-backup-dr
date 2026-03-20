@@ -98,40 +98,49 @@ func NewHandlers(
 	}
 }
 
+// DefaultsResponse contains configuration defaults for the UI to pre-populate form fields.
+// Sensitive values (passwords, secret keys) are never included.
+type DefaultsResponse struct {
+	Schedule                        string `json:"schedule"`
+	RetentionCount                  int    `json:"retention_count"`
+	SuccessHistoryCount             int    `json:"success_history_count"`
+	FailureHistoryCount             int    `json:"failure_history_count"`
+	ElasticsearchEndpoint           string `json:"elasticsearch_endpoint"`
+	ElasticsearchUsername           string `json:"elasticsearch_username"`
+	ElasticsearchSnapshotRepository string `json:"elasticsearch_snapshot_repository"`
+	ElasticsearchSnapshotNamePrefix string `json:"elasticsearch_snapshot_name_prefix"`
+	S3Endpoint                      string `json:"s3_endpoint"`
+	S3AccessKey                     string `json:"s3_accesskey"`
+}
+
 // GetDefaultsHandler returns configuration defaults for the UI to pre-populate form fields.
-// Sensitive values (passwords, secret keys) are never exposed.
 func (h *Handlers) GetDefaultsHandler(w http.ResponseWriter, r *http.Request) {
-	defaults := map[string]interface{}{
-		"schedule":                              "0 2 * * *",
-		"retention_count":                       7,
-		"success_history_count":                 30,
-		"failure_history_count":                 30,
-		"elasticsearch_endpoint":                "",
-		"elasticsearch_username":                "",
-		"elasticsearch_snapshot_repository":      "camunda-backup",
-		"elasticsearch_snapshot_name_prefix":     "",
-		"s3_endpoint":                           "",
-		"s3_accesskey":                          "",
+	defaults := DefaultsResponse{
+		Schedule:                        "0 2 * * *",
+		RetentionCount:                  7,
+		SuccessHistoryCount:             30,
+		FailureHistoryCount:             30,
+		ElasticsearchSnapshotRepository: "camunda-backup",
 	}
 
 	if h.cfg != nil {
-		defaults["elasticsearch_endpoint"] = h.cfg.DefaultElasticsearchEndpoint
-		defaults["elasticsearch_username"] = h.cfg.DefaultElasticsearchUsername
-		defaults["elasticsearch_snapshot_repository"] = h.cfg.DefaultElasticsearchSnapshotRepository
-		defaults["elasticsearch_snapshot_name_prefix"] = h.cfg.DefaultElasticsearchSnapshotNamePrefix
-		defaults["s3_endpoint"] = h.cfg.DefaultS3Endpoint
-		defaults["s3_accesskey"] = h.cfg.DefaultS3AccessKey
+		defaults.ElasticsearchEndpoint = h.cfg.DefaultElasticsearchEndpoint
+		defaults.ElasticsearchUsername = h.cfg.DefaultElasticsearchUsername
+		defaults.ElasticsearchSnapshotRepository = h.cfg.DefaultElasticsearchSnapshotRepository
+		defaults.ElasticsearchSnapshotNamePrefix = h.cfg.DefaultElasticsearchSnapshotNamePrefix
+		defaults.S3Endpoint = h.cfg.DefaultS3Endpoint
+		defaults.S3AccessKey = h.cfg.DefaultS3AccessKey
 		if h.cfg.DefaultSchedule != "" {
-			defaults["schedule"] = h.cfg.DefaultSchedule
+			defaults.Schedule = h.cfg.DefaultSchedule
 		}
 		if h.cfg.DefaultRetentionCount > 0 {
-			defaults["retention_count"] = h.cfg.DefaultRetentionCount
+			defaults.RetentionCount = h.cfg.DefaultRetentionCount
 		}
 		if h.cfg.DefaultSuccessHistory > 0 {
-			defaults["success_history_count"] = h.cfg.DefaultSuccessHistory
+			defaults.SuccessHistoryCount = h.cfg.DefaultSuccessHistory
 		}
 		if h.cfg.DefaultFailureHistory > 0 {
-			defaults["failure_history_count"] = h.cfg.DefaultFailureHistory
+			defaults.FailureHistoryCount = h.cfg.DefaultFailureHistory
 		}
 	}
 
@@ -277,13 +286,19 @@ func (h *Handlers) CreateCamundaInstanceHandler(w http.ResponseWriter, r *http.R
 		instance.FailureHistoryCount = 30
 	}
 
-	// Apply default Elasticsearch config from environment
+	// Apply defaults from environment config
 	if h.cfg != nil {
 		if instance.ElasticsearchEndpoint == "" && h.cfg.DefaultElasticsearchEndpoint != "" {
 			instance.ElasticsearchEndpoint = h.cfg.DefaultElasticsearchEndpoint
 		}
 		if instance.ElasticsearchUsername == "" && h.cfg.DefaultElasticsearchUsername != "" {
 			instance.ElasticsearchUsername = h.cfg.DefaultElasticsearchUsername
+		}
+		if instance.BackupIDS3Endpoint == "" && h.cfg.DefaultS3Endpoint != "" {
+			instance.BackupIDS3Endpoint = h.cfg.DefaultS3Endpoint
+		}
+		if instance.BackupIDS3AccessKey == "" && h.cfg.DefaultS3AccessKey != "" {
+			instance.BackupIDS3AccessKey = h.cfg.DefaultS3AccessKey
 		}
 	}
 	if len(instance.Components) == 0 {

@@ -172,9 +172,9 @@ Once running:
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `DEFAULT_S3_ENDPOINT` | string | _(empty)_ | S3-compatible endpoint URL |
-| `DEFAULT_S3_ACCESSKEY` | string | _(empty)_ | S3 access key ID |
-| `DEFAULT_S3_SECRETKEY` | string | _(empty)_ | S3 secret access key |
+| `DEFAULT_S3_ENDPOINT` | string | _(empty)_ | S3-compatible endpoint URL. Pre-populates new instance forms. |
+| `DEFAULT_S3_ACCESSKEY` | string | _(empty)_ | S3 access key ID. Pre-populates new instance forms. |
+| `DEFAULT_S3_SECRETKEY` | string | _(empty)_ | Global fallback S3 secret key. Used when no instance-specific `S3_SECRETKEY_<ID>` is set. |
 
 ### Alert and Resilience Settings
 
@@ -201,7 +201,7 @@ Credentials are set per Camunda instance using a naming convention. The instance
 | `ELASTICSEARCH_PASSWORD_<ID>` | Elasticsearch password for the instance (falls back to `DEFAULT_ELASTICSEARCH_PASSWORD`) |
 | `ELASTICSEARCH_SNAPSHOT_REPOSITORY_<ID>` | Snapshot repository override (falls back to default) |
 | `ELASTICSEARCH_SNAPSHOT_NAME_PREFIX_<ID>` | Snapshot name prefix override (falls back to default) |
-| `S3_SECRETKEY_<ID>` | S3 secret key for the instance |
+| `S3_SECRETKEY_<ID>` | S3 secret key for the instance (falls back to `DEFAULT_S3_SECRETKEY`) |
 
 **Example** for an instance named `prod-cluster`:
 

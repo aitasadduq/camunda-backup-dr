@@ -32,7 +32,6 @@ services:
     restart: "no"
 
   elasticsearch:
-    image: elasticsearch:9.2.4
     build:
       context: ./elasticsearch
       args:
