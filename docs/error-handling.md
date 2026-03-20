@@ -470,8 +470,9 @@ ERROR 2024/01/15 10:31:02 orchestrator.go:195: [op=ExecuteBackup instance=prod-1
 
 | Environment Variable | Type | Default | Description |
 |---------------------|------|---------|-------------|
-| `DEFAULT_ELASTICSEARCH_ENDPOINT` | string | — | Elasticsearch URL |
-| `DEFAULT_ELASTICSEARCH_USERNAME` | string | — | Elasticsearch username |
+| `DEFAULT_ELASTICSEARCH_ENDPOINT` | string | — | Elasticsearch URL. Pre-populates new instance forms. |
+| `DEFAULT_ELASTICSEARCH_USERNAME` | string | — | Elasticsearch username. Pre-populates new instance forms. |
+| `DEFAULT_ELASTICSEARCH_PASSWORD` | string | — | Global fallback ES password (used when no instance-specific var is set) |
 | `DEFAULT_ELASTICSEARCH_SNAPSHOT_REPOSITORY` | string | `camunda-backup` | Snapshot repository name |
 | `DEFAULT_ELASTICSEARCH_SNAPSHOT_NAME_PREFIX` | string | — | Snapshot name prefix |
 
@@ -479,8 +480,9 @@ ERROR 2024/01/15 10:31:02 orchestrator.go:195: [op=ExecuteBackup instance=prod-1
 
 | Environment Variable | Type | Default | Description |
 |---------------------|------|---------|-------------|
-| `DEFAULT_S3_ENDPOINT` | string | — | S3-compatible endpoint URL |
-| `DEFAULT_S3_ACCESSKEY` | string | — | S3 access key |
+| `DEFAULT_S3_ENDPOINT` | string | — | S3-compatible endpoint URL. Pre-populates new instance forms. |
+| `DEFAULT_S3_ACCESSKEY` | string | — | S3 access key. Pre-populates new instance forms. |
+| `DEFAULT_S3_SECRETKEY` | string | — | Global fallback S3 secret key (used when no instance-specific var is set) |
 
 ### Alert Settings
 
@@ -497,10 +499,10 @@ For example, instance `my-cluster` uses the suffix `MY_CLUSTER`.
 
 | Environment Variable Pattern | Description |
 |-----------------------------|-------------|
-| `ELASTICSEARCH_PASSWORD_<ID>` | Elasticsearch password for the instance |
+| `ELASTICSEARCH_PASSWORD_<ID>` | Elasticsearch password for the instance (falls back to `DEFAULT_ELASTICSEARCH_PASSWORD`) |
 | `ELASTICSEARCH_SNAPSHOT_REPOSITORY_<ID>` | Snapshot repository override (falls back to default) |
 | `ELASTICSEARCH_SNAPSHOT_NAME_PREFIX_<ID>` | Snapshot name prefix override (falls back to default) |
-| `S3_SECRETKEY_<ID>` | S3 secret key for the instance |
+| `S3_SECRETKEY_<ID>` | S3 secret key for the instance (falls back to `DEFAULT_S3_SECRETKEY`) |
 
 **Example:**
 

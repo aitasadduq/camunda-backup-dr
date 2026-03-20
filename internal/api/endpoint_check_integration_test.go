@@ -63,7 +63,7 @@ func getS3Config() (endpoint, accessKey, secretKey string) {
 func setupIntegrationHandlers(t *testing.T) *Handlers {
 	t.Helper()
 	logger := utils.NewLogger("debug")
-	return NewHandlers(nil, nil, nil, nil, nil, nil, logger)
+	return NewHandlers(nil, nil, nil, nil, nil, nil, logger, nil)
 }
 
 func doIntegrationCheckEndpoint(t *testing.T, h *Handlers, body EndpointCheckRequest) EndpointCheckResponse {

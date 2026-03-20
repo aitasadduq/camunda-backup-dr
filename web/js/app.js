@@ -679,9 +679,31 @@ async function checkInstanceListEndpoints(instances) {
 // ============================================================
 // Instance Form (Modal)
 // ============================================================
-function openInstanceForm(existingInstance) {
+async function openInstanceForm(existingInstance) {
     const isEdit = !!existingInstance;
-    const instance = existingInstance || {};
+    let instance = existingInstance || {};
+
+    // In create mode, fetch server-side defaults to pre-populate the form
+    if (!isEdit) {
+        try {
+            const resp = await fetch('/api/defaults');
+            if (resp.ok) {
+                const defaults = await resp.json();
+                instance = {
+                    schedule: defaults.schedule || '0 2 * * *',
+                    retention_count: defaults.retention_count || 7,
+                    success_history_count: defaults.success_history_count || 30,
+                    failure_history_count: defaults.failure_history_count || 30,
+                    elasticsearch_endpoint: defaults.elasticsearch_endpoint || '',
+                    elasticsearch_username: defaults.elasticsearch_username || '',
+                    s3_endpoint: defaults.s3_endpoint || '',
+                    s3_accesskey: defaults.s3_accesskey || '',
+                };
+            }
+        } catch (e) {
+            console.warn('Failed to fetch defaults, using hardcoded fallbacks:', e);
+        }
+    }
 
     const components = instance.components || [
         { name: 'zeebe', enabled: true },

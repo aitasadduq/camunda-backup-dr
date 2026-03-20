@@ -1,0 +1,15 @@
+discovery.type: single-node
+xpack.security.enabled: true
+
+# For local/dev convenience: keep HTTP (no TLS). If your ES build enforces TLS when security
+# is enabled, remove these and use HTTPS with the generated certs instead.
+xpack.security.http.ssl.enabled: false
+xpack.security.transport.ssl.enabled: false
+
+# Expose HTTP for clients, but keep transport on loopback for single-node dev.
+http.host: 0.0.0.0
+transport.host: 127.0.0.1
+
+# MinIO (S3-compatible)
+s3.client.default.endpoint: http://minio:9000
+s3.client.default.path_style_access: true

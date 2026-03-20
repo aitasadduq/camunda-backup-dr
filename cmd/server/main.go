@@ -140,6 +140,7 @@ func main() {
 		fileStorage,
 		logger,
 		web.FS,
+		cfg,
 	)
 
 	// Start HTTP server

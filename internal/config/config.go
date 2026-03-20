@@ -34,6 +34,10 @@ type Config struct {
 	// Default S3
 	DefaultS3Endpoint  string
 	DefaultS3AccessKey string
+	DefaultS3SecretKey string
+
+	// Default Elasticsearch Password (falls back when no instance-specific var is set)
+	DefaultElasticsearchPassword string
 
 	// Alert Configuration
 	AlertWebhookURL string
@@ -69,6 +73,10 @@ func Load() (*Config, error) {
 		// Default S3
 		DefaultS3Endpoint:  getEnv("DEFAULT_S3_ENDPOINT", ""),
 		DefaultS3AccessKey: getEnv("DEFAULT_S3_ACCESSKEY", ""),
+		DefaultS3SecretKey: getEnv("DEFAULT_S3_SECRETKEY", ""),
+
+		// Default Elasticsearch Password
+		DefaultElasticsearchPassword: getEnv("DEFAULT_ELASTICSEARCH_PASSWORD", ""),
 
 		// Alert Configuration
 		AlertWebhookURL: getEnv("ALERT_WEBHOOK_URL", ""),
@@ -149,9 +157,13 @@ func NormalizeForEnvVar(camundaInstanceID string) string {
 	return strings.ToUpper(strings.ReplaceAll(camundaInstanceID, "-", "_"))
 }
 
-// GetElasticsearchPassword retrieves Elasticsearch password for a specific Camunda instance
+// GetElasticsearchPassword retrieves Elasticsearch password for a specific Camunda instance.
+// First checks for instance-specific env var, then falls back to DefaultElasticsearchPassword.
 func (c *Config) GetElasticsearchPassword(camundaInstanceID string) string {
-	return os.Getenv("ELASTICSEARCH_PASSWORD_" + NormalizeForEnvVar(camundaInstanceID))
+	if pw := os.Getenv("ELASTICSEARCH_PASSWORD_" + NormalizeForEnvVar(camundaInstanceID)); pw != "" {
+		return pw
+	}
+	return c.DefaultElasticsearchPassword
 }
 
 // GetElasticsearchSnapshotRepository retrieves the snapshot repository name for a Camunda instance.
@@ -172,7 +184,11 @@ func (c *Config) GetElasticsearchSnapshotNamePrefix(camundaInstanceID string) st
 	return c.DefaultElasticsearchSnapshotNamePrefix
 }
 
-// GetS3SecretKey retrieves S3 secret key for a specific Camunda instance
+// GetS3SecretKey retrieves S3 secret key for a specific Camunda instance.
+// First checks for instance-specific env var, then falls back to DefaultS3SecretKey.
 func (c *Config) GetS3SecretKey(camundaInstanceID string) string {
-	return os.Getenv("S3_SECRETKEY_" + NormalizeForEnvVar(camundaInstanceID))
+	if sk := os.Getenv("S3_SECRETKEY_" + NormalizeForEnvVar(camundaInstanceID)); sk != "" {
+		return sk
+	}
+	return c.DefaultS3SecretKey
 }

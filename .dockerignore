@@ -1,0 +1,24 @@
+# Version control
+.git
+.gitignore
+
+# Documentation and planning
+docs/
+planning/
+*.md
+
+# IDE and editor
+.vscode/
+.idea/
+
+# Build artifacts
+server
+*.out
+*_coverage.html
+coverage.out
+
+# Data and test artifacts
+data/
+
+# OS files
+.DS_Store

@@ -1,0 +1,92 @@
+services:
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web console
+    environment:
+      MINIO_ROOT_USER: localminio
+      MINIO_ROOT_PASSWORD: localminio12345
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  minio-mc:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        mc alias set local http://minio:9000 localminio localminio12345
+        mc mb -p local/es-snapshots || true
+    restart: "no"
+
+  elasticsearch:
+    build:
+      context: ./elasticsearch
+      args:
+        ES_IMAGE: elasticsearch:9.2.4
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=true
+      - ELASTIC_PASSWORD=localelastic12345
+      - S3_ACCESS_KEY=localminio
+      - S3_SECRET_KEY=localminio12345
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    depends_on:
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -u elastic:localelastic12345 http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  backup-controller:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - LOG_LEVEL=debug
+      - DEFAULT_ELASTICSEARCH_ENDPOINT=http://elasticsearch:9200
+      - DEFAULT_ELASTICSEARCH_USERNAME=elastic
+      - DEFAULT_ELASTICSEARCH_PASSWORD=localelastic12345
+      - DEFAULT_S3_ENDPOINT=http://minio:9000
+      - DEFAULT_S3_ACCESSKEY=localminio
+      - DEFAULT_S3_SECRETKEY=localminio12345
+      - ELASTICSEARCH_PASSWORD_TEST_CAMUNDA_INSTANCE=localelastic12345
+      - S3_SECRETKEY_TEST_CAMUNDA_INSTANCE=localminio12345
+      - PROBE_ALLOW_PRIVATE_IPS=true
+    volumes:
+      - controller_data:/data
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  minio_data:
+    driver: local
+  es_data:
+    driver: local
+  controller_data:
+    driver: local

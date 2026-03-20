@@ -8,6 +8,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/aitasadduq/camunda-backup-dr/internal/config"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
 )
 
@@ -20,7 +21,7 @@ func setupCheckEndpointHandlers(t *testing.T) *Handlers {
 	t.Cleanup(func() { isBlockedHost = origBlockedHost })
 	// Also disable DialContext-level SSRF check for local test servers
 	t.Setenv("PROBE_ALLOW_PRIVATE_IPS", "true")
-	return NewHandlers(nil, nil, nil, nil, nil, nil, logger)
+	return NewHandlers(nil, nil, nil, nil, nil, nil, logger, &config.Config{})
 }
 
 func doCheckEndpoint(t *testing.T, h *Handlers, body EndpointCheckRequest) (*httptest.ResponseRecorder, EndpointCheckResponse) {
@@ -85,7 +86,7 @@ func TestCheckEndpointHandler_InvalidURL(t *testing.T) {
 
 func TestCheckEndpointHandler_SSRFBlocksPrivateIPs(t *testing.T) {
 	logger := utils.NewLogger("debug")
-	h := NewHandlers(nil, nil, nil, nil, nil, nil, logger)
+	h := NewHandlers(nil, nil, nil, nil, nil, nil, logger, nil)
 	// Ensure SSRF protection is active (env var unset)
 	t.Setenv("PROBE_ALLOW_PRIVATE_IPS", "")
 	// Re-enable SSRF protection for this test
@@ -133,7 +134,7 @@ func TestCheckEndpointHandler_SSRFBypassWithEnvVar(t *testing.T) {
 	t.Setenv("PROBE_ALLOW_PRIVATE_IPS", "true")
 	// Use real isBlockedHost (not the disabled one from setupCheckEndpointHandlers)
 	logger := utils.NewLogger("debug")
-	h := NewHandlers(nil, nil, nil, nil, nil, nil, logger)
+	h := NewHandlers(nil, nil, nil, nil, nil, nil, logger, nil)
 
 	// Start a local server on loopback — this would normally be blocked
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -734,7 +735,7 @@ func TestCheckEndpointHandler_RouteRegistered(t *testing.T) {
 	t.Setenv("PROBE_ALLOW_PRIVATE_IPS", "true")
 
 	logger := utils.NewLogger("debug")
-	handlers := NewHandlers(&mockCamundaManager{}, nil, nil, nil, nil, nil, logger)
+	handlers := NewHandlers(&mockCamundaManager{}, nil, nil, nil, nil, nil, logger, nil)
 	router := NewRouter(handlers, nil)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

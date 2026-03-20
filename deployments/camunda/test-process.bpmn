@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+                  id="Definitions_1"
+                  targetNamespace="http://bpmn.io/schema/bpmn">
+  <bpmn:process id="test-backup-process" name="Test Backup Process" isExecutable="true">
+    <bpmn:startEvent id="start">
+      <bpmn:outgoing>flow1</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="process-task" name="Process Order">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="process-order"/>
+      </bpmn:extensionElements>
+      <bpmn:incoming>flow1</bpmn:incoming>
+      <bpmn:outgoing>flow2</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="end">
+      <bpmn:incoming>flow2</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="flow1" sourceRef="start" targetRef="process-task"/>
+    <bpmn:sequenceFlow id="flow2" sourceRef="process-task" targetRef="end"/>
+  </bpmn:process>
+</bpmn:definitions>

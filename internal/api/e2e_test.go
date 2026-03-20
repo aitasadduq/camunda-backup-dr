@@ -252,7 +252,7 @@ func setupTestEnv(t *testing.T, opts ...envOption) *testEnv {
 	}
 
 	// Build handler stack with full middleware
-	handlers := NewHandlers(camundaManager, orch, s3Storage, sched, retentionMgr, fileStorage, logger)
+	handlers := NewHandlers(camundaManager, orch, s3Storage, sched, retentionMgr, fileStorage, logger, nil)
 	router := NewRouter(handlers, nil)
 
 	middlewareChain := ChainMiddleware(
