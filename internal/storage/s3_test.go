@@ -48,7 +48,7 @@ func TestS3Storage_StoreAndGetLatestBackupID(t *testing.T) {
 	s3 := setupTestS3Storage(t)
 	
 	// Store latest backup ID
-	err := s3.StoreLatestBackupID("camunda1", "20240101-120000")
+	err := s3.StoreLatestBackupID("camunda1", "20240101120000")
 	if err != nil {
 		t.Fatalf("Failed to store latest backup ID: %v", err)
 	}
@@ -59,8 +59,8 @@ func TestS3Storage_StoreAndGetLatestBackupID(t *testing.T) {
 		t.Fatalf("Failed to get latest backup ID: %v", err)
 	}
 	
-	if backupID != "20240101-120000" {
-		t.Errorf("Expected backup ID '20240101-120000', got '%s'", backupID)
+	if backupID != "20240101120000" {
+		t.Errorf("Expected backup ID '20240101120000', got '%s'", backupID)
 	}
 }
 
@@ -68,7 +68,7 @@ func TestS3Storage_StoreAndGetBackupHistory(t *testing.T) {
 	s3 := setupTestS3Storage(t)
 	
 	// Create test backup history
-	history := createTestBackupHistory("camunda1", "20240101-120000", types.BackupStatusCompleted)
+	history := createTestBackupHistory("camunda1", "20240101120000", types.BackupStatusCompleted)
 	
 	// Store backup history
 	err := s3.StoreBackupHistory(history)
@@ -77,7 +77,7 @@ func TestS3Storage_StoreAndGetBackupHistory(t *testing.T) {
 	}
 	
 	// Get backup history
-	retrievedHistory, err := s3.GetBackupHistory("camunda1", "20240101-120000")
+	retrievedHistory, err := s3.GetBackupHistory("camunda1", "20240101120000")
 	if err != nil {
 		t.Fatalf("Failed to get backup history: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestS3Storage_ListBackupHistory(t *testing.T) {
 	
 	// Create multiple backup histories
 	for i := 0; i < 3; i++ {
-		backupID := time.Now().Add(time.Duration(i) * time.Hour).Format("20060102-150405")
+		backupID := time.Now().Add(time.Duration(i) * time.Hour).Format("20060102150405")
 		history := createTestBackupHistory("camunda1", backupID, types.BackupStatusCompleted)
 		err := s3.StoreBackupHistory(history)
 		if err != nil {
@@ -128,20 +128,20 @@ func TestS3Storage_UpdateBackupStatus(t *testing.T) {
 	s3 := setupTestS3Storage(t)
 	
 	// Create test backup history
-	history := createTestBackupHistory("camunda1", "20240101-120000", types.BackupStatusRunning)
+	history := createTestBackupHistory("camunda1", "20240101120000", types.BackupStatusRunning)
 	err := s3.StoreBackupHistory(history)
 	if err != nil {
 		t.Fatalf("Failed to store backup history: %v", err)
 	}
 	
 	// Update backup status
-	err = s3.UpdateBackupStatus("camunda1", "20240101-120000", types.BackupStatusCompleted)
+	err = s3.UpdateBackupStatus("camunda1", "20240101120000", types.BackupStatusCompleted)
 	if err != nil {
 		t.Fatalf("Failed to update backup status: %v", err)
 	}
 	
 	// Get backup history and verify status
-	retrievedHistory, err := s3.GetBackupHistory("camunda1", "20240101-120000")
+	retrievedHistory, err := s3.GetBackupHistory("camunda1", "20240101120000")
 	if err != nil {
 		t.Fatalf("Failed to get backup history: %v", err)
 	}
@@ -159,14 +159,14 @@ func TestS3Storage_MoveToOrphaned(t *testing.T) {
 	s3 := setupTestS3Storage(t)
 	
 	// Create test backup history
-	history := createTestBackupHistory("camunda1", "20240101-120000", types.BackupStatusCompleted)
+	history := createTestBackupHistory("camunda1", "20240101120000", types.BackupStatusCompleted)
 	err := s3.StoreBackupHistory(history)
 	if err != nil {
 		t.Fatalf("Failed to store backup history: %v", err)
 	}
 	
 	// Move to orphaned
-	err = s3.MoveToOrphaned("camunda1", "20240101-120000")
+	err = s3.MoveToOrphaned("camunda1", "20240101120000")
 	if err != nil {
 		t.Fatalf("Failed to move to orphaned: %v", err)
 	}
@@ -182,21 +182,21 @@ func TestS3Storage_MoveToOrphaned(t *testing.T) {
 	}
 	
 	// Verify it's still retrievable (from orphaned)
-	_, err = s3.GetBackupHistory("camunda1", "20240101-120000")
+	_, err = s3.GetBackupHistory("camunda1", "20240101120000")
 }
 
 func TestS3Storage_MoveToIncomplete(t *testing.T) {
 	s3 := setupTestS3Storage(t)
 	
 	// Create test backup history
-	history := createTestBackupHistory("camunda1", "20240101-120000", types.BackupStatusCompleted)
+	history := createTestBackupHistory("camunda1", "20240101120000", types.BackupStatusCompleted)
 	err := s3.StoreBackupHistory(history)
 	if err != nil {
 		t.Fatalf("Failed to store backup history: %v", err)
 	}
 	
 	// Move to incomplete
-	err = s3.MoveToIncomplete("camunda1", "20240101-120000")
+	err = s3.MoveToIncomplete("camunda1", "20240101120000")
 	if err != nil {
 		t.Fatalf("Failed to move to incomplete: %v", err)
 	}
@@ -221,14 +221,14 @@ func TestS3Storage_ListIncompleteBackups(t *testing.T) {
 	s3 := setupTestS3Storage(t)
 	
 	// Create incomplete backup
-	incompleteHistory := createTestBackupHistory("camunda1", "20240101-120000", types.BackupStatusIncomplete)
+	incompleteHistory := createTestBackupHistory("camunda1", "20240101120000", types.BackupStatusIncomplete)
 	err := s3.StoreBackupHistory(incompleteHistory)
 	if err != nil {
 		t.Fatalf("Failed to store incomplete backup history: %v", err)
 	}
 	
 	// Create completed backup
-	completedHistory := createTestBackupHistory("camunda1", "20240101-130000", types.BackupStatusCompleted)
+	completedHistory := createTestBackupHistory("camunda1", "20240101130000", types.BackupStatusCompleted)
 	err = s3.StoreBackupHistory(completedHistory)
 	if err != nil {
 		t.Fatalf("Failed to store completed backup history: %v", err)
@@ -245,8 +245,8 @@ func TestS3Storage_ListIncompleteBackups(t *testing.T) {
 		t.Errorf("Expected 1 incomplete backup, got %d", len(incompleteBackups))
 	}
 	
-	if incompleteBackups[0].BackupID != "20240101-120000" {
-		t.Errorf("Expected backup ID '20240101-120000', got '%s'", incompleteBackups[0].BackupID)
+	if incompleteBackups[0].BackupID != "20240101120000" {
+		t.Errorf("Expected backup ID '20240101120000', got '%s'", incompleteBackups[0].BackupID)
 	}
 }
 
@@ -254,20 +254,20 @@ func TestS3Storage_DeleteBackupHistory(t *testing.T) {
 	s3 := setupTestS3Storage(t)
 	
 	// Create test backup history
-	history := createTestBackupHistory("camunda1", "20240101-120000", types.BackupStatusCompleted)
+	history := createTestBackupHistory("camunda1", "20240101120000", types.BackupStatusCompleted)
 	err := s3.StoreBackupHistory(history)
 	if err != nil {
 		t.Fatalf("Failed to store backup history: %v", err)
 	}
 	
 	// Delete backup history
-	err = s3.DeleteBackupHistory("camunda1", "20240101-120000")
+	err = s3.DeleteBackupHistory("camunda1", "20240101120000")
 	if err != nil {
 		t.Fatalf("Failed to delete backup history: %v", err)
 	}
 	
 	// Verify it's deleted
-	_, err = s3.GetBackupHistory("camunda1", "20240101-120000")
+	_, err = s3.GetBackupHistory("camunda1", "20240101120000")
 }
 
 func TestS3Storage_ConcurrentAccess(t *testing.T) {
@@ -277,7 +277,7 @@ func TestS3Storage_ConcurrentAccess(t *testing.T) {
 	done := make(chan bool)
 	for i := 0; i < 10; i++ {
 		go func(id int) {
-			backupID := time.Now().Add(time.Duration(id) * time.Second).Format("20060102-150405")
+			backupID := time.Now().Add(time.Duration(id) * time.Second).Format("20060102150405")
 			history := createTestBackupHistory("camunda1", backupID, types.BackupStatusCompleted)
 			err := s3.StoreBackupHistory(history)
 			if err != nil {
@@ -564,7 +564,7 @@ func TestS3Storage_DeleteBackupHistory_FromOrphaned(t *testing.T) {
 func TestS3Storage_getS3Key_IncompleteStatus(t *testing.T) {
 	s3 := setupTestS3Storage(t)
 
-	key := s3.getS3Key("camunda1", "20240101-120000", types.BackupStatusIncomplete)
+	key := s3.getS3Key("camunda1", "20240101120000", types.BackupStatusIncomplete)
 	if key == "" {
 		t.Fatal("Expected non-empty key")
 	}
@@ -574,15 +574,15 @@ func TestS3Storage_getS3Key_IncompleteStatus(t *testing.T) {
 	if !contains(key, "camunda1") {
 		t.Errorf("Expected key to contain 'camunda1', got '%s'", key)
 	}
-	if !contains(key, "20240101-120000.json") {
-		t.Errorf("Expected key to end with '20240101-120000.json', got '%s'", key)
+	if !contains(key, "20240101120000.json") {
+		t.Errorf("Expected key to end with '20240101120000.json', got '%s'", key)
 	}
 }
 
 func TestS3Storage_getS3Key_CompletedStatus(t *testing.T) {
 	s3 := setupTestS3Storage(t)
 
-	key := s3.getS3Key("camunda1", "20240101-120000", types.BackupStatusCompleted)
+	key := s3.getS3Key("camunda1", "20240101120000", types.BackupStatusCompleted)
 	if !contains(key, "history") {
 		t.Errorf("Expected key to contain 'history', got '%s'", key)
 	}
@@ -691,7 +691,7 @@ func TestS3Storage_deserializeBackupHistory_Valid(t *testing.T) {
 	s3 := setupTestS3Storage(t)
 
 	jsonData := []byte(`{
-		"backup_id": "20240101-120000",
+		"backup_id": "20240101120000",
 		"camunda_instance_id": "camunda1",
 		"status": "COMPLETED"
 	}`)
@@ -700,8 +700,8 @@ func TestS3Storage_deserializeBackupHistory_Valid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Unexpected error: %v", err)
 	}
-	if history.BackupID != "20240101-120000" {
-		t.Errorf("Expected backup ID '20240101-120000', got '%s'", history.BackupID)
+	if history.BackupID != "20240101120000" {
+		t.Errorf("Expected backup ID '20240101120000', got '%s'", history.BackupID)
 	}
 	if history.CamundaInstanceID != "camunda1" {
 		t.Errorf("Expected instance ID 'camunda1', got '%s'", history.CamundaInstanceID)
@@ -734,9 +734,9 @@ func TestS3Storage_deserializeBackupHistory_EmptyJSON(t *testing.T) {
 func TestS3Storage_parseBackupIDFromKey_Standard(t *testing.T) {
 	s3 := setupTestS3Storage(t)
 
-	id := s3.parseBackupIDFromKey("camunda-backups/camunda1/history/2024/01/01/20240101-120000.json")
-	if id != "20240101-120000" {
-		t.Errorf("Expected '20240101-120000', got '%s'", id)
+	id := s3.parseBackupIDFromKey("camunda-backups/camunda1/history/2024/01/01/20240101120000.json")
+	if id != "20240101120000" {
+		t.Errorf("Expected '20240101120000', got '%s'", id)
 	}
 }
 
@@ -925,7 +925,7 @@ func TestS3Storage_ListOrphanedBackups_MultipleSorted(t *testing.T) {
 
 	// Store and move multiple backups to orphaned with different start times
 	for i := 0; i < 3; i++ {
-		backupID := time.Now().Add(time.Duration(i) * time.Hour).Format("20060102-150405")
+		backupID := time.Now().Add(time.Duration(i) * time.Hour).Format("20060102150405")
 		history := createTestBackupHistory("camunda1", backupID, types.BackupStatusCompleted)
 		history.StartTime = time.Now().Add(time.Duration(i) * time.Hour)
 		if err := s3.StoreBackupHistory(history); err != nil {
@@ -957,7 +957,7 @@ func TestS3Storage_ListIncompleteBackups_MultipleSorted(t *testing.T) {
 	s3 := setupTestS3Storage(t)
 
 	for i := 0; i < 3; i++ {
-		backupID := time.Now().Add(time.Duration(i) * time.Hour).Format("20060102-150405")
+		backupID := time.Now().Add(time.Duration(i) * time.Hour).Format("20060102150405")
 		history := createTestBackupHistory("camunda1", backupID, types.BackupStatusCompleted)
 		history.StartTime = time.Now().Add(time.Duration(i) * time.Hour)
 		if err := s3.StoreBackupHistory(history); err != nil {

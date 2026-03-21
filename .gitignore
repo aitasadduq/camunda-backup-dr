@@ -38,3 +38,4 @@ planning/
 data/
 .github/agents/
 .DS_Store
+.gstack/

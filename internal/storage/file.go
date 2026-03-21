@@ -329,7 +329,7 @@ func (fs *FileStorageImpl) findLogFileByBackupID(camundaInstanceID, backupID str
 	}
 	
 	// Find log file matching backup ID (in timestamp format)
-	// Backup IDs are in format YYYYMMDD-HHMMSS
+	// Backup IDs are in format YYYYMMDDHHMMSS
 	for _, entry := range entries {
 		if !entry.IsDir() && strings.Contains(entry.Name(), backupID) {
 			return filepath.Join(instanceLogsDir, entry.Name()), nil

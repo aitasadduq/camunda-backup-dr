@@ -107,7 +107,7 @@ func TestFileStorage_CreateLogFile(t *testing.T) {
 	defer cleanup()
 	
 	// Create log file
-	err := fs.CreateLogFile("camunda1", "20240101-120000")
+	err := fs.CreateLogFile("camunda1", "20240101120000")
 	if err != nil {
 		t.Fatalf("Failed to create log file: %v", err)
 	}
@@ -133,20 +133,20 @@ func TestFileStorage_WriteToLogFile(t *testing.T) {
 	defer cleanup()
 	
 	// Create log file
-	err := fs.CreateLogFile("camunda1", "20240101-120000")
+	err := fs.CreateLogFile("camunda1", "20240101120000")
 	if err != nil {
 		t.Fatalf("Failed to create log file: %v", err)
 	}
 	
 	// Write to log file
 	message := "Test log message"
-	err = fs.WriteToLogFile("camunda1", "20240101-120000", message)
+	err = fs.WriteToLogFile("camunda1", "20240101120000", message)
 	if err != nil {
 		t.Fatalf("Failed to write to log file: %v", err)
 	}
 	
 	// Read log file
-	content, err := fs.ReadLogFile("camunda1", "20240101-120000")
+	content, err := fs.ReadLogFile("camunda1", "20240101120000")
 	if err != nil {
 		t.Fatalf("Failed to read log file: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestFileStorage_ListLogFiles(t *testing.T) {
 	
 	// Create multiple log files
 	for i := 0; i < 3; i++ {
-		backupID := time.Now().Add(time.Duration(i) * time.Hour).Format("20060102-150405")
+		backupID := time.Now().Add(time.Duration(i) * time.Hour).Format("20060102150405")
 		err := fs.CreateLogFile("camunda1", backupID)
 		if err != nil {
 			t.Fatalf("Failed to create log file %d: %v", i, err)
@@ -188,7 +188,7 @@ func TestFileStorage_CleanupOldLogFiles(t *testing.T) {
 	
 	// Create multiple log files
 	for i := 0; i < 5; i++ {
-		backupID := time.Now().Add(time.Duration(i) * time.Hour).Format("20060102-150405")
+		backupID := time.Now().Add(time.Duration(i) * time.Hour).Format("20060102150405")
 		err := fs.CreateLogFile("camunda1", backupID)
 		if err != nil {
 			t.Fatalf("Failed to create log file %d: %v", i, err)
@@ -217,7 +217,7 @@ func TestFileStorage_ConcurrentAccess(t *testing.T) {
 	defer cleanup()
 	
 	// Create log file
-	err := fs.CreateLogFile("camunda1", "20240101-120000")
+	err := fs.CreateLogFile("camunda1", "20240101120000")
 	if err != nil {
 		t.Fatalf("Failed to create log file: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestFileStorage_ConcurrentAccess(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		go func(id int) {
 			message := fmt.Sprintf("Concurrent message %d", id)
-			err := fs.WriteToLogFile("camunda1", "20240101-120000", message)
+			err := fs.WriteToLogFile("camunda1", "20240101120000", message)
 			if err != nil {
 				t.Errorf("Failed to write message %d: %v", id, err)
 			}
@@ -241,7 +241,7 @@ func TestFileStorage_ConcurrentAccess(t *testing.T) {
 	}
 	
 	// Read log file
-	content, err := fs.ReadLogFile("camunda1", "20240101-120000")
+	content, err := fs.ReadLogFile("camunda1", "20240101120000")
 	if err != nil {
 		t.Fatalf("Failed to read log file: %v", err)
 	}
@@ -260,19 +260,19 @@ func TestFileStorage_DeleteLogFile(t *testing.T) {
 	defer cleanup()
 	
 	// Create log file
-	err := fs.CreateLogFile("camunda1", "20240101-120000")
+	err := fs.CreateLogFile("camunda1", "20240101120000")
 	if err != nil {
 		t.Fatalf("Failed to create log file: %v", err)
 	}
 	
 	// Delete log file
-	err = fs.DeleteLogFile("camunda1", "20240101-120000")
+	err = fs.DeleteLogFile("camunda1", "20240101120000")
 	if err != nil {
 		t.Fatalf("Failed to delete log file: %v", err)
 	}
 	
 	// Verify log file is deleted
-	_, err = fs.ReadLogFile("camunda1", "20240101-120000")
+	_, err = fs.ReadLogFile("camunda1", "20240101120000")
 	if err == nil {
 		t.Error("Expected error when reading deleted log file")
 	}
@@ -434,7 +434,7 @@ func TestFileStorage_CreateLogFile_MkdirAllFails(t *testing.T) {
 	}
 
 	// Attempt to create a log file under the blocked path
-	err := fs.CreateLogFile("camunda-blocked/sub", "20240101-120000")
+	err := fs.CreateLogFile("camunda-blocked/sub", "20240101120000")
 	if err == nil {
 		t.Fatal("Expected error when instance logs directory creation fails")
 	}
@@ -454,7 +454,7 @@ func TestFileStorage_CreateLogFile_ReadOnlyDir(t *testing.T) {
 	}
 	defer os.Chmod(instanceDir, 0755)
 
-	err := fs.CreateLogFile("camunda-ro", "20240101-120000")
+	err := fs.CreateLogFile("camunda-ro", "20240101120000")
 	if err == nil {
 		t.Fatal("Expected error when log file creation fails in read-only directory")
 	}
@@ -470,7 +470,7 @@ func TestFileStorage_WriteToLogFile_NoLogDir(t *testing.T) {
 	defer cleanup()
 
 	// Write without creating a log file first — no instance dir exists
-	err := fs.WriteToLogFile("nonexistent-instance", "20240101-120000", "msg")
+	err := fs.WriteToLogFile("nonexistent-instance", "20240101120000", "msg")
 	if err == nil {
 		t.Fatal("Expected error when writing to log for non-existent instance")
 	}
@@ -486,7 +486,7 @@ func TestFileStorage_WriteToLogFile_EmptyLogDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := fs.WriteToLogFile("camunda-empty", "20240101-120000", "msg")
+	err := fs.WriteToLogFile("camunda-empty", "20240101120000", "msg")
 	if err == nil {
 		t.Fatal("Expected error when no log files exist")
 	}
@@ -498,7 +498,7 @@ func TestFileStorage_ReadLogFile_NoDir(t *testing.T) {
 	fs, _, cleanup := setupTestFileStorage(t)
 	defer cleanup()
 
-	_, err := fs.ReadLogFile("nonexistent-instance", "20240101-120000")
+	_, err := fs.ReadLogFile("nonexistent-instance", "20240101120000")
 	if err == nil {
 		t.Fatal("Expected error when reading log for non-existent instance")
 	}
@@ -509,12 +509,12 @@ func TestFileStorage_ReadLogFile_BackupNotFound(t *testing.T) {
 	defer cleanup()
 
 	// Create a log file with one backup ID
-	if err := fs.CreateLogFile("camunda1", "20240101-120000"); err != nil {
+	if err := fs.CreateLogFile("camunda1", "20240101120000"); err != nil {
 		t.Fatal(err)
 	}
 
 	// Try to read with a different backup ID
-	_, err := fs.ReadLogFile("camunda1", "99999999-000000")
+	_, err := fs.ReadLogFile("camunda1", "99999999000000")
 	if err == nil {
 		t.Fatal("Expected error when backup ID not found in log files")
 	}
@@ -526,7 +526,7 @@ func TestFileStorage_DeleteLogFile_NoDir(t *testing.T) {
 	fs, _, cleanup := setupTestFileStorage(t)
 	defer cleanup()
 
-	err := fs.DeleteLogFile("nonexistent-instance", "20240101-120000")
+	err := fs.DeleteLogFile("nonexistent-instance", "20240101120000")
 	if err == nil {
 		t.Fatal("Expected error when deleting log for non-existent instance")
 	}
@@ -537,12 +537,12 @@ func TestFileStorage_DeleteLogFile_BackupNotFound(t *testing.T) {
 	defer cleanup()
 
 	// Create a log file with one backup ID
-	if err := fs.CreateLogFile("camunda1", "20240101-120000"); err != nil {
+	if err := fs.CreateLogFile("camunda1", "20240101120000"); err != nil {
 		t.Fatal(err)
 	}
 
 	// Try to delete with a different backup ID
-	err := fs.DeleteLogFile("camunda1", "99999999-000000")
+	err := fs.DeleteLogFile("camunda1", "99999999000000")
 	if err == nil {
 		t.Fatal("Expected error when backup ID not found")
 	}
@@ -597,10 +597,10 @@ func TestFileStorage_CleanupOldLogFiles_FewerThanKeepCount(t *testing.T) {
 	defer cleanup()
 
 	// Create 2 log files, ask to keep 5
-	if err := fs.CreateLogFile("camunda1", "20240101-100000"); err != nil {
+	if err := fs.CreateLogFile("camunda1", "20240101100000"); err != nil {
 		t.Fatal(err)
 	}
-	if err := fs.CreateLogFile("camunda1", "20240101-110000"); err != nil {
+	if err := fs.CreateLogFile("camunda1", "20240101110000"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -740,7 +740,7 @@ func TestFileStorage_findLogFileByBackupID_NoDirReturnsError(t *testing.T) {
 	fs, _, cleanup := setupTestFileStorage(t)
 	defer cleanup()
 
-	_, err := fs.ReadLogFile("no-such-instance", "20240101-120000")
+	_, err := fs.ReadLogFile("no-such-instance", "20240101120000")
 	if err == nil {
 		t.Fatal("Expected error from findLogFileByBackupID for missing dir")
 	}
@@ -755,9 +755,9 @@ func TestFileStorage_findLogFileByBackupID_NotFound(t *testing.T) {
 	if err := os.MkdirAll(instanceDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(instanceDir, "camunda-miss-20240101-120000.log"), []byte("log"), 0644)
+	os.WriteFile(filepath.Join(instanceDir, "camunda-miss-20240101120000.log"), []byte("log"), 0644)
 
-	_, err := fs.ReadLogFile("camunda-miss", "99999999-000000")
+	_, err := fs.ReadLogFile("camunda-miss", "99999999000000")
 	if err == nil {
 		t.Fatal("Expected error when backup ID not found in any log file name")
 	}
@@ -770,7 +770,7 @@ func TestFileStorage_WriteToLogFile_ReadOnlyLogFile(t *testing.T) {
 	defer cleanup()
 
 	// Create a log file normally
-	if err := fs.CreateLogFile("camunda-ro-write", "20240101-120000"); err != nil {
+	if err := fs.CreateLogFile("camunda-ro-write", "20240101120000"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -783,7 +783,7 @@ func TestFileStorage_WriteToLogFile_ReadOnlyLogFile(t *testing.T) {
 		defer os.Chmod(path, 0644)
 	}
 
-	err := fs.WriteToLogFile("camunda-ro-write", "20240101-120000", "should fail")
+	err := fs.WriteToLogFile("camunda-ro-write", "20240101120000", "should fail")
 	if err == nil {
 		t.Fatal("Expected error when log file is read-only")
 	}
@@ -799,7 +799,7 @@ func TestFileStorage_ReadLogFile_UnreadableFile(t *testing.T) {
 	defer cleanup()
 
 	// Create a log file
-	if err := fs.CreateLogFile("camunda-unread", "20240101-120000"); err != nil {
+	if err := fs.CreateLogFile("camunda-unread", "20240101120000"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -812,7 +812,7 @@ func TestFileStorage_ReadLogFile_UnreadableFile(t *testing.T) {
 		defer os.Chmod(path, 0644)
 	}
 
-	_, err := fs.ReadLogFile("camunda-unread", "20240101-120000")
+	_, err := fs.ReadLogFile("camunda-unread", "20240101120000")
 	if err == nil {
 		t.Fatal("Expected error when log file is unreadable")
 	}
@@ -828,7 +828,7 @@ func TestFileStorage_DeleteLogFile_AlreadyRemoved(t *testing.T) {
 	defer cleanup()
 
 	// Create a log file
-	if err := fs.CreateLogFile("camunda-del-fail", "20240101-120000"); err != nil {
+	if err := fs.CreateLogFile("camunda-del-fail", "20240101120000"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -838,7 +838,7 @@ func TestFileStorage_DeleteLogFile_AlreadyRemoved(t *testing.T) {
 	os.Chmod(instanceDir, 0555)
 	defer os.Chmod(instanceDir, 0755)
 
-	err := fs.DeleteLogFile("camunda-del-fail", "20240101-120000")
+	err := fs.DeleteLogFile("camunda-del-fail", "20240101120000")
 	if err == nil {
 		t.Fatal("Expected error when file cannot be removed")
 	}
@@ -907,13 +907,13 @@ func TestFileStorage_findLogFileByBackupID_ReadDirError(t *testing.T) {
 	if err := os.MkdirAll(instanceDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(instanceDir, "test-20240101-120000.log"), []byte("data"), 0644)
+	os.WriteFile(filepath.Join(instanceDir, "test-20240101120000.log"), []byte("data"), 0644)
 
 	// Make dir non-readable
 	os.Chmod(instanceDir, 0000)
 	defer os.Chmod(instanceDir, 0755)
 
-	_, err := fs.ReadLogFile("camunda-readdir-fail2", "20240101-120000")
+	_, err := fs.ReadLogFile("camunda-readdir-fail2", "20240101120000")
 	if err == nil {
 		t.Fatal("Expected error when ReadDir fails in findLogFileByBackupID")
 	}

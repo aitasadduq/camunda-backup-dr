@@ -58,7 +58,7 @@ func TestClient_authHeaders_WithoutCredentials(t *testing.T) {
 
 func TestCreateSnapshot_Success(t *testing.T) {
 	repo := "backup-repo"
-	snapshot := "snapshot-20240101-120000"
+	snapshot := "snapshot-20240101120000"
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut {
@@ -117,7 +117,7 @@ func TestCreateSnapshot_ValidationErrors(t *testing.T) {
 
 func TestGetSnapshotStatus_Success(t *testing.T) {
 	repo := "backup-repo"
-	snapshot := "snapshot-20240101-120000"
+	snapshot := "snapshot-20240101120000"
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -130,7 +130,7 @@ func TestGetSnapshotStatus_Success(t *testing.T) {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"snapshots":[{"snapshot":"snapshot-20240101-120000","state":"SUCCESS"}]}`))
+		w.Write([]byte(`{"snapshots":[{"snapshot":"snapshot-20240101120000","state":"SUCCESS"}]}`))
 	}))
 	defer server.Close()
 
@@ -152,12 +152,12 @@ func TestGetSnapshotStatus_Success(t *testing.T) {
 
 func TestGetSnapshotStatus_InProgress(t *testing.T) {
 	repo := "backup-repo"
-	snapshot := "snapshot-20240101-120000"
+	snapshot := "snapshot-20240101120000"
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"snapshots":[{"snapshot":"snapshot-20240101-120000","state":"IN_PROGRESS"}]}`))
+		w.Write([]byte(`{"snapshots":[{"snapshot":"snapshot-20240101120000","state":"IN_PROGRESS"}]}`))
 	}))
 	defer server.Close()
 
@@ -179,12 +179,12 @@ func TestGetSnapshotStatus_InProgress(t *testing.T) {
 
 func TestGetSnapshotStatus_Failed(t *testing.T) {
 	repo := "backup-repo"
-	snapshot := "snapshot-20240101-120000"
+	snapshot := "snapshot-20240101120000"
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"snapshots":[{"snapshot":"snapshot-20240101-120000","state":"FAILED"}]}`))
+		w.Write([]byte(`{"snapshots":[{"snapshot":"snapshot-20240101120000","state":"FAILED"}]}`))
 	}))
 	defer server.Close()
 
@@ -206,7 +206,7 @@ func TestGetSnapshotStatus_Failed(t *testing.T) {
 
 func TestGetSnapshotStatus_NotFound(t *testing.T) {
 	repo := "backup-repo"
-	snapshot := "snapshot-20240101-120000"
+	snapshot := "snapshot-20240101120000"
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -229,7 +229,7 @@ func TestGetSnapshotStatus_NotFound(t *testing.T) {
 
 func TestDeleteSnapshot_Success(t *testing.T) {
 	repo := "backup-repo"
-	snapshot := "snapshot-20240101-120000"
+	snapshot := "snapshot-20240101120000"
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
