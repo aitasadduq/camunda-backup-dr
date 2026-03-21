@@ -11,9 +11,9 @@ func TestGenerateBackupID(t *testing.T) {
 		t.Error("Generated backup ID should not be empty")
 	}
 
-	// Verify format: YYYYMMDD-HHMMSS
-	if len(backupID) != 15 {
-		t.Errorf("Expected backup ID length 15, got %d", len(backupID))
+	// Verify format: YYYYMMDDHHMMSS
+	if len(backupID) != 14 {
+		t.Errorf("Expected backup ID length 14, got %d", len(backupID))
 	}
 
 	// Verify it can be parsed back
@@ -26,14 +26,14 @@ func TestGenerateBackupID(t *testing.T) {
 func TestGenerateBackupIDWithTimestamp(t *testing.T) {
 	timestamp := time.Date(2024, 1, 15, 14, 30, 45, 0, time.UTC)
 	backupID := GenerateBackupIDWithTimestamp(timestamp)
-	expected := "20240115-143045"
+	expected := "20240115143045"
 	if backupID != expected {
 		t.Errorf("Expected backup ID %s, got %s", expected, backupID)
 	}
 }
 
 func TestParseBackupIDTimestamp(t *testing.T) {
-	backupID := "20240115-143045"
+	backupID := "20240115143045"
 	timestamp, err := ParseBackupIDTimestamp(backupID)
 	if err != nil {
 		t.Fatalf("Failed to parse backup ID: %v", err)
@@ -50,6 +50,7 @@ func TestParseBackupIDTimestamp_InvalidFormat(t *testing.T) {
 		"invalid",
 		"2024-01-15",
 		"20240115",
+		"20240115-143045",
 		"20240115-14:30:45",
 		"",
 	}
@@ -63,7 +64,7 @@ func TestParseBackupIDTimestamp_InvalidFormat(t *testing.T) {
 }
 
 func TestValidateBackupID(t *testing.T) {
-	validID := "20240115-143045"
+	validID := "20240115143045"
 	if err := ValidateBackupID(validID); err != nil {
 		t.Errorf("Valid backup ID should not return error: %v", err)
 	}

@@ -486,12 +486,12 @@ Triggers an immediate backup for the specified Camunda instance. The backup runs
 ```json
 {
   "message": "Backup triggered successfully",
-  "backup_id": "20240115-143052",
+  "backup_id": "20240115143052",
   "status": "RUNNING"
 }
 ```
 
-The `backup_id` is a timestamp-based identifier in `YYYYMMDD-HHMMSS` format. Use it to query backup details and logs.
+The `backup_id` is a timestamp-based identifier in `YYYYMMDDHHMMSS` format. Use it to query backup details and logs.
 
 | Error Code | Condition |
 |---|---|
@@ -521,7 +521,7 @@ Returns the backup history for a Camunda instance, ordered by most recent first.
 ```json
 [
   {
-    "backup_id": "20240115-020000",
+    "backup_id": "20240115020000",
     "camunda_instance_id": "prod-cluster",
     "camunda_instance_name": "Production Cluster",
     "start_time": "2024-01-15T02:00:00Z",
@@ -536,7 +536,7 @@ Returns the backup history for a Camunda instance, ordered by most recent first.
         "start_time": "2024-01-15T02:00:01Z",
         "end_time": "2024-01-15T02:05:23Z",
         "duration_seconds": 322,
-        "snapshot_name": "camunda_zeebe_20240115-020000",
+        "snapshot_name": "camunda_zeebe_20240115020000",
         "snapshot_repository": "camunda-backups"
       },
       "operate": {
@@ -545,7 +545,7 @@ Returns the backup history for a Camunda instance, ordered by most recent first.
         "start_time": "2024-01-15T02:05:24Z",
         "end_time": "2024-01-15T02:08:10Z",
         "duration_seconds": 166,
-        "snapshot_name": "camunda_operate_20240115-020000",
+        "snapshot_name": "camunda_operate_20240115020000",
         "snapshot_repository": "camunda-backups"
       },
       "tasklist": {
@@ -554,7 +554,7 @@ Returns the backup history for a Camunda instance, ordered by most recent first.
         "start_time": "2024-01-15T02:08:11Z",
         "end_time": "2024-01-15T02:10:45Z",
         "duration_seconds": 154,
-        "snapshot_name": "camunda_tasklist_20240115-020000",
+        "snapshot_name": "camunda_tasklist_20240115020000",
         "snapshot_repository": "camunda-backups"
       },
       "optimize": {
@@ -568,7 +568,7 @@ Returns the backup history for a Camunda instance, ordered by most recent first.
         "start_time": "2024-01-15T02:10:46Z",
         "end_time": "2024-01-15T02:12:33Z",
         "duration_seconds": 107,
-        "snapshot_name": "camunda_es_20240115-020000",
+        "snapshot_name": "camunda_es_20240115020000",
         "snapshot_repository": "camunda-backups"
       }
     },
@@ -582,7 +582,7 @@ Returns the backup history for a Camunda instance, ordered by most recent first.
       "config_version": "1.0",
       "controller_version": "0.5.0",
       "execution_mode": "sequential",
-      "log_file_path": "data/logs/prod-cluster/20240115-020000.log",
+      "log_file_path": "data/logs/prod-cluster/20240115020000.log",
       "backup_reason": "Scheduled backup"
     }
   }
@@ -622,12 +622,12 @@ Returns the raw log file contents for a specific backup execution.
 **Content-Type:** `text/plain; charset=utf-8`
 
 ```
-2024-01-15T02:00:00Z [INFO] Starting backup 20240115-020000 for prod-cluster
+2024-01-15T02:00:00Z [INFO] Starting backup 20240115020000 for prod-cluster
 2024-01-15T02:00:01Z [INFO] Backing up component: zeebe
 2024-01-15T02:05:23Z [INFO] Component zeebe completed successfully
 2024-01-15T02:05:24Z [INFO] Backing up component: operate
 ...
-2024-01-15T02:12:34Z [INFO] Backup 20240115-020000 completed successfully
+2024-01-15T02:12:34Z [INFO] Backup 20240115020000 completed successfully
 ```
 
 | Error Code | Condition |
@@ -673,7 +673,7 @@ Returns backups that exist in storage but are no longer tracked in the backup hi
 ```json
 [
   {
-    "backup_id": "20240110-020000",
+    "backup_id": "20240110020000",
     "camunda_instance_id": "prod-cluster",
     "camunda_instance_name": "Production Cluster",
     "start_time": "2024-01-10T02:00:00Z",
@@ -716,7 +716,7 @@ Returns backups that were interrupted before all components finished.
 ```json
 [
   {
-    "backup_id": "20240113-020000",
+    "backup_id": "20240113020000",
     "camunda_instance_id": "prod-cluster",
     "camunda_instance_name": "Production Cluster",
     "start_time": "2024-01-13T02:00:00Z",
@@ -750,7 +750,7 @@ Returns backups that were interrupted before all components finished.
       "config_version": "1.0",
       "controller_version": "0.5.0",
       "execution_mode": "sequential",
-      "log_file_path": "data/logs/prod-cluster/20240113-020000.log",
+      "log_file_path": "data/logs/prod-cluster/20240113020000.log",
       "backup_reason": "Scheduled backup"
     },
     "error_message": "Backup interrupted: context cancelled"
@@ -777,7 +777,7 @@ Returns backups where one or more components failed.
 ```json
 [
   {
-    "backup_id": "20240112-020000",
+    "backup_id": "20240112020000",
     "camunda_instance_id": "prod-cluster",
     "camunda_instance_name": "Production Cluster",
     "start_time": "2024-01-12T02:00:00Z",
@@ -814,7 +814,7 @@ Returns backups where one or more components failed.
       "config_version": "1.0",
       "controller_version": "0.5.0",
       "execution_mode": "sequential",
-      "log_file_path": "data/logs/prod-cluster/20240112-020000.log",
+      "log_file_path": "data/logs/prod-cluster/20240112020000.log",
       "backup_reason": "Scheduled backup"
     },
     "error_message": "Backup failed: 1 component(s) failed"

@@ -85,7 +85,7 @@ func TestQualityGate_Phase2(t *testing.T) {
 		}
 		
 		// Create log file
-		backupID := "20240101-120000"
+		backupID := "20240101120000"
 		err = fs.CreateLogFile("camunda1", backupID)
 		if err != nil {
 			t.Fatalf("Failed to create log file: %v", err)
@@ -155,7 +155,7 @@ func TestQualityGate_Phase2(t *testing.T) {
 		history := models.NewBackupHistory(
 			"camunda1",
 			"Test Camunda",
-			"20240101-120000",
+			"20240101120000",
 			types.TriggerTypeScheduled,
 			"sequential",
 			"/data/logs/camunda1.log",
@@ -171,7 +171,7 @@ func TestQualityGate_Phase2(t *testing.T) {
 		}
 		
 		// Retrieve backup history
-		retrievedHistory, err := s3.GetBackupHistory("camunda1", "20240101-120000")
+		retrievedHistory, err := s3.GetBackupHistory("camunda1", "20240101120000")
 		if err != nil {
 			t.Fatalf("Failed to retrieve backup history: %v", err)
 		}
@@ -190,13 +190,13 @@ func TestQualityGate_Phase2(t *testing.T) {
 		}
 		
 		// Update backup status
-		err = s3.UpdateBackupStatus("camunda1", "20240101-120000", types.BackupStatusCompleted)
+		err = s3.UpdateBackupStatus("camunda1", "20240101120000", types.BackupStatusCompleted)
 		if err != nil {
 			t.Fatalf("Failed to update backup status: %v", err)
 		}
 		
 		// Verify status update
-		retrievedHistory, err = s3.GetBackupHistory("camunda1", "20240101-120000")
+		retrievedHistory, err = s3.GetBackupHistory("camunda1", "20240101120000")
 		if err != nil {
 			t.Fatalf("Failed to retrieve backup history: %v", err)
 		}

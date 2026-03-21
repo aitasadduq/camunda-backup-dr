@@ -524,7 +524,7 @@ func (h *Handlers) TriggerBackupHandler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Generate backup ID before starting async execution
-	backupID := time.Now().Format("20060102-150405")
+	backupID := time.Now().Format("20060102150405")
 
 	// Execute backup asynchronously
 	req := orchestrator.BackupRequest{

@@ -80,7 +80,7 @@ func getTestS3Config() S3Config {
 	}
 
 	// Use a unique prefix for each test run to avoid conflicts
-	prefix := "test-" + time.Now().Format("20060102-150405")
+	prefix := "test-" + time.Now().Format("20060102150405")
 
 	return S3Config{
 		Endpoint:     endpoint,
@@ -144,7 +144,7 @@ func TestIntegration_StoreAndGetLatestBackupID(t *testing.T) {
 	client := setupIntegrationTestS3Client(t)
 
 	camundaInstanceID := "camunda-test-1"
-	backupID := time.Now().Format("20060102-150405")
+	backupID := time.Now().Format("20060102150405")
 
 	// Store latest backup ID
 	err := client.StoreLatestBackupID(camundaInstanceID, backupID)
@@ -177,7 +177,7 @@ func TestIntegration_StoreAndGetBackupHistory(t *testing.T) {
 	client := setupIntegrationTestS3Client(t)
 
 	camundaInstanceID := "camunda-test-2"
-	backupID := time.Now().Format("20060102-150405")
+	backupID := time.Now().Format("20060102150405")
 
 	// Create test backup history
 	history := createTestBackupHistoryForIntegration(camundaInstanceID, backupID, types.BackupStatusCompleted)
@@ -216,7 +216,7 @@ func TestIntegration_ListBackupHistory(t *testing.T) {
 	// Create multiple backup histories
 	backupIDs := make([]string, 3)
 	for i := 0; i < 3; i++ {
-		backupID := time.Now().Add(time.Duration(i) * time.Second).Format("20060102-150405")
+		backupID := time.Now().Add(time.Duration(i) * time.Second).Format("20060102150405")
 		backupIDs[i] = backupID
 		history := createTestBackupHistoryForIntegration(camundaInstanceID, backupID, types.BackupStatusCompleted)
 		err := client.StoreBackupHistory(history)
@@ -248,7 +248,7 @@ func TestIntegration_UpdateBackupStatus(t *testing.T) {
 	client := setupIntegrationTestS3Client(t)
 
 	camundaInstanceID := "camunda-test-4"
-	backupID := time.Now().Format("20060102-150405")
+	backupID := time.Now().Format("20060102150405")
 
 	// Create test backup history with RUNNING status
 	history := createTestBackupHistoryForIntegration(camundaInstanceID, backupID, types.BackupStatusRunning)
@@ -286,7 +286,7 @@ func TestIntegration_MoveToOrphaned(t *testing.T) {
 	client := setupIntegrationTestS3Client(t)
 
 	camundaInstanceID := "camunda-test-5"
-	backupID := time.Now().Format("20060102-150405")
+	backupID := time.Now().Format("20060102150405")
 
 	// Create test backup history
 	history := createTestBackupHistoryForIntegration(camundaInstanceID, backupID, types.BackupStatusCompleted)
@@ -336,7 +336,7 @@ func TestIntegration_MoveToIncomplete(t *testing.T) {
 	client := setupIntegrationTestS3Client(t)
 
 	camundaInstanceID := "camunda-test-6"
-	backupID := time.Now().Format("20060102-150405")
+	backupID := time.Now().Format("20060102150405")
 
 	// Create test backup history
 	history := createTestBackupHistoryForIntegration(camundaInstanceID, backupID, types.BackupStatusRunning)
@@ -377,7 +377,7 @@ func TestIntegration_DeleteBackupHistory(t *testing.T) {
 	client := setupIntegrationTestS3Client(t)
 
 	camundaInstanceID := "camunda-test-7"
-	backupID := time.Now().Format("20060102-150405")
+	backupID := time.Now().Format("20060102150405")
 
 	// Create test backup history
 	history := createTestBackupHistoryForIntegration(camundaInstanceID, backupID, types.BackupStatusCompleted)
@@ -403,7 +403,7 @@ func TestIntegration_StoreIncompleteBackup(t *testing.T) {
 	client := setupIntegrationTestS3Client(t)
 
 	camundaInstanceID := "camunda-test-8"
-	backupID := time.Now().Format("20060102-150405")
+	backupID := time.Now().Format("20060102150405")
 
 	// Create incomplete backup history
 	history := createTestBackupHistoryForIntegration(camundaInstanceID, backupID, types.BackupStatusIncomplete)
@@ -449,14 +449,14 @@ func TestIntegration_ListAllBackups(t *testing.T) {
 	camundaInstanceID := "camunda-test-9"
 
 	// Create backups in different states
-	completedID := time.Now().Format("20060102-150405")
+	completedID := time.Now().Format("20060102150405")
 	completedHistory := createTestBackupHistoryForIntegration(camundaInstanceID, completedID, types.BackupStatusCompleted)
 	err := client.StoreBackupHistory(completedHistory)
 	if err != nil {
 		t.Fatalf("Failed to store completed backup: %v", err)
 	}
 
-	incompleteID := time.Now().Add(time.Second).Format("20060102-150405")
+	incompleteID := time.Now().Add(time.Second).Format("20060102150405")
 	incompleteHistory := createTestBackupHistoryForIntegration(camundaInstanceID, incompleteID, types.BackupStatusIncomplete)
 	err = client.StoreBackupHistory(incompleteHistory)
 	if err != nil {
@@ -524,7 +524,7 @@ func TestIntegration_RetryBehavior(t *testing.T) {
 
 		// This should fail after retries since endpoint is invalid
 		camundaInstanceID := "camunda-test-retry-fail"
-		backupID := time.Now().Format("20060102-150405")
+		backupID := time.Now().Format("20060102150405")
 		history := createTestBackupHistoryForIntegration(camundaInstanceID, backupID, types.BackupStatusCompleted)
 
 		start := time.Now()
@@ -565,7 +565,7 @@ func TestIntegration_RetryBehavior(t *testing.T) {
 		})
 
 		camundaInstanceID := "camunda-test-retry-count"
-		backupID := time.Now().Format("20060102-150405")
+		backupID := time.Now().Format("20060102150405")
 		history := createTestBackupHistoryForIntegration(camundaInstanceID, backupID, types.BackupStatusCompleted)
 
 		start := time.Now()
@@ -602,7 +602,7 @@ func TestIntegration_RetryBehavior(t *testing.T) {
 		})
 
 		camundaInstanceID := "camunda-test-retry-success"
-		backupID := time.Now().Format("20060102-150405")
+		backupID := time.Now().Format("20060102150405")
 
 		history := createTestBackupHistoryForIntegration(camundaInstanceID, backupID, types.BackupStatusCompleted)
 		err := client.StoreBackupHistory(history)
@@ -643,7 +643,7 @@ func TestIntegration_ConcurrentOperations(t *testing.T) {
 
 	for i := 0; i < numGoroutines; i++ {
 		go func(id int) {
-			backupID := time.Now().Add(time.Duration(id) * time.Second).Format("20060102-150405")
+			backupID := time.Now().Add(time.Duration(id) * time.Second).Format("20060102150405")
 			history := createTestBackupHistoryForIntegration(camundaInstanceID, backupID, types.BackupStatusCompleted)
 			err := client.StoreBackupHistory(history)
 			done <- opResult{id: id, err: err}
@@ -673,7 +673,7 @@ func TestIntegration_ComponentBackupInfo(t *testing.T) {
 	client := setupIntegrationTestS3Client(t)
 
 	camundaInstanceID := "camunda-test-components"
-	backupID := time.Now().Format("20060102-150405")
+	backupID := time.Now().Format("20060102150405")
 
 	// Create backup history with multiple components
 	history := createTestBackupHistoryForIntegration(camundaInstanceID, backupID, types.BackupStatusCompleted)
@@ -732,7 +732,7 @@ func TestIntegration_BackupStats(t *testing.T) {
 	client := setupIntegrationTestS3Client(t)
 
 	camundaInstanceID := "camunda-test-stats"
-	backupID := time.Now().Format("20060102-150405")
+	backupID := time.Now().Format("20060102150405")
 
 	// Create backup history with mixed component statuses
 	history := createTestBackupHistoryForIntegration(camundaInstanceID, backupID, types.BackupStatusCompleted)
