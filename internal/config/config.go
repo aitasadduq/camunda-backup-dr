@@ -32,9 +32,13 @@ type Config struct {
 	DefaultElasticsearchSnapshotNamePrefix string
 
 	// Default S3
-	DefaultS3Endpoint  string
-	DefaultS3AccessKey string
-	DefaultS3SecretKey string
+	DefaultS3Endpoint     string
+	DefaultS3AccessKey    string
+	DefaultS3SecretKey    string
+	DefaultS3Bucket       string
+	DefaultS3Region       string
+	DefaultS3Prefix       string
+	DefaultS3UsePathStyle bool
 
 	// Default Elasticsearch Password (falls back when no instance-specific var is set)
 	DefaultElasticsearchPassword string
@@ -71,9 +75,13 @@ func Load() (*Config, error) {
 		DefaultElasticsearchSnapshotNamePrefix: getEnv("DEFAULT_ELASTICSEARCH_SNAPSHOT_NAME_PREFIX", ""),
 
 		// Default S3
-		DefaultS3Endpoint:  getEnv("DEFAULT_S3_ENDPOINT", ""),
-		DefaultS3AccessKey: getEnv("DEFAULT_S3_ACCESSKEY", ""),
-		DefaultS3SecretKey: getEnv("DEFAULT_S3_SECRETKEY", ""),
+		DefaultS3Endpoint:     getEnv("DEFAULT_S3_ENDPOINT", ""),
+		DefaultS3AccessKey:    getEnv("DEFAULT_S3_ACCESSKEY", ""),
+		DefaultS3SecretKey:    getEnv("DEFAULT_S3_SECRETKEY", ""),
+		DefaultS3Bucket:       getEnv("DEFAULT_S3_BUCKET", "camunda-backups"),
+		DefaultS3Region:       getEnv("DEFAULT_S3_REGION", "us-east-1"),
+		DefaultS3Prefix:       getEnv("DEFAULT_S3_PREFIX", ""),
+		DefaultS3UsePathStyle: getEnv("DEFAULT_S3_USE_PATH_STYLE", "true") == "true",
 
 		// Default Elasticsearch Password
 		DefaultElasticsearchPassword: getEnv("DEFAULT_ELASTICSEARCH_PASSWORD", ""),

@@ -45,24 +45,31 @@ func main() {
 	}
 	logger.Info("File storage initialized successfully")
 
-	// Initialize S3 storage (using mock/in-memory for now if no credentials)
+	// Initialize S3 storage
 	var s3Storage storage.S3Storage
 	s3Endpoint := cfg.DefaultS3Endpoint
 	s3AccessKey := cfg.DefaultS3AccessKey
-	s3SecretKey := os.Getenv("DEFAULT_S3_SECRETKEY")
+	s3SecretKey := cfg.DefaultS3SecretKey
 
 	if s3Endpoint != "" && s3AccessKey != "" && s3SecretKey != "" {
-		s3StorageImpl, err := storage.NewS3Storage(s3Endpoint, s3AccessKey, s3SecretKey, "camunda-backups", "", logger)
+		s3Client, err := storage.NewS3Client(storage.S3Config{
+			Endpoint:     s3Endpoint,
+			AccessKey:    s3AccessKey,
+			SecretKey:    s3SecretKey,
+			Bucket:       cfg.DefaultS3Bucket,
+			Prefix:       cfg.DefaultS3Prefix,
+			Region:       cfg.DefaultS3Region,
+			UsePathStyle: cfg.DefaultS3UsePathStyle,
+		}, logger)
 		if err != nil {
-			logger.Warn("Failed to initialize S3 storage, using mock storage: %v", err)
-			s3Storage = newMockS3Storage(logger)
-		} else {
-			s3Storage = s3StorageImpl
-			logger.Info("S3 storage initialized successfully")
+			logger.Error("Failed to initialize S3 storage: %v", err)
+			log.Fatalf("Failed to initialize S3 storage: %v", err)
 		}
+		s3Storage = s3Client
+		logger.Info("S3 storage initialized successfully (endpoint: %s, bucket: %s)", s3Endpoint, cfg.DefaultS3Bucket)
 	} else {
-		logger.Info("S3 credentials not configured, using mock storage")
-		s3Storage = newMockS3Storage(logger)
+		logger.Error("S3 credentials not configured — DEFAULT_S3_ENDPOINT, DEFAULT_S3_ACCESSKEY, and DEFAULT_S3_SECRETKEY are required")
+		log.Fatalf("S3 credentials not configured — set DEFAULT_S3_ENDPOINT, DEFAULT_S3_ACCESSKEY, and DEFAULT_S3_SECRETKEY")
 	}
 
 	// Initialize Camunda manager
@@ -203,13 +210,3 @@ func setupGracefulShutdown(logger *utils.Logger, server *api.Server, sched *sche
 	}()
 }
 
-// mockS3Storage is a mock S3 storage for when credentials are not configured
-type mockS3Storage struct {
-	*storage.S3StorageImpl
-}
-
-func newMockS3Storage(logger *utils.Logger) storage.S3Storage {
-	// Create a mock S3 storage that works without real credentials
-	s3, _ := storage.NewS3Storage("http://mock", "mock", "mock", "mock-bucket", "", logger)
-	return s3
-}
