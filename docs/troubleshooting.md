@@ -905,13 +905,13 @@ When set to 0, the `checkForStuckJobs()` function returns immediately without ch
 
 ---
 
-### Why am I seeing "using mock storage" at startup?
+### Why is the service failing to start with "S3 credentials not configured"?
 
 ```
-INFO  S3 credentials not configured, using mock storage
+FATAL S3 credentials not configured — set DEFAULT_S3_ENDPOINT, DEFAULT_S3_ACCESSKEY, and DEFAULT_S3_SECRETKEY
 ```
 
-This means `DEFAULT_S3_ENDPOINT`, `DEFAULT_S3_ACCESSKEY`, and `DEFAULT_S3_SECRETKEY` are not all set. The service falls back to in-memory mock storage, which is **not persistent** and **not suitable for production**. Set all three variables to use real S3 storage.
+The service requires S3 storage and will not start without credentials. Ensure all three environment variables (`DEFAULT_S3_ENDPOINT`, `DEFAULT_S3_ACCESSKEY`, `DEFAULT_S3_SECRETKEY`) are set. Optionally configure `DEFAULT_S3_BUCKET` (default: `camunda-backups`), `DEFAULT_S3_REGION` (default: `us-east-1`), and `DEFAULT_S3_USE_PATH_STYLE` (default: `true`).
 
 ---
 

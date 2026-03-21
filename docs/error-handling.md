@@ -480,9 +480,13 @@ ERROR 2024/01/15 10:31:02 orchestrator.go:195: [op=ExecuteBackup instance=prod-1
 
 | Environment Variable | Type | Default | Description |
 |---------------------|------|---------|-------------|
-| `DEFAULT_S3_ENDPOINT` | string | — | S3-compatible endpoint URL. Pre-populates new instance forms. |
-| `DEFAULT_S3_ACCESSKEY` | string | — | S3 access key. Pre-populates new instance forms. |
-| `DEFAULT_S3_SECRETKEY` | string | — | Global fallback S3 secret key (used when no instance-specific var is set) |
+| `DEFAULT_S3_ENDPOINT` | string | _(required)_ | S3-compatible endpoint URL. Required for startup. |
+| `DEFAULT_S3_ACCESSKEY` | string | _(required)_ | S3 access key ID. Required for startup. |
+| `DEFAULT_S3_SECRETKEY` | string | _(required)_ | S3 secret access key. Falls back per-instance via `S3_SECRETKEY_<ID>`. |
+| `DEFAULT_S3_BUCKET` | string | `camunda-backups` | S3 bucket name for backup history and IDs. |
+| `DEFAULT_S3_REGION` | string | `us-east-1` | AWS region for the S3 bucket. |
+| `DEFAULT_S3_PREFIX` | string | _(empty)_ | Key prefix inside the bucket. |
+| `DEFAULT_S3_USE_PATH_STYLE` | string | `true` | Path-style addressing. Required for MinIO; set `false` for AWS S3. |
 
 ### Alert Settings
 
