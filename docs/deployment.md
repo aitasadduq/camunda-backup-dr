@@ -172,9 +172,13 @@ Once running:
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `DEFAULT_S3_ENDPOINT` | string | _(empty)_ | S3-compatible endpoint URL. Pre-populates new instance forms. |
-| `DEFAULT_S3_ACCESSKEY` | string | _(empty)_ | S3 access key ID. Pre-populates new instance forms. |
-| `DEFAULT_S3_SECRETKEY` | string | _(empty)_ | Global fallback S3 secret key. Used when no instance-specific `S3_SECRETKEY_<ID>` is set. |
+| `DEFAULT_S3_ENDPOINT` | string | _(required)_ | S3-compatible endpoint URL (e.g. `https://s3.amazonaws.com` or `http://minio:9000`). |
+| `DEFAULT_S3_ACCESSKEY` | string | _(required)_ | S3 access key ID. |
+| `DEFAULT_S3_SECRETKEY` | string | _(required)_ | S3 secret access key. Falls back per-instance via `S3_SECRETKEY_<ID>`. |
+| `DEFAULT_S3_BUCKET` | string | `camunda-backups` | S3 bucket name for storing backup history and IDs. |
+| `DEFAULT_S3_REGION` | string | `us-east-1` | AWS region for the S3 bucket. |
+| `DEFAULT_S3_PREFIX` | string | _(empty)_ | Key prefix inside the bucket (e.g. `prod/backups`). |
+| `DEFAULT_S3_USE_PATH_STYLE` | string | `true` | Use path-style addressing. Required for MinIO; set `false` for AWS S3. |
 
 ### Alert and Resilience Settings
 
