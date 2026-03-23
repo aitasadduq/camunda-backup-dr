@@ -691,9 +691,8 @@ async function openInstanceForm(existingInstance) {
                 const defaults = await resp.json();
                 instance = {
                     schedule: defaults.schedule || '0 2 * * *',
-                    retention_count: defaults.retention_count || 7,
-                    success_history_count: defaults.success_history_count || 30,
-                    failure_history_count: defaults.failure_history_count || 30,
+                    success_retention: defaults.success_retention || 7,
+                    failure_retention: defaults.failure_retention || 7,
                     elasticsearch_endpoint: defaults.elasticsearch_endpoint || '',
                     elasticsearch_username: defaults.elasticsearch_username || '',
                     s3_endpoint: defaults.s3_endpoint || '',
@@ -765,20 +764,15 @@ async function openInstanceForm(existingInstance) {
                                 <p class="mt-1 text-xs text-gray-400">min hour day month weekday — e.g. 0 2 * * * (daily at 2 AM)</p>
                             </div>
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Retention Count</label>
-                                <input type="number" name="retention_count" value="${instance.retention_count || 7}" min="1"
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Success Retention</label>
+                                <input type="number" name="success_retention" value="${instance.success_retention || 7}" min="1"
                                     class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
                             </div>
                         </div>
                         <div class="grid grid-cols-2 gap-3">
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Success History</label>
-                                <input type="number" name="success_history_count" value="${instance.success_history_count || 30}" min="1"
-                                    class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
-                            </div>
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Failure History</label>
-                                <input type="number" name="failure_history_count" value="${instance.failure_history_count || 30}" min="1"
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Failure Retention</label>
+                                <input type="number" name="failure_retention" value="${instance.failure_retention || 7}" min="1"
                                     class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
                             </div>
                         </div>
@@ -943,9 +937,8 @@ async function saveInstance(event, editId) {
         base_url: fd.get('base_url'),
         enabled: fd.get('enabled') === 'on',
         schedule,
-        retention_count: parseInt(fd.get('retention_count')) || 7,
-        success_history_count: parseInt(fd.get('success_history_count')) || 30,
-        failure_history_count: parseInt(fd.get('failure_history_count')) || 30,
+        success_retention: parseInt(fd.get('success_retention')) || 7,
+        failure_retention: parseInt(fd.get('failure_retention')) || 7,
         parallel_execution: fd.get('parallel_execution') === 'on',
         components,
         // Dynamically populate all component endpoint fields from the constant

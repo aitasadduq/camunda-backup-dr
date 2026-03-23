@@ -1,107 +1,207 @@
 package retention
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"sort"
+	"strings"
 
+	"github.com/aitasadduq/camunda-backup-dr/internal/camunda"
+	"github.com/aitasadduq/camunda-backup-dr/internal/config"
+	"github.com/aitasadduq/camunda-backup-dr/internal/elasticsearch"
 	"github.com/aitasadduq/camunda-backup-dr/internal/models"
 	"github.com/aitasadduq/camunda-backup-dr/internal/storage"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
 	"github.com/aitasadduq/camunda-backup-dr/pkg/types"
 )
 
-// Manager handles backup retention policies including keep-last-N,
-// orphaned backup detection, safe deletion, and INCOMPLETE cleanup.
 type Manager struct {
 	s3Storage   storage.S3Storage
 	fileStorage storage.FileStorage
+	httpClient  *camunda.HTTPClient
+	cfg         *config.Config
 	logger      *utils.Logger
 }
 
-// NewManager creates a new retention manager.
-func NewManager(s3Storage storage.S3Storage, fileStorage storage.FileStorage, logger *utils.Logger) *Manager {
+func NewManager(s3Storage storage.S3Storage, fileStorage storage.FileStorage, httpClient *camunda.HTTPClient, cfg *config.Config, logger *utils.Logger) *Manager {
 	return &Manager{
 		s3Storage:   s3Storage,
 		fileStorage: fileStorage,
+		httpClient:  httpClient,
+		cfg:         cfg,
 		logger:      logger,
 	}
 }
 
-// RetentionResult summarises what the retention run did.
 type RetentionResult struct {
-	// Backups moved to orphaned because they exceeded keep-last-N.
-	OrphanedByRetention []string
-	// INCOMPLETE backups that were cleaned up (a newer COMPLETED backup exists).
+	DeletedSuccessful []string
+	DeletedFailed     []string
 	CleanedIncomplete []string
-	// Number of log files removed during cleanup.
-	LogFilesRemoved int
-	// Errors encountered (non-fatal; retention is best-effort).
-	Errors []string
+	LogFilesRemoved   int
+	Errors            []string
 }
 
-// ApplyRetention is the main entry point called after a successful backup.
-// It applies the keep-last-N policy, cleans up eligible INCOMPLETE backups,
-// and prunes old log files. It never deletes the most recent successful backup.
-func (m *Manager) ApplyRetention(camundaInstanceID string, retentionCount int) *RetentionResult {
+// ApplyRetention enforces success and failure retention policies.
+// It keeps the N most recent successful backups and M most recent failed backups,
+// deleting excess backups along with their component data (ES snapshots, Zeebe, Operate, etc.).
+func (m *Manager) ApplyRetention(instance *models.CamundaInstance) *RetentionResult {
 	result := &RetentionResult{}
 
-	m.logger.Info("[retention] Applying retention for instance %s (keep-last-%d)", camundaInstanceID, retentionCount)
+	m.logger.Info("[retention] Applying retention for instance %s (success=%d, failure=%d)",
+		instance.ID, instance.SuccessRetention, instance.FailureRetention)
 
-	// 1. Apply keep-last-N for COMPLETED backups
-	m.applyKeepLastN(camundaInstanceID, retentionCount, result)
+	m.pruneByStatus(instance, types.BackupStatusCompleted, instance.SuccessRetention, &result.DeletedSuccessful, result)
+	m.pruneByStatus(instance, types.BackupStatusFailed, instance.FailureRetention, &result.DeletedFailed, result)
+	m.cleanupIncompleteBackups(instance.ID, result)
 
-	// 2. Clean up eligible INCOMPLETE backups
-	m.cleanupIncompleteBackups(camundaInstanceID, result)
+	totalKeep := instance.SuccessRetention + instance.FailureRetention
+	if totalKeep <= 0 {
+		totalKeep = 1
+	}
+	m.cleanupLogFiles(instance.ID, totalKeep, result)
 
-	// 3. Clean up old log files (keep count aligned with retention)
-	m.cleanupLogFiles(camundaInstanceID, retentionCount, result)
-
-	m.logger.Info("[retention] Retention complete for instance %s: orphaned=%d, cleaned_incomplete=%d, log_files_removed=%d, errors=%d",
-		camundaInstanceID, len(result.OrphanedByRetention), len(result.CleanedIncomplete), result.LogFilesRemoved, len(result.Errors))
+	m.logger.Info("[retention] Retention complete for instance %s: deleted_success=%d, deleted_failed=%d, cleaned_incomplete=%d, log_files_removed=%d, errors=%d",
+		instance.ID, len(result.DeletedSuccessful), len(result.DeletedFailed), len(result.CleanedIncomplete), result.LogFilesRemoved, len(result.Errors))
 
 	return result
 }
 
-// applyKeepLastN keeps the N most recent COMPLETED backups and moves the rest
-// to orphaned. The most recent COMPLETED backup is never moved.
-func (m *Manager) applyKeepLastN(camundaInstanceID string, retentionCount int, result *RetentionResult) {
-	if retentionCount <= 0 {
-		m.logger.Warn("[retention] Retention count is %d for instance %s; skipping keep-last-N", retentionCount, camundaInstanceID)
+// pruneByStatus keeps the N most recent backups with the given status
+// and deletes the rest, including their component data.
+func (m *Manager) pruneByStatus(instance *models.CamundaInstance, status types.BackupStatus, keep int, deleted *[]string, result *RetentionResult) {
+	if keep <= 0 {
+		m.logger.Warn("[retention] Retention count for %s is %d for instance %s; skipping", status, keep, instance.ID)
 		return
 	}
 
-	completed, err := m.s3Storage.ListBackupHistory(camundaInstanceID, types.BackupStatusCompleted)
+	backups, err := m.s3Storage.ListBackupHistory(instance.ID, status)
 	if err != nil {
-		result.Errors = append(result.Errors, fmt.Sprintf("failed to list completed backups: %v", err))
+		result.Errors = append(result.Errors, fmt.Sprintf("failed to list %s backups: %v", status, err))
 		return
 	}
 
-	if len(completed) <= retentionCount {
-		m.logger.Debug("[retention] Instance %s has %d completed backups (<= retention %d); nothing to prune",
-			camundaInstanceID, len(completed), retentionCount)
+	if len(backups) <= keep {
+		m.logger.Debug("[retention] Instance %s has %d %s backups (<= retention %d); nothing to prune",
+			instance.ID, len(backups), status, keep)
 		return
 	}
 
-	// Sort newest first by StartTime
-	sort.Slice(completed, func(i, j int) bool {
-		return completed[i].StartTime.After(completed[j].StartTime)
+	sort.Slice(backups, func(i, j int) bool {
+		return backups[i].StartTime.After(backups[j].StartTime)
 	})
 
-	// Keep the first retentionCount, orphan the rest.
-	// Safety: never orphan index 0 (the most recent successful backup).
-	toOrphan := completed[retentionCount:]
-	for _, backup := range toOrphan {
-		if err := m.s3Storage.MoveToOrphaned(camundaInstanceID, backup.BackupID); err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("failed to orphan backup %s: %v", backup.BackupID, err))
+	toDelete := backups[keep:]
+	for _, backup := range toDelete {
+		m.deleteBackupData(instance, backup, result)
+
+		if err := m.s3Storage.DeleteBackupHistory(instance.ID, backup.BackupID); err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("failed to delete %s backup history %s: %v", status, backup.BackupID, err))
 			continue
 		}
-		result.OrphanedByRetention = append(result.OrphanedByRetention, backup.BackupID)
-		m.logger.Info("[retention] Moved backup %s to orphaned (exceeds keep-last-%d)", backup.BackupID, retentionCount)
+
+		if err := m.fileStorage.DeleteLogFile(instance.ID, backup.BackupID); err != nil {
+			m.logger.Debug("[retention] Could not delete log file for %s: %v", backup.BackupID, err)
+		}
+
+		*deleted = append(*deleted, backup.BackupID)
+		m.logger.Info("[retention] Deleted %s backup %s (exceeds keep-last-%d)", status, backup.BackupID, keep)
 	}
 }
 
-// cleanupIncompleteBackups removes INCOMPLETE backups only when a newer
-// COMPLETED backup exists, as per the architecture spec.
+// deleteBackupData deletes the actual component data for a backup by calling
+// the relevant endpoints (Zeebe, Operate, Tasklist, Optimize, Elasticsearch).
+func (m *Manager) deleteBackupData(instance *models.CamundaInstance, backup *models.BackupHistory, result *RetentionResult) {
+	ctx := context.Background()
+
+	for componentName, compInfo := range backup.Components {
+		if !compInfo.Enabled || compInfo.Status == types.ComponentStatusSkipped {
+			continue
+		}
+
+		switch componentName {
+		case types.ComponentElasticsearch:
+			m.deleteESSnapshot(ctx, instance, backup, compInfo, result)
+		case types.ComponentZeebe:
+			m.deleteComponentBackup(ctx, instance.ZeebeBackupEndpoint, instance.ID, backup.BackupID, "Zeebe", result)
+		case types.ComponentOperate:
+			m.deleteComponentBackup(ctx, instance.OperateBackupEndpoint, instance.ID, backup.BackupID, "Operate", result)
+		case types.ComponentTasklist:
+			m.deleteComponentBackup(ctx, instance.TasklistBackupEndpoint, instance.ID, backup.BackupID, "Tasklist", result)
+		case types.ComponentOptimize:
+			m.deleteComponentBackup(ctx, instance.OptimizeBackupEndpoint, instance.ID, backup.BackupID, "Optimize", result)
+		}
+	}
+}
+
+// deleteESSnapshot deletes an Elasticsearch snapshot for a backup.
+func (m *Manager) deleteESSnapshot(ctx context.Context, instance *models.CamundaInstance, backup *models.BackupHistory, compInfo models.ComponentBackupInfo, result *RetentionResult) {
+	if instance.ElasticsearchEndpoint == "" || m.cfg == nil {
+		return
+	}
+
+	repository := compInfo.SnapshotRepository
+	snapshotName := compInfo.SnapshotName
+
+	if repository == "" {
+		repository = m.cfg.GetElasticsearchSnapshotRepository(instance.ID)
+	}
+	if snapshotName == "" {
+		namePrefix := m.cfg.GetElasticsearchSnapshotNamePrefix(instance.ID)
+		if namePrefix != "" {
+			snapshotName = fmt.Sprintf("%s-%s", namePrefix, backup.BackupID)
+		} else {
+			snapshotName = backup.BackupID
+		}
+	}
+
+	if repository == "" || snapshotName == "" {
+		return
+	}
+
+	password := m.cfg.GetElasticsearchPassword(instance.ID)
+	esClient := elasticsearch.NewClient(
+		instance.ElasticsearchEndpoint,
+		instance.ElasticsearchUsername,
+		password,
+		m.httpClient,
+		m.logger,
+	)
+
+	if err := esClient.DeleteSnapshot(ctx, repository, snapshotName); err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("failed to delete ES snapshot %s/%s for backup %s: %v", repository, snapshotName, backup.BackupID, err))
+	} else {
+		m.logger.Info("[retention] Deleted ES snapshot %s/%s for backup %s", repository, snapshotName, backup.BackupID)
+	}
+}
+
+// deleteComponentBackup deletes a Camunda component backup via its REST API (DELETE endpoint/{backupId}).
+func (m *Manager) deleteComponentBackup(ctx context.Context, endpoint, instanceID, backupID, componentName string, result *RetentionResult) {
+	if endpoint == "" || m.httpClient == nil {
+		return
+	}
+
+	deleteURL := strings.TrimRight(endpoint, "/") + "/" + backupID
+	resp, err := m.httpClient.Delete(ctx, deleteURL, nil)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("failed to delete %s backup %s: %v", componentName, backupID, err))
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		m.logger.Debug("[retention] %s backup %s not found (already deleted or never created)", componentName, backupID)
+		return
+	}
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		m.logger.Info("[retention] Deleted %s backup %s for instance %s", componentName, backupID, instanceID)
+	} else {
+		result.Errors = append(result.Errors, fmt.Sprintf("%s backup deletion returned status %d for backup %s", componentName, resp.StatusCode, backupID))
+	}
+}
+
+// cleanupIncompleteBackups removes INCOMPLETE backups when a newer COMPLETED backup exists.
 func (m *Manager) cleanupIncompleteBackups(camundaInstanceID string, result *RetentionResult) {
 	incomplete, err := m.s3Storage.ListIncompleteBackups(camundaInstanceID)
 	if err != nil {
@@ -113,7 +213,6 @@ func (m *Manager) cleanupIncompleteBackups(camundaInstanceID string, result *Ret
 		return
 	}
 
-	// We need at least one newer COMPLETED backup to justify deleting an INCOMPLETE one.
 	completed, err := m.s3Storage.ListBackupHistory(camundaInstanceID, types.BackupStatusCompleted)
 	if err != nil {
 		result.Errors = append(result.Errors, fmt.Sprintf("failed to list completed backups for incomplete cleanup: %v", err))
@@ -125,7 +224,6 @@ func (m *Manager) cleanupIncompleteBackups(camundaInstanceID string, result *Ret
 		return
 	}
 
-	// Find the newest COMPLETED backup timestamp.
 	newestCompleted := completed[0]
 	for _, c := range completed[1:] {
 		if c.StartTime.After(newestCompleted.StartTime) {
@@ -133,7 +231,6 @@ func (m *Manager) cleanupIncompleteBackups(camundaInstanceID string, result *Ret
 		}
 	}
 
-	// Delete INCOMPLETE backups that are older than the newest COMPLETED backup.
 	for _, backup := range incomplete {
 		if backup.StartTime.Before(newestCompleted.StartTime) {
 			if err := m.s3Storage.DeleteBackupHistory(camundaInstanceID, backup.BackupID); err != nil {
@@ -142,18 +239,14 @@ func (m *Manager) cleanupIncompleteBackups(camundaInstanceID string, result *Ret
 			}
 			result.CleanedIncomplete = append(result.CleanedIncomplete, backup.BackupID)
 			m.logger.Info("[retention] Deleted incomplete backup %s (newer completed backup %s exists)", backup.BackupID, newestCompleted.BackupID)
-		} else {
-			m.logger.Debug("[retention] Keeping incomplete backup %s (no newer completed backup)", backup.BackupID)
 		}
 	}
 }
 
-// cleanupLogFiles removes old log files beyond the retention count.
-func (m *Manager) cleanupLogFiles(camundaInstanceID string, retentionCount int, result *RetentionResult) {
-	// Count log files before cleanup so we can report how many were removed.
+func (m *Manager) cleanupLogFiles(camundaInstanceID string, keepCount int, result *RetentionResult) {
 	before, _ := m.fileStorage.ListLogFiles(camundaInstanceID)
 
-	if err := m.fileStorage.CleanupOldLogFiles(camundaInstanceID, retentionCount); err != nil {
+	if err := m.fileStorage.CleanupOldLogFiles(camundaInstanceID, keepCount); err != nil {
 		result.Errors = append(result.Errors, fmt.Sprintf("failed to cleanup old log files: %v", err))
 		return
 	}
@@ -181,17 +274,14 @@ func (m *Manager) ListFailedBackups(camundaInstanceID string) ([]*models.BackupH
 }
 
 // DeleteBackup manually deletes a specific backup by ID.
-// It checks orphaned, incomplete, and failed backups. It refuses to delete the
-// most recent COMPLETED backup as a safety measure.
+// It refuses to delete the most recent COMPLETED backup as a safety measure.
 func (m *Manager) DeleteBackup(camundaInstanceID, backupID string) error {
-	// Safety check: refuse to delete the most recent successful backup.
 	completed, err := m.s3Storage.ListBackupHistory(camundaInstanceID, types.BackupStatusCompleted)
 	if err != nil {
 		return fmt.Errorf("failed to verify backup safety: %w", err)
 	}
 
 	if len(completed) > 0 {
-		// Find the most recent COMPLETED backup.
 		mostRecent := completed[0]
 		for _, c := range completed[1:] {
 			if c.StartTime.After(mostRecent.StartTime) {
@@ -203,16 +293,13 @@ func (m *Manager) DeleteBackup(camundaInstanceID, backupID string) error {
 		}
 	}
 
-	// Try deleting from main history first.
 	if err := m.s3Storage.DeleteBackupHistory(camundaInstanceID, backupID); err != nil {
-		// If not found in main history, it might be in orphaned.
 		m.logger.Debug("[retention] Backup %s not in main history, checking orphaned/incomplete", backupID)
 	} else {
 		m.logger.Info("[retention] Deleted backup %s from history", backupID)
 		return nil
 	}
 
-	// Check if it exists in orphaned
 	orphaned, err := m.s3Storage.ListOrphanedBackups(camundaInstanceID)
 	if err == nil {
 		for _, o := range orphaned {
@@ -226,7 +313,6 @@ func (m *Manager) DeleteBackup(camundaInstanceID, backupID string) error {
 		}
 	}
 
-	// Check if it exists in incomplete
 	incomplete, err := m.s3Storage.ListIncompleteBackups(camundaInstanceID)
 	if err == nil {
 		for _, inc := range incomplete {

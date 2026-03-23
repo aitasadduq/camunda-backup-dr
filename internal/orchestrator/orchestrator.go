@@ -21,9 +21,10 @@ import (
 	"github.com/aitasadduq/camunda-backup-dr/pkg/types"
 )
 
-// RetentionFunc is a callback invoked after a successful backup to apply
-// retention policies.  It is wired by the caller (e.g. main.go).
-type RetentionFunc func(camundaInstanceID string, retentionCount int)
+// RetentionFunc is a callback invoked after a backup completes to apply
+// retention policies. It receives the full instance so retention can
+// access both success and failure retention counts and component config.
+type RetentionFunc func(instance *models.CamundaInstance)
 
 // Orchestrator manages the backup workflow for Camunda instances
 type Orchestrator struct {
@@ -161,22 +162,20 @@ func (o *Orchestrator) ExecuteBackup(ctx context.Context, req BackupRequest) (*m
 
 	o.writeLog(req.CamundaInstance.ID, backupID, fmt.Sprintf("Backup completed with status: %s", execution.Status))
 
-	// Apply retention asynchronously after a successful backup so that
-	// potentially slow retention operations (listing, moving, deleting) don't
-	// block backup completion or hold the backupRunning flag.
-	if execution.Status == types.BackupStatusCompleted && o.retentionFunc != nil {
+	// Apply retention asynchronously after backup completion (success or failure)
+	// so that potentially slow retention operations don't block backup completion.
+	if (execution.Status == types.BackupStatusCompleted || execution.Status == types.BackupStatusFailed) && o.retentionFunc != nil {
 		o.writeLog(req.CamundaInstance.ID, backupID, "Scheduling asynchronous retention policy")
 		retentionFunc := o.retentionFunc
-		instanceID := req.CamundaInstance.ID
-		retentionCount := req.CamundaInstance.RetentionCount
+		instance := req.CamundaInstance
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
-					o.logger.Error("Panic during retention for instance %s: %v", instanceID, r)
+					o.logger.Error("Panic during retention for instance %s: %v", instance.ID, r)
 				}
 			}()
-			retentionFunc(instanceID, retentionCount)
-			o.writeLog(instanceID, backupID, "Retention policy applied successfully")
+			retentionFunc(instance)
+			o.writeLog(instance.ID, backupID, "Retention policy applied successfully")
 		}()
 	}
 

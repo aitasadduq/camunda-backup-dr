@@ -102,9 +102,8 @@ func NewHandlers(
 // Sensitive values (passwords, secret keys) are never included.
 type DefaultsResponse struct {
 	Schedule                        string `json:"schedule"`
-	RetentionCount                  int    `json:"retention_count"`
-	SuccessHistoryCount             int    `json:"success_history_count"`
-	FailureHistoryCount             int    `json:"failure_history_count"`
+	SuccessRetention                int    `json:"success_retention"`
+	FailureRetention                int    `json:"failure_retention"`
 	ElasticsearchEndpoint           string `json:"elasticsearch_endpoint"`
 	ElasticsearchUsername           string `json:"elasticsearch_username"`
 	ElasticsearchSnapshotRepository string `json:"elasticsearch_snapshot_repository"`
@@ -117,9 +116,8 @@ type DefaultsResponse struct {
 func (h *Handlers) GetDefaultsHandler(w http.ResponseWriter, r *http.Request) {
 	defaults := DefaultsResponse{
 		Schedule:                        "0 2 * * *",
-		RetentionCount:                  7,
-		SuccessHistoryCount:             30,
-		FailureHistoryCount:             30,
+		SuccessRetention:                7,
+		FailureRetention:                7,
 		ElasticsearchSnapshotRepository: "camunda-backup",
 	}
 
@@ -133,14 +131,11 @@ func (h *Handlers) GetDefaultsHandler(w http.ResponseWriter, r *http.Request) {
 		if h.cfg.DefaultSchedule != "" {
 			defaults.Schedule = h.cfg.DefaultSchedule
 		}
-		if h.cfg.DefaultRetentionCount > 0 {
-			defaults.RetentionCount = h.cfg.DefaultRetentionCount
+		if h.cfg.DefaultSuccessRetention > 0 {
+			defaults.SuccessRetention = h.cfg.DefaultSuccessRetention
 		}
-		if h.cfg.DefaultSuccessHistory > 0 {
-			defaults.SuccessHistoryCount = h.cfg.DefaultSuccessHistory
-		}
-		if h.cfg.DefaultFailureHistory > 0 {
-			defaults.FailureHistoryCount = h.cfg.DefaultFailureHistory
+		if h.cfg.DefaultFailureRetention > 0 {
+			defaults.FailureRetention = h.cfg.DefaultFailureRetention
 		}
 	}
 
@@ -276,14 +271,11 @@ func (h *Handlers) CreateCamundaInstanceHandler(w http.ResponseWriter, r *http.R
 	if instance.Schedule == "" {
 		instance.Schedule = "0 2 * * *" // Default: daily at 2 AM
 	}
-	if instance.RetentionCount == 0 {
-		instance.RetentionCount = 7
+	if instance.SuccessRetention == 0 {
+		instance.SuccessRetention = 7
 	}
-	if instance.SuccessHistoryCount == 0 {
-		instance.SuccessHistoryCount = 30
-	}
-	if instance.FailureHistoryCount == 0 {
-		instance.FailureHistoryCount = 30
+	if instance.FailureRetention == 0 {
+		instance.FailureRetention = 7
 	}
 
 	// Apply defaults from environment config

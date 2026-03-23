@@ -2108,9 +2108,8 @@ func TestGetDefaultsHandler(t *testing.T) {
 	logger := utils.NewLogger("error")
 	cfg := &config.Config{
 		DefaultSchedule:                        "0 3 * * *",
-		DefaultRetentionCount:                  14,
-		DefaultSuccessHistory:                  60,
-		DefaultFailureHistory:                  90,
+		DefaultSuccessRetention:                14,
+		DefaultFailureRetention:                14,
 		DefaultElasticsearchEndpoint:           "http://es:9200",
 		DefaultElasticsearchUsername:            "elastic",
 		DefaultElasticsearchSnapshotRepository: "my-repo",
@@ -2135,9 +2134,8 @@ func TestGetDefaultsHandler(t *testing.T) {
 
 	checks := map[string]interface{}{
 		"schedule":                          "0 3 * * *",
-		"retention_count":                   float64(14),
-		"success_history_count":             float64(60),
-		"failure_history_count":             float64(90),
+		"success_retention":                 float64(14),
+		"failure_retention":                 float64(14),
 		"elasticsearch_endpoint":            "http://es:9200",
 		"elasticsearch_username":            "elastic",
 		"elasticsearch_snapshot_repository":  "my-repo",

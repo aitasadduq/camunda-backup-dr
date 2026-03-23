@@ -2305,7 +2305,7 @@ func TestSetRetentionFunc(t *testing.T) {
 	logger := utils.NewLogger("test")
 	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, setupTestConfig(), logger, 100*time.Millisecond, 50)
 
-	orch.SetRetentionFunc(func(camundaInstanceID string, retentionCount int) {})
+	orch.SetRetentionFunc(func(instance *models.CamundaInstance) {})
 
 	if orch.retentionFunc == nil {
 		t.Error("Expected retentionFunc to be set")
@@ -2344,13 +2344,13 @@ func TestSetRetentionFunc_CalledAfterSuccessfulBackup(t *testing.T) {
 	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, setupTestConfig(), logger, 100*time.Millisecond, 50)
 
 	retentionCalled := make(chan struct{}, 1)
-	orch.SetRetentionFunc(func(camundaInstanceID string, retentionCount int) {
+	orch.SetRetentionFunc(func(instance *models.CamundaInstance) {
 		retentionCalled <- struct{}{}
 	})
 
 	instance := setupTestInstance("test-instance", "Test")
 	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
-	instance.RetentionCount = 5
+	instance.SuccessRetention = 5
 	instance.Components = []models.CamundaComponentConfig{
 		{Name: types.ComponentZeebe, Enabled: true},
 	}
