@@ -52,7 +52,7 @@ func (m *Manager) ApplyRetention(instance *models.CamundaInstance) *RetentionRes
 		instance.ID, instance.SuccessRetention, instance.FailureRetention)
 
 	m.pruneByStatus(instance, types.BackupStatusCompleted, instance.SuccessRetention, &result.DeletedSuccessful, result)
-	m.pruneByStatus(instance, types.BackupStatusFailed, instance.FailureRetention, &result.DeletedFailed, result)
+	m.pruneFailedBackups(instance, result)
 	m.cleanupIncompleteBackups(instance.ID, result)
 
 	totalKeep := instance.SuccessRetention + instance.FailureRetention
@@ -106,6 +106,72 @@ func (m *Manager) pruneByStatus(instance *models.CamundaInstance, status types.B
 
 		*deleted = append(*deleted, backup.BackupID)
 		m.logger.Info("[retention] Deleted %s backup %s (exceeds keep-last-%d)", status, backup.BackupID, keep)
+	}
+}
+
+// pruneFailedBackups keeps the N most recent failed backups and deletes the rest,
+// but only prunes a failed backup if a newer successful backup exists. This ensures
+// failed backup data is preserved for investigation until a recovery point is established.
+func (m *Manager) pruneFailedBackups(instance *models.CamundaInstance, result *RetentionResult) {
+	keep := instance.FailureRetention
+	if keep <= 0 {
+		m.logger.Warn("[retention] Failure retention count is %d for instance %s; skipping", keep, instance.ID)
+		return
+	}
+
+	failed, err := m.s3Storage.ListBackupHistory(instance.ID, types.BackupStatusFailed)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("failed to list FAILED backups: %v", err))
+		return
+	}
+
+	if len(failed) <= keep {
+		return
+	}
+
+	completed, err := m.s3Storage.ListBackupHistory(instance.ID, types.BackupStatusCompleted)
+	if err != nil {
+		result.Errors = append(result.Errors, fmt.Sprintf("failed to list completed backups for failed retention guard: %v", err))
+		return
+	}
+
+	if len(completed) == 0 {
+		m.logger.Info("[retention] No successful backups for instance %s; keeping all failed backups", instance.ID)
+		return
+	}
+
+	// Find the newest successful backup.
+	newestCompleted := completed[0]
+	for _, c := range completed[1:] {
+		if c.StartTime.After(newestCompleted.StartTime) {
+			newestCompleted = c
+		}
+	}
+
+	sort.Slice(failed, func(i, j int) bool {
+		return failed[i].StartTime.After(failed[j].StartTime)
+	})
+
+	toDelete := failed[keep:]
+	for _, backup := range toDelete {
+		if !backup.StartTime.Before(newestCompleted.StartTime) {
+			m.logger.Debug("[retention] Keeping failed backup %s (no newer successful backup)", backup.BackupID)
+			continue
+		}
+
+		m.deleteBackupData(instance, backup, result)
+
+		if err := m.s3Storage.DeleteBackupHistory(instance.ID, backup.BackupID); err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("failed to delete FAILED backup history %s: %v", backup.BackupID, err))
+			continue
+		}
+
+		if err := m.fileStorage.DeleteLogFile(instance.ID, backup.BackupID); err != nil {
+			m.logger.Debug("[retention] Could not delete log file for %s: %v", backup.BackupID, err)
+		}
+
+		result.DeletedFailed = append(result.DeletedFailed, backup.BackupID)
+		m.logger.Info("[retention] Deleted failed backup %s (exceeds keep-last-%d, newer successful backup %s exists)", backup.BackupID, keep, newestCompleted.BackupID)
 	}
 }
 

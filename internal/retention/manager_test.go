@@ -620,6 +620,8 @@ func TestApplyRetention_EmptyInstance(t *testing.T) {
 func TestApplyRetention_FailedBackupsPruned(t *testing.T) {
 	mgr, s3, _ := newTestManager()
 	now := time.Now()
+	// A successful backup must exist (and be newer) for the safety guard to allow pruning
+	s3.addBackup("inst-1", "c1", types.BackupStatusCompleted, now)
 	s3.addBackup("inst-1", "f1", types.BackupStatusFailed, now.Add(-3*time.Hour))
 	s3.addBackup("inst-1", "f2", types.BackupStatusFailed, now.Add(-2*time.Hour))
 	s3.addBackup("inst-1", "f3", types.BackupStatusFailed, now.Add(-1*time.Hour))
@@ -639,6 +641,22 @@ func TestApplyRetention_FailedBackupsPruned(t *testing.T) {
 	remaining, _ := s3.ListBackupHistory("inst-1", types.BackupStatusFailed)
 	if len(remaining) != 1 {
 		t.Errorf("expected 1 remaining failed, got %d", len(remaining))
+	}
+}
+
+func TestApplyRetention_FailedBackupsKeptWhenNoSuccessful(t *testing.T) {
+	mgr, s3, _ := newTestManager()
+	now := time.Now()
+	s3.addBackup("inst-1", "f1", types.BackupStatusFailed, now.Add(-3*time.Hour))
+	s3.addBackup("inst-1", "f2", types.BackupStatusFailed, now.Add(-2*time.Hour))
+	s3.addBackup("inst-1", "f3", types.BackupStatusFailed, now.Add(-1*time.Hour))
+	result := mgr.ApplyRetention(testInstance("inst-1", 1, 1))
+	if len(result.DeletedFailed) != 0 {
+		t.Errorf("expected 0 deleted failed (no successful backup exists), got %d: %v", len(result.DeletedFailed), result.DeletedFailed)
+	}
+	remaining, _ := s3.ListBackupHistory("inst-1", types.BackupStatusFailed)
+	if len(remaining) != 3 {
+		t.Errorf("expected all 3 failed backups kept, got %d", len(remaining))
 	}
 }
 

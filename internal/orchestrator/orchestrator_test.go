@@ -2377,76 +2377,7 @@ func TestSetRetentionFunc_CalledAfterSuccessfulBackup(t *testing.T) {
 	}
 }
 
-// failingMoveToIncompleteS3 fails on MoveToIncomplete
-type failingMoveToIncompleteS3 struct {
-	*mockS3Storage
-}
-
-func (f *failingMoveToIncompleteS3) MoveToIncomplete(camundaInstanceID, backupID string) error {
-	return fmt.Errorf("simulated MoveToIncomplete failure")
-}
-
-func TestHandleBackupFailure_MoveToIncompleteError_WithAlerter(t *testing.T) {
-	// Create a server that fails on requests (to trigger handleBackupFailure)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": "fail"})
-		}
-	}))
-	defer server.Close()
-
-	// Create an alert webhook server to verify alerts are sent
-	var alertReceived int32
-	alertServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&alertReceived, 1)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer alertServer.Close()
-
-	fileStorage := newMockFileStorage()
-	s3Storage := &failingMoveToIncompleteS3{mockS3Storage: newMockS3Storage()}
-	clientCfg := camunda.DefaultHTTPClientConfig()
-	clientCfg.MaxRetries = 0
-	httpClient := camunda.NewHTTPClient(clientCfg, utils.NewLogger("test"))
-	logger := utils.NewLogger("test")
-	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, setupTestConfig(), logger, 100*time.Millisecond, 50)
-
-	// Set alerter with real webhook server
-	alerter := utils.NewAlerter(alertServer.URL, logger)
-	orch.SetAlerter(alerter)
-
-	instance := setupTestInstance("test-instance", "Test")
-	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
-	instance.OperateBackupEndpoint = ""
-	instance.TasklistBackupEndpoint = ""
-	instance.Components = []models.CamundaComponentConfig{
-		{Name: types.ComponentZeebe, Enabled: true},
-	}
-
-	ctx := context.Background()
-	execution, err := orch.ExecuteBackup(ctx, BackupRequest{
-		CamundaInstance: instance,
-		TriggerType:     types.TriggerTypeManual,
-		BackupReason:    "Test MoveToIncomplete failure with alerter",
-	})
-
-	if err != nil {
-		t.Fatalf("Expected no error, got: %v", err)
-	}
-	if execution.Status != types.BackupStatusFailed {
-		t.Errorf("Expected FAILED, got: %s", execution.Status)
-	}
-
-	// Wait for async alerts to be processed
-	time.Sleep(500 * time.Millisecond)
-	received := atomic.LoadInt32(&alertReceived)
-	if received < 1 {
-		t.Errorf("Expected at least 1 alert to be sent, got %d", received)
-	}
-}
-
-func TestHandleBackupFailure_MoveToIncompleteSuccess_WithAlerter(t *testing.T) {
+func TestHandleBackupFailure_WithAlerter(t *testing.T) {
 	// Create a server that fails on Zeebe
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
