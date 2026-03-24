@@ -362,16 +362,15 @@ The scheduler monitors running backup jobs and raises alerts when a job exceeds 
 
 ## Automatic Cleanup on Failure
 
-When a backup completes with `FAILED` status, the orchestrator automatically performs cleanup:
+When a backup completes with `FAILED` status, the orchestrator:
 
 1. **Identifies failed components** — Collects the list of components that reported failure.
-2. **Moves to incomplete** — Calls `s3Storage.MoveToIncomplete(instanceID, backupID)` to move the partial backup out of the main backup path. The retention manager can clean these up when newer successful backups exist.
+2. **Keeps backup in history** — Failed backups remain in the `history/` directory with `FAILED` status so the retention manager can apply keep-last-N policies via `pruneFailedBackups`.
 3. **Sends failure alert** — Fires a `CRITICAL` alert with the instance ID, backup ID, and failure reason.
 
 ### Error Handling During Cleanup
 
 Cleanup is designed to be **best-effort and non-blocking**:
-- If `MoveToIncomplete` fails, the error is logged and a `WARNING` alert is sent, but the process continues.
 - If alert delivery fails, the error is logged but does not propagate.
 - Cleanup errors never affect the overall backup result reporting.
 

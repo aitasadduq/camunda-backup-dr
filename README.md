@@ -122,9 +122,8 @@ The application is configured via environment variables:
 
 #### Default Configuration
 - `DEFAULT_SCHEDULE` - Default cron schedule for backups (default: "0 2 * * *")
-- `DEFAULT_RETENTION_COUNT` - Default number of backups to keep (default: 7)
-- `DEFAULT_SUCCESS_HISTORY` - Default success history count (default: 30)
-- `DEFAULT_FAILURE_HISTORY` - Default failure history count (default: 30)
+- `DEFAULT_SUCCESS_RETENTION` - Number of successful backups to retain (default: 7)
+- `DEFAULT_FAILURE_RETENTION` - Number of failed backups to retain (default: 7)
 
 #### Default Elasticsearch
 - `DEFAULT_ELASTICSEARCH_ENDPOINT` - Default Elasticsearch endpoint (default: "")
