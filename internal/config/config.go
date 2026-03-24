@@ -17,9 +17,8 @@ type Config struct {
 
 	// Default Configuration
 	DefaultSchedule       string
-	DefaultRetentionCount int
-	DefaultSuccessHistory int
-	DefaultFailureHistory int
+	DefaultSuccessRetention int
+	DefaultFailureRetention int
 
 	// Backup Polling Configuration
 	DefaultBackupPollInterval int // in seconds
@@ -60,9 +59,8 @@ func Load() (*Config, error) {
 
 		// Defaults
 		DefaultSchedule:       getEnv("DEFAULT_SCHEDULE", "0 2 * * *"),
-		DefaultRetentionCount: getEnvAsInt("DEFAULT_RETENTION_COUNT", 7),
-		DefaultSuccessHistory: getEnvAsInt("DEFAULT_SUCCESS_HISTORY", 30),
-		DefaultFailureHistory: getEnvAsInt("DEFAULT_FAILURE_HISTORY", 30),
+		DefaultSuccessRetention: getEnvAsInt("DEFAULT_SUCCESS_RETENTION", 7),
+		DefaultFailureRetention: getEnvAsInt("DEFAULT_FAILURE_RETENTION", 7),
 
 		// Backup Polling Configuration
 		DefaultBackupPollInterval: getEnvAsInt("DEFAULT_BACKUP_POLL_INTERVAL", 5),
@@ -117,15 +115,11 @@ func (c *Config) Validate() error {
 		return utils.ErrInvalidConfiguration
 	}
 
-	if c.DefaultRetentionCount < 0 {
+	if c.DefaultSuccessRetention < 0 {
 		return utils.ErrInvalidConfiguration
 	}
 
-	if c.DefaultSuccessHistory < 0 {
-		return utils.ErrInvalidConfiguration
-	}
-
-	if c.DefaultFailureHistory < 0 {
+	if c.DefaultFailureRetention < 0 {
 		return utils.ErrInvalidConfiguration
 	}
 

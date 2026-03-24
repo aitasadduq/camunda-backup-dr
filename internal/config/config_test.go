@@ -82,8 +82,8 @@ func clearLoadEnvVars(t *testing.T) {
 	t.Helper()
 	keys := []string{
 		"PORT", "LOG_LEVEL", "DATA_DIR",
-		"DEFAULT_SCHEDULE", "DEFAULT_RETENTION_COUNT",
-		"DEFAULT_SUCCESS_HISTORY", "DEFAULT_FAILURE_HISTORY",
+		"DEFAULT_SCHEDULE", "DEFAULT_SUCCESS_RETENTION",
+		"DEFAULT_FAILURE_RETENTION",
 		"DEFAULT_BACKUP_POLL_INTERVAL", "DEFAULT_BACKUP_MAX_ATTEMPTS",
 		"DEFAULT_ELASTICSEARCH_ENDPOINT", "DEFAULT_ELASTICSEARCH_USERNAME",
 		"DEFAULT_ELASTICSEARCH_SNAPSHOT_REPOSITORY", "DEFAULT_ELASTICSEARCH_SNAPSHOT_NAME_PREFIX",
@@ -120,14 +120,11 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.DefaultSchedule != "0 2 * * *" {
 		t.Errorf("DefaultSchedule = %q, want %q", cfg.DefaultSchedule, "0 2 * * *")
 	}
-	if cfg.DefaultRetentionCount != 7 {
-		t.Errorf("DefaultRetentionCount = %d, want 7", cfg.DefaultRetentionCount)
+	if cfg.DefaultSuccessRetention != 7 {
+		t.Errorf("DefaultSuccessRetention = %d, want 7", cfg.DefaultSuccessRetention)
 	}
-	if cfg.DefaultSuccessHistory != 30 {
-		t.Errorf("DefaultSuccessHistory = %d, want 30", cfg.DefaultSuccessHistory)
-	}
-	if cfg.DefaultFailureHistory != 30 {
-		t.Errorf("DefaultFailureHistory = %d, want 30", cfg.DefaultFailureHistory)
+	if cfg.DefaultFailureRetention != 7 {
+		t.Errorf("DefaultFailureRetention = %d, want 7", cfg.DefaultFailureRetention)
 	}
 
 	// Polling defaults
@@ -184,9 +181,8 @@ func TestLoad_EnvVarOverrides(t *testing.T) {
 	t.Setenv("LOG_LEVEL", "debug")
 	t.Setenv("DATA_DIR", "/custom/data")
 	t.Setenv("DEFAULT_SCHEDULE", "0 0 * * *")
-	t.Setenv("DEFAULT_RETENTION_COUNT", "14")
-	t.Setenv("DEFAULT_SUCCESS_HISTORY", "60")
-	t.Setenv("DEFAULT_FAILURE_HISTORY", "60")
+	t.Setenv("DEFAULT_SUCCESS_RETENTION", "14")
+	t.Setenv("DEFAULT_FAILURE_RETENTION", "14")
 	t.Setenv("DEFAULT_BACKUP_POLL_INTERVAL", "10")
 	t.Setenv("DEFAULT_BACKUP_MAX_ATTEMPTS", "240")
 	t.Setenv("DEFAULT_ELASTICSEARCH_ENDPOINT", "http://es:9200")
@@ -214,9 +210,8 @@ func TestLoad_EnvVarOverrides(t *testing.T) {
 		{"LogLevel", cfg.LogLevel, "debug"},
 		{"DataDir", cfg.DataDir, "/custom/data"},
 		{"DefaultSchedule", cfg.DefaultSchedule, "0 0 * * *"},
-		{"DefaultRetentionCount", cfg.DefaultRetentionCount, 14},
-		{"DefaultSuccessHistory", cfg.DefaultSuccessHistory, 60},
-		{"DefaultFailureHistory", cfg.DefaultFailureHistory, 60},
+		{"DefaultSuccessRetention", cfg.DefaultSuccessRetention, 14},
+		{"DefaultFailureRetention", cfg.DefaultFailureRetention, 14},
 		{"DefaultBackupPollInterval", cfg.DefaultBackupPollInterval, 10},
 		{"DefaultBackupMaxAttempts", cfg.DefaultBackupMaxAttempts, 240},
 		{"DefaultElasticsearchEndpoint", cfg.DefaultElasticsearchEndpoint, "http://es:9200"},
@@ -276,9 +271,8 @@ func validConfig() *Config {
 		LogLevel:                  "info",
 		DataDir:                   "/data",
 		DefaultSchedule:           "0 2 * * *",
-		DefaultRetentionCount:     7,
-		DefaultSuccessHistory:     30,
-		DefaultFailureHistory:     30,
+		DefaultSuccessRetention: 7,
+		DefaultFailureRetention: 7,
 		DefaultBackupPollInterval: 5,
 		DefaultBackupMaxAttempts:  120,
 		BackupStuckTimeoutMinutes: 120,
@@ -354,35 +348,26 @@ func TestValidate(t *testing.T) {
 		}
 	})
 
-	// Negative retention
-	t.Run("negative retention count invalid", func(t *testing.T) {
+	// Negative success retention
+	t.Run("negative success retention invalid", func(t *testing.T) {
 		cfg := validConfig()
-		cfg.DefaultRetentionCount = -1
+		cfg.DefaultSuccessRetention = -1
 		if err := cfg.Validate(); err != utils.ErrInvalidConfiguration {
 			t.Errorf("Validate() error = %v, want %v", err, utils.ErrInvalidConfiguration)
 		}
 	})
-	t.Run("zero retention count valid", func(t *testing.T) {
+	t.Run("zero success retention valid", func(t *testing.T) {
 		cfg := validConfig()
-		cfg.DefaultRetentionCount = 0
+		cfg.DefaultSuccessRetention = 0
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("Validate() unexpected error: %v", err)
 		}
 	})
 
-	// Negative success history
-	t.Run("negative success history invalid", func(t *testing.T) {
+	// Negative failure retention
+	t.Run("negative failure retention invalid", func(t *testing.T) {
 		cfg := validConfig()
-		cfg.DefaultSuccessHistory = -1
-		if err := cfg.Validate(); err != utils.ErrInvalidConfiguration {
-			t.Errorf("Validate() error = %v, want %v", err, utils.ErrInvalidConfiguration)
-		}
-	})
-
-	// Negative failure history
-	t.Run("negative failure history invalid", func(t *testing.T) {
-		cfg := validConfig()
-		cfg.DefaultFailureHistory = -1
+		cfg.DefaultFailureRetention = -1
 		if err := cfg.Validate(); err != utils.ErrInvalidConfiguration {
 			t.Errorf("Validate() error = %v, want %v", err, utils.ErrInvalidConfiguration)
 		}

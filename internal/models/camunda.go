@@ -26,9 +26,8 @@ type CamundaInstance struct {
 	BaseURL             string `json:"base_url"`
 	Enabled             bool   `json:"enabled"`
 	Schedule            string `json:"schedule"`
-	RetentionCount      int    `json:"retention_count"`
-	SuccessHistoryCount int    `json:"success_history_count"`
-	FailureHistoryCount int    `json:"failure_history_count"`
+	SuccessRetention int `json:"success_retention"`
+	FailureRetention int `json:"failure_retention"`
 
 	// Backup Configuration
 	ZeebeBackupEndpoint    string `json:"zeebe_backup_endpoint"`
@@ -72,9 +71,8 @@ func NewCamundaInstance(id, name, baseURL string) *CamundaInstance {
 		BaseURL:             baseURL,
 		Enabled:             true,
 		Schedule:            "0 2 * * *",
-		RetentionCount:      7,
-		SuccessHistoryCount: 30,
-		FailureHistoryCount: 30,
+		SuccessRetention: 7,
+		FailureRetention: 7,
 		Components: []CamundaComponentConfig{
 			{Name: types.ComponentZeebe, Enabled: true},
 			{Name: types.ComponentOperate, Enabled: true},
@@ -127,13 +125,10 @@ func (ci *CamundaInstance) Validate() error {
 	if ci.Schedule == "" {
 		return utils.ErrInvalidCamundaInstance
 	}
-	if ci.RetentionCount < 0 {
+	if ci.SuccessRetention < 0 {
 		return utils.ErrInvalidCamundaInstance
 	}
-	if ci.SuccessHistoryCount < 0 {
-		return utils.ErrInvalidCamundaInstance
-	}
-	if ci.FailureHistoryCount < 0 {
+	if ci.FailureRetention < 0 {
 		return utils.ErrInvalidCamundaInstance
 	}
 	if ci.BackupIDS3Endpoint == "" {

@@ -61,7 +61,7 @@ FATAL Failed to load configuration: invalid configuration
 **Cause:** One or more environment variables have invalid values. The configuration validator checks:
 - `PORT` must be between 1 and 65535.
 - `LOG_LEVEL` must be one of: `debug`, `info`, `warn`, `error`.
-- `DEFAULT_RETENTION_COUNT`, `DEFAULT_SUCCESS_HISTORY`, and `DEFAULT_FAILURE_HISTORY` must be ≥ 0.
+- `DEFAULT_SUCCESS_RETENTION` and `DEFAULT_FAILURE_RETENTION` must be ≥ 0.
 - `DEFAULT_BACKUP_POLL_INTERVAL` and `DEFAULT_BACKUP_MAX_ATTEMPTS` must be > 0.
 
 **Resolution:**
@@ -795,7 +795,8 @@ For each Camunda instance, verify credentials are set with the normalized instan
 | Variable | Default | Set? | Notes |
 |----------|---------|------|-------|
 | `DEFAULT_SCHEDULE` | `0 2 * * *` | ☐ | Default cron schedule (daily at 2 AM) |
-| `DEFAULT_RETENTION_COUNT` | `7` | ☐ | Backups to retain per instance |
+| `DEFAULT_SUCCESS_RETENTION` | `7` | ☐ | Successful backups to retain per instance |
+| `DEFAULT_FAILURE_RETENTION` | `7` | ☐ | Failed backups to retain per instance |
 | `DEFAULT_BACKUP_POLL_INTERVAL` | `5` | ☐ | Seconds between status polls |
 | `DEFAULT_BACKUP_MAX_ATTEMPTS` | `120` | ☐ | Maximum poll attempts before timeout |
 

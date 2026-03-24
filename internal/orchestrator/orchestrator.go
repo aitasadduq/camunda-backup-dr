@@ -21,9 +21,10 @@ import (
 	"github.com/aitasadduq/camunda-backup-dr/pkg/types"
 )
 
-// RetentionFunc is a callback invoked after a successful backup to apply
-// retention policies.  It is wired by the caller (e.g. main.go).
-type RetentionFunc func(camundaInstanceID string, retentionCount int)
+// RetentionFunc is a callback invoked after a backup completes to apply
+// retention policies. It receives the full instance so retention can
+// access both success and failure retention counts and component config.
+type RetentionFunc func(instance *models.CamundaInstance)
 
 // Orchestrator manages the backup workflow for Camunda instances
 type Orchestrator struct {
@@ -161,22 +162,20 @@ func (o *Orchestrator) ExecuteBackup(ctx context.Context, req BackupRequest) (*m
 
 	o.writeLog(req.CamundaInstance.ID, backupID, fmt.Sprintf("Backup completed with status: %s", execution.Status))
 
-	// Apply retention asynchronously after a successful backup so that
-	// potentially slow retention operations (listing, moving, deleting) don't
-	// block backup completion or hold the backupRunning flag.
-	if execution.Status == types.BackupStatusCompleted && o.retentionFunc != nil {
+	// Apply retention asynchronously after backup completion (success or failure)
+	// so that potentially slow retention operations don't block backup completion.
+	if (execution.Status == types.BackupStatusCompleted || execution.Status == types.BackupStatusFailed) && o.retentionFunc != nil {
 		o.writeLog(req.CamundaInstance.ID, backupID, "Scheduling asynchronous retention policy")
 		retentionFunc := o.retentionFunc
-		instanceID := req.CamundaInstance.ID
-		retentionCount := req.CamundaInstance.RetentionCount
+		instance := req.CamundaInstance
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
-					o.logger.Error("Panic during retention for instance %s: %v", instanceID, r)
+					o.logger.Error("Panic during retention for instance %s: %v", instance.ID, r)
 				}
 			}()
-			retentionFunc(instanceID, retentionCount)
-			o.writeLog(instanceID, backupID, "Retention policy applied successfully")
+			retentionFunc(instance)
+			o.writeLog(instance.ID, backupID, "Retention policy applied successfully")
 		}()
 	}
 
@@ -661,12 +660,11 @@ func (o *Orchestrator) finalizeBackup(req BackupRequest, execution *models.Backu
 	}
 }
 
-// handleBackupFailure performs automatic cleanup and sends alerts when a backup fails.
-// It moves the failed backup to incomplete in S3 and notifies via the alerter.
+// handleBackupFailure sends alerts when a backup fails.
+// Failed backups remain in history with FAILED status so the retention manager
+// can apply keep-last-N policies via pruneFailedBackups.
 // All errors are logged but never propagated — cleanup must not disrupt the main flow.
 func (o *Orchestrator) handleBackupFailure(req BackupRequest, execution *models.BackupExecution) {
-	log := o.logger.WithContext("handleBackupFailure", "", req.CamundaInstance.ID)
-
 	// Build a summary of failed components for the alert message
 	var failedComponents []string
 	for comp, status := range execution.ComponentStatus {
@@ -679,18 +677,7 @@ func (o *Orchestrator) handleBackupFailure(req BackupRequest, execution *models.
 		failureReason = execution.ErrorMessage
 	}
 
-	// Move the failed backup to incomplete in S3 so retention can clean it up
-	// when a newer successful backup arrives (per architecture spec).
-	o.writeLog(req.CamundaInstance.ID, execution.BackupID, "Moving failed backup to incomplete for future cleanup")
-	if err := o.s3Storage.MoveToIncomplete(req.CamundaInstance.ID, execution.BackupID); err != nil {
-		log.Error("Failed to move backup %s to incomplete: %v", execution.BackupID, err)
-		o.writeLog(req.CamundaInstance.ID, execution.BackupID, fmt.Sprintf("Cleanup warning: failed to move to incomplete: %v", err))
-		if o.alerter != nil {
-			o.alerter.AlertCleanupFailed(req.CamundaInstance.ID, execution.BackupID, err.Error())
-		}
-	} else {
-		o.writeLog(req.CamundaInstance.ID, execution.BackupID, "Failed backup moved to incomplete successfully")
-	}
+	o.writeLog(req.CamundaInstance.ID, execution.BackupID, fmt.Sprintf("Backup failed: %s", failureReason))
 
 	// Send alert for the backup failure
 	if o.alerter != nil {

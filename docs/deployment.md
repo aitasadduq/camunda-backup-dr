@@ -112,7 +112,8 @@ DATA_DIR=/tmp/camunda-backup-data \
 PORT=8080 \
 LOG_LEVEL=info \
 DEFAULT_SCHEDULE="0 2 * * *" \
-DEFAULT_RETENTION_COUNT=7 \
+DEFAULT_SUCCESS_RETENTION=7 \
+DEFAULT_FAILURE_RETENTION=7 \
 DEFAULT_S3_ENDPOINT="http://localhost:9000" \
 DEFAULT_S3_ACCESSKEY="minioadmin" \
 DEFAULT_S3_SECRETKEY="minioadmin" \
@@ -147,9 +148,8 @@ Once running:
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
 | `DEFAULT_SCHEDULE` | string | `0 2 * * *` | Default cron schedule for backups (daily 2:00 AM) |
-| `DEFAULT_RETENTION_COUNT` | int | `7` | Number of successful backups to retain per instance |
-| `DEFAULT_SUCCESS_HISTORY` | int | `30` | Days to keep success history records |
-| `DEFAULT_FAILURE_HISTORY` | int | `30` | Days to keep failure history records |
+| `DEFAULT_SUCCESS_RETENTION` | int | `7` | Number of successful backups to retain per instance |
+| `DEFAULT_FAILURE_RETENTION` | int | `7` | Number of failed backups to retain per instance |
 
 ### Backup Polling
 
@@ -345,9 +345,8 @@ data:
   LOG_LEVEL: "info"
   DATA_DIR: "/data"
   DEFAULT_SCHEDULE: "0 2 * * *"
-  DEFAULT_RETENTION_COUNT: "7"
-  DEFAULT_SUCCESS_HISTORY: "30"
-  DEFAULT_FAILURE_HISTORY: "30"
+  DEFAULT_SUCCESS_RETENTION: "7"
+  DEFAULT_FAILURE_RETENTION: "7"
   DEFAULT_BACKUP_POLL_INTERVAL: "5"
   DEFAULT_BACKUP_MAX_ATTEMPTS: "120"
   DEFAULT_ELASTICSEARCH_SNAPSHOT_REPOSITORY: "camunda-backup"

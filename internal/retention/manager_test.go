@@ -296,8 +296,16 @@ func newTestManager() (*Manager, *mockS3Storage, *mockFileStorage) {
 	s3 := newMockS3Storage()
 	fs := newMockFileStorage()
 	logger := utils.NewLogger("debug")
-	mgr := NewManager(s3, fs, logger)
+	mgr := NewManager(s3, fs, nil, nil, logger)
 	return mgr, s3, fs
+}
+
+func testInstance(id string, successRetention, failureRetention int) *models.CamundaInstance {
+	return &models.CamundaInstance{
+		ID:               id,
+		SuccessRetention: successRetention,
+		FailureRetention: failureRetention,
+	}
 }
 
 // --- Tests ---
@@ -315,9 +323,9 @@ func TestApplyRetention_KeepLastN_NothingToPrune(t *testing.T) {
 	s3.addBackup("inst-1", "b1", types.BackupStatusCompleted, now.Add(-3*time.Hour))
 	s3.addBackup("inst-1", "b2", types.BackupStatusCompleted, now.Add(-2*time.Hour))
 	s3.addBackup("inst-1", "b3", types.BackupStatusCompleted, now.Add(-1*time.Hour))
-	result := mgr.ApplyRetention("inst-1", 5)
-	if len(result.OrphanedByRetention) != 0 {
-		t.Errorf("expected 0 orphaned, got %d", len(result.OrphanedByRetention))
+	result := mgr.ApplyRetention(testInstance("inst-1", 5, 5))
+	if len(result.DeletedSuccessful) != 0 {
+		t.Errorf("expected 0 deleted, got %d", len(result.DeletedSuccessful))
 	}
 	if len(result.Errors) != 0 {
 		t.Errorf("expected 0 errors, got %v", result.Errors)
@@ -332,22 +340,18 @@ func TestApplyRetention_KeepLastN_PrunesOldest(t *testing.T) {
 	s3.addBackup("inst-1", "b3", types.BackupStatusCompleted, now.Add(-3*time.Hour))
 	s3.addBackup("inst-1", "b4", types.BackupStatusCompleted, now.Add(-2*time.Hour))
 	s3.addBackup("inst-1", "b5", types.BackupStatusCompleted, now.Add(-1*time.Hour))
-	result := mgr.ApplyRetention("inst-1", 2)
-	if len(result.OrphanedByRetention) != 3 {
-		t.Errorf("expected 3 orphaned, got %d: %v", len(result.OrphanedByRetention), result.OrphanedByRetention)
+	result := mgr.ApplyRetention(testInstance("inst-1", 2, 2))
+	if len(result.DeletedSuccessful) != 3 {
+		t.Errorf("expected 3 deleted, got %d: %v", len(result.DeletedSuccessful), result.DeletedSuccessful)
 	}
-	orphanedSet := make(map[string]bool)
-	for _, id := range result.OrphanedByRetention {
-		orphanedSet[id] = true
+	deletedSet := make(map[string]bool)
+	for _, id := range result.DeletedSuccessful {
+		deletedSet[id] = true
 	}
 	for _, expected := range []string{"b1", "b2", "b3"} {
-		if !orphanedSet[expected] {
-			t.Errorf("expected %s to be orphaned", expected)
+		if !deletedSet[expected] {
+			t.Errorf("expected %s to be deleted", expected)
 		}
-	}
-	orphaned, _ := s3.ListOrphanedBackups("inst-1")
-	if len(orphaned) != 3 {
-		t.Errorf("expected 3 orphaned in storage, got %d", len(orphaned))
 	}
 	remaining, _ := s3.ListBackupHistory("inst-1", types.BackupStatusCompleted)
 	if len(remaining) != 2 {
@@ -355,17 +359,17 @@ func TestApplyRetention_KeepLastN_PrunesOldest(t *testing.T) {
 	}
 }
 
-func TestApplyRetention_KeepLastN_NeverOrphansNewest(t *testing.T) {
+func TestApplyRetention_KeepLastN_NeverDeletesNewest(t *testing.T) {
 	mgr, s3, _ := newTestManager()
 	now := time.Now()
 	s3.addBackup("inst-1", "b1", types.BackupStatusCompleted, now.Add(-2*time.Hour))
 	s3.addBackup("inst-1", "b2", types.BackupStatusCompleted, now.Add(-1*time.Hour))
-	result := mgr.ApplyRetention("inst-1", 1)
-	if len(result.OrphanedByRetention) != 1 {
-		t.Fatalf("expected 1 orphaned, got %d", len(result.OrphanedByRetention))
+	result := mgr.ApplyRetention(testInstance("inst-1", 1, 1))
+	if len(result.DeletedSuccessful) != 1 {
+		t.Fatalf("expected 1 deleted, got %d", len(result.DeletedSuccessful))
 	}
-	if result.OrphanedByRetention[0] != "b1" {
-		t.Errorf("expected b1 to be orphaned, got %s", result.OrphanedByRetention[0])
+	if result.DeletedSuccessful[0] != "b1" {
+		t.Errorf("expected b1 to be deleted, got %s", result.DeletedSuccessful[0])
 	}
 	remaining, _ := s3.ListBackupHistory("inst-1", types.BackupStatusCompleted)
 	if len(remaining) != 1 {
@@ -380,9 +384,9 @@ func TestApplyRetention_KeepLastN_ZeroRetention(t *testing.T) {
 	mgr, s3, _ := newTestManager()
 	now := time.Now()
 	s3.addBackup("inst-1", "b1", types.BackupStatusCompleted, now)
-	result := mgr.ApplyRetention("inst-1", 0)
-	if len(result.OrphanedByRetention) != 0 {
-		t.Errorf("expected 0 orphaned for zero retention, got %d", len(result.OrphanedByRetention))
+	result := mgr.ApplyRetention(testInstance("inst-1", 0, 0))
+	if len(result.DeletedSuccessful) != 0 {
+		t.Errorf("expected 0 deleted for zero retention, got %d", len(result.DeletedSuccessful))
 	}
 }
 
@@ -392,7 +396,7 @@ func TestApplyRetention_CleanupIncomplete_WithNewerCompleted(t *testing.T) {
 	s3.addBackup("inst-1", "b-completed", types.BackupStatusCompleted, now.Add(-1*time.Hour))
 	s3.addIncomplete("inst-1", "b-incomplete-old", now.Add(-3*time.Hour))
 	s3.addIncomplete("inst-1", "b-incomplete-newer", now)
-	result := mgr.ApplyRetention("inst-1", 10)
+	result := mgr.ApplyRetention(testInstance("inst-1", 10, 10))
 	if len(result.CleanedIncomplete) != 1 {
 		t.Fatalf("expected 1 cleaned incomplete, got %d: %v", len(result.CleanedIncomplete), result.CleanedIncomplete)
 	}
@@ -405,7 +409,7 @@ func TestApplyRetention_CleanupIncomplete_NoCompletedBackups(t *testing.T) {
 	mgr, s3, _ := newTestManager()
 	now := time.Now()
 	s3.addIncomplete("inst-1", "b-incomplete", now)
-	result := mgr.ApplyRetention("inst-1", 10)
+	result := mgr.ApplyRetention(testInstance("inst-1", 10, 10))
 	if len(result.CleanedIncomplete) != 0 {
 		t.Errorf("expected 0 cleaned incomplete when no completed backups exist, got %d", len(result.CleanedIncomplete))
 	}
@@ -416,38 +420,38 @@ func TestApplyRetention_CleanupLogFiles(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		fs.CreateLogFile("inst-1", fmt.Sprintf("backup-%d", i))
 	}
-	result := mgr.ApplyRetention("inst-1", 2)
-	if result.LogFilesRemoved != 3 {
-		t.Errorf("expected 3 log files removed, got %d", result.LogFilesRemoved)
+	result := mgr.ApplyRetention(testInstance("inst-1", 2, 2))
+	if result.LogFilesRemoved != 1 {
+		t.Errorf("expected 1 log files removed, got %d", result.LogFilesRemoved)
 	}
 	remaining, _ := fs.ListLogFiles("inst-1")
-	if len(remaining) != 2 {
-		t.Errorf("expected 2 remaining log files, got %d", len(remaining))
+	if len(remaining) != 4 {
+		t.Errorf("expected 4 remaining log files, got %d", len(remaining))
 	}
 }
 
 func TestApplyRetention_ErrorInListBackupHistory(t *testing.T) {
 	mgr, s3, _ := newTestManager()
 	s3.listErr = fmt.Errorf("S3 unavailable")
-	result := mgr.ApplyRetention("inst-1", 5)
+	result := mgr.ApplyRetention(testInstance("inst-1", 5, 5))
 	if len(result.Errors) == 0 {
 		t.Error("expected at least one error when S3 is unavailable")
 	}
 }
 
-func TestApplyRetention_ErrorInMoveToOrphaned(t *testing.T) {
+func TestApplyRetention_ErrorInDeleteBackupHistory(t *testing.T) {
 	mgr, s3, _ := newTestManager()
 	now := time.Now()
 	s3.addBackup("inst-1", "b1", types.BackupStatusCompleted, now.Add(-3*time.Hour))
 	s3.addBackup("inst-1", "b2", types.BackupStatusCompleted, now.Add(-2*time.Hour))
 	s3.addBackup("inst-1", "b3", types.BackupStatusCompleted, now.Add(-1*time.Hour))
-	s3.moveErr = fmt.Errorf("permission denied")
-	result := mgr.ApplyRetention("inst-1", 2)
+	s3.deleteErr = fmt.Errorf("permission denied")
+	result := mgr.ApplyRetention(testInstance("inst-1", 2, 2))
 	if len(result.Errors) == 0 {
-		t.Error("expected errors when MoveToOrphaned fails")
+		t.Error("expected errors when DeleteBackupHistory fails")
 	}
-	if len(result.OrphanedByRetention) != 0 {
-		t.Errorf("expected 0 orphaned on move error, got %d", len(result.OrphanedByRetention))
+	if len(result.DeletedSuccessful) != 0 {
+		t.Errorf("expected 0 deleted on delete error, got %d", len(result.DeletedSuccessful))
 	}
 }
 
@@ -455,7 +459,7 @@ func TestApplyRetention_LogFileCleanupError(t *testing.T) {
 	mgr, _, fs := newTestManager()
 	fs.cleanErr = fmt.Errorf("disk error")
 	fs.CreateLogFile("inst-1", "backup-1")
-	result := mgr.ApplyRetention("inst-1", 1)
+	result := mgr.ApplyRetention(testInstance("inst-1", 1, 1))
 	if len(result.Errors) == 0 {
 		t.Fatal("expected at least one error from log cleanup failure")
 	}
@@ -595,9 +599,12 @@ func TestListFailedBackups(t *testing.T) {
 
 func TestApplyRetention_EmptyInstance(t *testing.T) {
 	mgr, _, _ := newTestManager()
-	result := mgr.ApplyRetention("inst-empty", 5)
-	if len(result.OrphanedByRetention) != 0 {
-		t.Errorf("expected 0 orphaned, got %d", len(result.OrphanedByRetention))
+	result := mgr.ApplyRetention(testInstance("inst-empty", 5, 5))
+	if len(result.DeletedSuccessful) != 0 {
+		t.Errorf("expected 0 deleted, got %d", len(result.DeletedSuccessful))
+	}
+	if len(result.DeletedFailed) != 0 {
+		t.Errorf("expected 0 deleted failed, got %d", len(result.DeletedFailed))
 	}
 	if len(result.CleanedIncomplete) != 0 {
 		t.Errorf("expected 0 cleaned, got %d", len(result.CleanedIncomplete))
@@ -610,14 +617,46 @@ func TestApplyRetention_EmptyInstance(t *testing.T) {
 	}
 }
 
-func TestApplyRetention_OnlyFailedBackups_NoOrphaning(t *testing.T) {
+func TestApplyRetention_FailedBackupsPruned(t *testing.T) {
 	mgr, s3, _ := newTestManager()
 	now := time.Now()
-	s3.addBackup("inst-1", "f1", types.BackupStatusFailed, now.Add(-2*time.Hour))
-	s3.addBackup("inst-1", "f2", types.BackupStatusFailed, now.Add(-1*time.Hour))
-	result := mgr.ApplyRetention("inst-1", 1)
-	if len(result.OrphanedByRetention) != 0 {
-		t.Errorf("expected 0 orphaned for only-failed backups, got %d", len(result.OrphanedByRetention))
+	// A successful backup must exist (and be newer) for the safety guard to allow pruning
+	s3.addBackup("inst-1", "c1", types.BackupStatusCompleted, now)
+	s3.addBackup("inst-1", "f1", types.BackupStatusFailed, now.Add(-3*time.Hour))
+	s3.addBackup("inst-1", "f2", types.BackupStatusFailed, now.Add(-2*time.Hour))
+	s3.addBackup("inst-1", "f3", types.BackupStatusFailed, now.Add(-1*time.Hour))
+	result := mgr.ApplyRetention(testInstance("inst-1", 1, 1))
+	if len(result.DeletedFailed) != 2 {
+		t.Errorf("expected 2 deleted failed, got %d: %v", len(result.DeletedFailed), result.DeletedFailed)
+	}
+	deletedSet := make(map[string]bool)
+	for _, id := range result.DeletedFailed {
+		deletedSet[id] = true
+	}
+	for _, expected := range []string{"f1", "f2"} {
+		if !deletedSet[expected] {
+			t.Errorf("expected %s to be deleted", expected)
+		}
+	}
+	remaining, _ := s3.ListBackupHistory("inst-1", types.BackupStatusFailed)
+	if len(remaining) != 1 {
+		t.Errorf("expected 1 remaining failed, got %d", len(remaining))
+	}
+}
+
+func TestApplyRetention_FailedBackupsKeptWhenNoSuccessful(t *testing.T) {
+	mgr, s3, _ := newTestManager()
+	now := time.Now()
+	s3.addBackup("inst-1", "f1", types.BackupStatusFailed, now.Add(-3*time.Hour))
+	s3.addBackup("inst-1", "f2", types.BackupStatusFailed, now.Add(-2*time.Hour))
+	s3.addBackup("inst-1", "f3", types.BackupStatusFailed, now.Add(-1*time.Hour))
+	result := mgr.ApplyRetention(testInstance("inst-1", 1, 1))
+	if len(result.DeletedFailed) != 0 {
+		t.Errorf("expected 0 deleted failed (no successful backup exists), got %d: %v", len(result.DeletedFailed), result.DeletedFailed)
+	}
+	remaining, _ := s3.ListBackupHistory("inst-1", types.BackupStatusFailed)
+	if len(remaining) != 3 {
+		t.Errorf("expected all 3 failed backups kept, got %d", len(remaining))
 	}
 }
 
@@ -627,14 +666,14 @@ func TestApplyRetention_SortOrderDeterministic(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		s3.addBackup("inst-1", fmt.Sprintf("b%02d", i), types.BackupStatusCompleted, now.Add(time.Duration(-10+i)*time.Hour))
 	}
-	result := mgr.ApplyRetention("inst-1", 3)
-	if len(result.OrphanedByRetention) != 7 {
-		t.Fatalf("expected 7 orphaned, got %d: %v", len(result.OrphanedByRetention), result.OrphanedByRetention)
+	result := mgr.ApplyRetention(testInstance("inst-1", 3, 3))
+	if len(result.DeletedSuccessful) != 7 {
+		t.Fatalf("expected 7 deleted, got %d: %v", len(result.DeletedSuccessful), result.DeletedSuccessful)
 	}
-	sort.Strings(result.OrphanedByRetention)
+	sort.Strings(result.DeletedSuccessful)
 	for i, expected := range []string{"b00", "b01", "b02", "b03", "b04", "b05", "b06"} {
-		if result.OrphanedByRetention[i] != expected {
-			t.Errorf("orphaned[%d]: expected %s, got %s", i, expected, result.OrphanedByRetention[i])
+		if result.DeletedSuccessful[i] != expected {
+			t.Errorf("deleted[%d]: expected %s, got %s", i, expected, result.DeletedSuccessful[i])
 		}
 	}
 }
@@ -655,7 +694,7 @@ func TestDeleteBackup_ListErrorPreventsDelete(t *testing.T) {
 func TestCleanupIncompleteBackups_ListIncompleteError(t *testing.T) {
 	mgr, s3, _ := newTestManager()
 	s3.incompleteListErr = fmt.Errorf("S3 list incomplete error")
-	result := mgr.ApplyRetention("inst-1", 5)
+	result := mgr.ApplyRetention(testInstance("inst-1", 5, 5))
 	hasErr := false
 	for _, e := range result.Errors {
 		if strings.Contains(e, "failed to list incomplete backups") {
@@ -674,9 +713,9 @@ func TestCleanupIncompleteBackups_ListCompletedErrorDuringCleanup(t *testing.T) 
 	// Add an incomplete backup so the cleanup phase is entered
 	s3.addIncomplete("inst-1", "b-inc", now.Add(-1*time.Hour))
 	// Set listErr so ListBackupHistory (for completed) fails during cleanup.
-	// Note: this also affects applyKeepLastN but that's OK — both will record errors.
+	// Note: this also affects pruneByStatus but that's OK — both will record errors.
 	s3.listErr = fmt.Errorf("S3 list completed error")
-	result := mgr.ApplyRetention("inst-1", 5)
+	result := mgr.ApplyRetention(testInstance("inst-1", 5, 5))
 	hasErr := false
 	for _, e := range result.Errors {
 		if strings.Contains(e, "failed to list completed backups for incomplete cleanup") {
@@ -695,7 +734,7 @@ func TestCleanupIncompleteBackups_DeleteError(t *testing.T) {
 	s3.addBackup("inst-1", "b-completed", types.BackupStatusCompleted, now)
 	s3.addIncomplete("inst-1", "b-inc-old", now.Add(-2*time.Hour))
 	s3.deleteErr = fmt.Errorf("delete permission denied")
-	result := mgr.ApplyRetention("inst-1", 5)
+	result := mgr.ApplyRetention(testInstance("inst-1", 5, 5))
 	hasErr := false
 	for _, e := range result.Errors {
 		if strings.Contains(e, "failed to delete incomplete backup") {
@@ -717,7 +756,7 @@ func TestCleanupIncompleteBackups_IncompleteNewerThanCompleted(t *testing.T) {
 	// Completed backup is older than the incomplete
 	s3.addBackup("inst-1", "b-completed", types.BackupStatusCompleted, now.Add(-3*time.Hour))
 	s3.addIncomplete("inst-1", "b-inc-newer", now)
-	result := mgr.ApplyRetention("inst-1", 5)
+	result := mgr.ApplyRetention(testInstance("inst-1", 5, 5))
 	// The incomplete is newer than the most recent completed, so it should NOT be cleaned
 	if len(result.CleanedIncomplete) != 0 {
 		t.Errorf("expected 0 cleaned incomplete (newer than completed), got %d: %v",

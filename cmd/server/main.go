@@ -99,9 +99,9 @@ func main() {
 	logger.Info("Backup orchestrator initialized successfully")
 
 	// Wire up retention manager to orchestrator
-	retentionManager := retention.NewManager(s3Storage, fileStorage, logger)
-	backupOrchestrator.SetRetentionFunc(func(camundaInstanceID string, retentionCount int) {
-		retentionManager.ApplyRetention(camundaInstanceID, retentionCount)
+	retentionManager := retention.NewManager(s3Storage, fileStorage, httpClient, cfg, logger)
+	backupOrchestrator.SetRetentionFunc(func(instance *models.CamundaInstance) {
+		retentionManager.ApplyRetention(instance)
 	})
 	logger.Info("Retention manager initialized and wired to orchestrator")
 

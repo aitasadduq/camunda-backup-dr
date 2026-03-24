@@ -413,15 +413,14 @@ func TestCamundaInstance_Validate_AllErrors(t *testing.T) {
 		{"empty name", func(ci *CamundaInstance) { ci.Name = "" }, utils.ErrInvalidCamundaInstance},
 		{"empty base URL", func(ci *CamundaInstance) { ci.BaseURL = "" }, utils.ErrInvalidCamundaInstance},
 		{"empty schedule", func(ci *CamundaInstance) { ci.Schedule = "" }, utils.ErrInvalidCamundaInstance},
-		{"negative retention count", func(ci *CamundaInstance) { ci.RetentionCount = -1 }, utils.ErrInvalidCamundaInstance},
-		{"negative success history count", func(ci *CamundaInstance) { ci.SuccessHistoryCount = -1 }, utils.ErrInvalidCamundaInstance},
-		{"negative failure history count", func(ci *CamundaInstance) { ci.FailureHistoryCount = -1 }, utils.ErrInvalidCamundaInstance},
+		{"negative success retention", func(ci *CamundaInstance) { ci.SuccessRetention = -1 }, utils.ErrInvalidCamundaInstance},
+		{"negative failure retention", func(ci *CamundaInstance) { ci.FailureRetention = -1 }, utils.ErrInvalidCamundaInstance},
 		{"empty components", func(ci *CamundaInstance) { ci.Components = []CamundaComponentConfig{} }, utils.ErrNoComponentsEnabled},
 		{"all components disabled", func(ci *CamundaInstance) {
 			ci.Components = []CamundaComponentConfig{{Name: types.ComponentZeebe, Enabled: false}}
 		}, utils.ErrNoComponentsEnabled},
 		{"single letter ID is valid", func(ci *CamundaInstance) { ci.ID = "a" }, nil},
-		{"zero retention count is valid", func(ci *CamundaInstance) { ci.RetentionCount = 0 }, nil},
+		{"zero success retention is valid", func(ci *CamundaInstance) { ci.SuccessRetention = 0 }, nil},
 	}
 
 	for _, tt := range tests {

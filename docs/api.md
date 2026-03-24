@@ -191,9 +191,8 @@ Returns all configured Camunda instances.
     "base_url": "https://camunda.prod.example.com",
     "enabled": true,
     "schedule": "0 2 * * *",
-    "retention_count": 7,
-    "success_history_count": 30,
-    "failure_history_count": 30,
+    "success_retention": 7,
+    "failure_retention": 7,
     "zeebe_backup_endpoint": "https://zeebe.prod.example.com:9600",
     "operate_backup_endpoint": "https://operate.prod.example.com",
     "tasklist_backup_endpoint": "https://tasklist.prod.example.com",
@@ -240,9 +239,8 @@ Creates a new Camunda instance configuration. The ID is automatically lowercased
   "name": "Production Cluster",
   "base_url": "https://camunda.prod.example.com",
   "schedule": "0 2 * * *",
-  "retention_count": 7,
-  "success_history_count": 30,
-  "failure_history_count": 30,
+  "success_retention": 7,
+  "failure_retention": 7,
   "zeebe_backup_endpoint": "https://zeebe.prod.example.com:9600",
   "operate_backup_endpoint": "https://operate.prod.example.com",
   "tasklist_backup_endpoint": "https://tasklist.prod.example.com",
@@ -269,9 +267,8 @@ Creates a new Camunda instance configuration. The ID is automatically lowercased
 | Field | Default |
 |---|---|
 | `schedule` | `0 2 * * *` (daily at 2 AM) |
-| `retention_count` | `7` |
-| `success_history_count` | `30` |
-| `failure_history_count` | `30` |
+| `success_retention` | `7` |
+| `failure_retention` | `7` |
 | `components` | zeebe ✓, operate ✓, tasklist ✓, optimize ✗, elasticsearch ✓ |
 | `enabled` | `true` |
 
@@ -288,9 +285,8 @@ Creates a new Camunda instance configuration. The ID is automatically lowercased
     "base_url": "https://camunda.prod.example.com",
     "enabled": true,
     "schedule": "0 2 * * *",
-    "retention_count": 7,
-    "success_history_count": 30,
-    "failure_history_count": 30,
+    "success_retention": 7,
+    "failure_retention": 7,
     "components": [
       { "name": "zeebe", "enabled": true },
       { "name": "operate", "enabled": true },
@@ -331,9 +327,8 @@ Returns a single Camunda instance by ID.
   "base_url": "https://camunda.prod.example.com",
   "enabled": true,
   "schedule": "0 2 * * *",
-  "retention_count": 7,
-  "success_history_count": 30,
-  "failure_history_count": 30,
+  "success_retention": 7,
+  "failure_retention": 7,
   "components": [
     { "name": "zeebe", "enabled": true },
     { "name": "operate", "enabled": true },
@@ -375,7 +370,8 @@ Updates an existing Camunda instance. Provide only the fields you want to change
 {
   "name": "Production Cluster (Updated)",
   "schedule": "0 3 * * *",
-  "retention_count": 14,
+  "success_retention": 14,
+  "failure_retention": 14,
   "enabled": true,
   "components": [
     { "name": "zeebe", "enabled": true },
@@ -937,9 +933,8 @@ Generic — unreachable:
 | `base_url` | string | Base URL of the Camunda cluster |
 | `enabled` | boolean | Whether scheduled backups are enabled |
 | `schedule` | string | Cron expression for backup schedule |
-| `retention_count` | integer | Number of successful backups to retain |
-| `success_history_count` | integer | Number of successful history records to keep |
-| `failure_history_count` | integer | Number of failed history records to keep |
+| `success_retention` | integer | Number of successful backups to retain |
+| `failure_retention` | integer | Number of failed backups to retain |
 | `zeebe_backup_endpoint` | string | Zeebe backup API endpoint |
 | `operate_backup_endpoint` | string | Operate backup API endpoint |
 | `tasklist_backup_endpoint` | string | Tasklist backup API endpoint |
