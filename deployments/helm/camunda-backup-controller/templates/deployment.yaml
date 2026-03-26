@@ -1,0 +1,142 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "camunda-backup-controller.fullname" . }}
+  labels:
+    {{- include "camunda-backup-controller.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "camunda-backup-controller.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "camunda-backup-controller.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "camunda-backup-controller.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.config.port }}
+              protocol: TCP
+          env:
+            - name: PORT
+              value: {{ .Values.config.port | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            - name: DATA_DIR
+              value: {{ .Values.config.dataDir | quote }}
+            - name: DEFAULT_SCHEDULE
+              value: {{ .Values.config.schedule | quote }}
+            - name: DEFAULT_SUCCESS_RETENTION
+              value: {{ .Values.config.successRetention | quote }}
+            - name: DEFAULT_FAILURE_RETENTION
+              value: {{ .Values.config.failureRetention | quote }}
+            - name: DEFAULT_BACKUP_POLL_INTERVAL
+              value: {{ .Values.config.backupPollInterval | quote }}
+            - name: DEFAULT_BACKUP_MAX_ATTEMPTS
+              value: {{ .Values.config.backupMaxAttempts | quote }}
+            - name: BACKUP_STUCK_TIMEOUT_MINUTES
+              value: {{ .Values.config.backupStuckTimeoutMinutes | quote }}
+            {{- if .Values.config.elasticsearch.endpoint }}
+            - name: DEFAULT_ELASTICSEARCH_ENDPOINT
+              value: {{ .Values.config.elasticsearch.endpoint | quote }}
+            {{- end }}
+            {{- if .Values.config.elasticsearch.username }}
+            - name: DEFAULT_ELASTICSEARCH_USERNAME
+              value: {{ .Values.config.elasticsearch.username | quote }}
+            {{- end }}
+            - name: DEFAULT_ELASTICSEARCH_SNAPSHOT_REPOSITORY
+              value: {{ .Values.config.elasticsearch.snapshotRepository | quote }}
+            {{- if .Values.config.elasticsearch.snapshotNamePrefix }}
+            - name: DEFAULT_ELASTICSEARCH_SNAPSHOT_NAME_PREFIX
+              value: {{ .Values.config.elasticsearch.snapshotNamePrefix | quote }}
+            {{- end }}
+            {{- if .Values.config.s3.endpoint }}
+            - name: DEFAULT_S3_ENDPOINT
+              value: {{ .Values.config.s3.endpoint | quote }}
+            {{- end }}
+            - name: DEFAULT_S3_BUCKET
+              value: {{ .Values.config.s3.bucket | quote }}
+            - name: DEFAULT_S3_REGION
+              value: {{ .Values.config.s3.region | quote }}
+            {{- if .Values.config.s3.prefix }}
+            - name: DEFAULT_S3_PREFIX
+              value: {{ .Values.config.s3.prefix | quote }}
+            {{- end }}
+            - name: DEFAULT_S3_USE_PATH_STYLE
+              value: {{ .Values.config.s3.usePathStyle | quote }}
+            {{- if .Values.config.alertWebhookURL }}
+            - name: ALERT_WEBHOOK_URL
+              value: {{ .Values.config.alertWebhookURL | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ include "camunda-backup-controller.fullname" . }}
+                optional: true
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ .Values.config.dataDir }}
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (include "camunda-backup-controller.fullname" .) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

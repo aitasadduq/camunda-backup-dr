@@ -1,10 +1,42 @@
+# Camunda 8 test environment for backup controller testing.
+#
+# Profiles:
+#   minio  — MinIO only
+#   es     — MinIO + Elasticsearch
+#   zeebe  — MinIO + Elasticsearch + Zeebe
+#   all    — MinIO + Elasticsearch + Zeebe + Operate + Nginx + Seed
+#
+# The backup controller starts with all profiles (no profile restriction).
+#
+# Usage:
+#   docker compose -f deployments/docker-compose.yaml --profile es up --build
+#   docker compose -f deployments/docker-compose.yaml --profile all up --build
+#
+# Services:
+#   MinIO (S3):          localhost:9000 (API), localhost:9001 (console)
+#   Elasticsearch 8.15:  localhost:9200
+#   Nginx proxy:         localhost:8090 (unified Camunda endpoint)
+#     /operate/*           -> Operate web/API (port 8080)
+#     /operate/actuator/*  -> Operate actuator (port 9600)
+#     /actuator/*          -> Zeebe actuator (port 9600)
+#     /*                   -> Zeebe REST API (port 8080)
+#   Zeebe:               localhost:26500 (gRPC)
+#   Backup Controller:   localhost:8080
+#
+# Credentials:
+#   MinIO:          localminio / localminio12345
+#   Elasticsearch:  elastic / localelastic12345
+#
+# NOTE: Uses ES 8.15 (not 9.x) for Camunda 8.6 compatibility.
+# The main docker-compose.yaml uses ES 9.x for standalone backup controller testing.
+
 services:
   minio:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
     ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # Web console
+      - "9000:9000"
+      - "9001:9001"
     environment:
       MINIO_ROOT_USER: localminio
       MINIO_ROOT_PASSWORD: localminio12345
@@ -17,8 +49,9 @@ services:
       retries: 5
       start_period: 5s
     restart: unless-stopped
+    profiles: [minio, es, zeebe, all]
 
-  minio-mc:
+  minio-init:
     image: minio/mc:latest
     depends_on:
       minio:
@@ -29,21 +62,24 @@ services:
       - |
         mc alias set local http://minio:9000 localminio localminio12345
         mc mb -p local/es-snapshots || true
+        mc mb -p local/camunda-backups || true
     restart: "no"
+    profiles: [minio, es, zeebe, all]
 
   elasticsearch:
     build:
       context: ./elasticsearch
       args:
-        ES_IMAGE: elasticsearch:9.2.4
+        ES_IMAGE: elasticsearch:8.15.0
+    ports:
+      - "9200:9200"
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=true
       - ELASTIC_PASSWORD=localelastic12345
       - S3_ACCESS_KEY=localminio
       - S3_SECRET_KEY=localminio12345
-    ports:
-      - "9200:9200"
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
     volumes:
       - es_data:/usr/share/elasticsearch/data
     depends_on:
@@ -55,6 +91,99 @@ services:
       timeout: 10s
       retries: 10
       start_period: 30s
+    restart: unless-stopped
+    profiles: [es, zeebe, all]
+
+  es-init:
+    image: curlimages/curl:latest
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        echo "Registering ES snapshot repository..."
+        curl -sf -u elastic:localelastic12345 \
+          -X PUT http://elasticsearch:9200/_snapshot/camunda-backup \
+          -H 'Content-Type: application/json' \
+          -d '{"type":"s3","settings":{"bucket":"es-snapshots","endpoint":"minio:9000","protocol":"http","path_style_access":true}}'
+        echo ""
+        echo "Snapshot repository registered."
+    restart: "no"
+    profiles: [es, zeebe, all]
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "8090:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      zeebe:
+        condition: service_healthy
+      operate:
+        condition: service_healthy
+    restart: unless-stopped
+    profiles: [all]
+
+  zeebe:
+    image: camunda/zeebe:8.6.0
+    ports:
+      - "26500:26500"
+    environment:
+      - ZEEBE_BROKER_EXPORTERS_ELASTICSEARCH_CLASSNAME=io.camunda.zeebe.exporter.ElasticsearchExporter
+      - ZEEBE_BROKER_EXPORTERS_ELASTICSEARCH_ARGS_URL=http://elasticsearch:9200
+      - ZEEBE_BROKER_EXPORTERS_ELASTICSEARCH_ARGS_BULK_SIZE=1
+      - ZEEBE_BROKER_EXPORTERS_ELASTICSEARCH_ARGS_AUTHENTICATION_USERNAME=elastic
+      - ZEEBE_BROKER_EXPORTERS_ELASTICSEARCH_ARGS_AUTHENTICATION_PASSWORD=localelastic12345
+      - ZEEBE_BROKER_DATA_BACKUP_STORE=S3
+      - ZEEBE_BROKER_DATA_BACKUP_S3_BUCKETNAME=camunda-backups
+      - ZEEBE_BROKER_DATA_BACKUP_S3_ENDPOINT=http://minio:9000
+      - ZEEBE_BROKER_DATA_BACKUP_S3_REGION=us-east-1
+      - ZEEBE_BROKER_DATA_BACKUP_S3_ACCESSKEY=localminio
+      - ZEEBE_BROKER_DATA_BACKUP_S3_SECRETKEY=localminio12345
+      - ZEEBE_BROKER_DATA_BACKUP_S3_APICALLTIMEOUT=PT180S
+      - ZEEBE_BROKER_DATA_BACKUP_S3_FORCEPATHSTYLEACCESS=true
+      - JAVA_TOOL_OPTIONS=-Xms768m -Xmx768m
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/9600"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
+    restart: unless-stopped
+    profiles: [zeebe, all]
+
+  operate:
+    image: camunda/operate:8.6.0
+    environment:
+      - CAMUNDA_OPERATE_ZEEBE_GATEWAYADDRESS=zeebe:26500
+      - CAMUNDA_OPERATE_ELASTICSEARCH_URL=http://elasticsearch:9200
+      - CAMUNDA_OPERATE_ELASTICSEARCH_USERNAME=elastic
+      - CAMUNDA_OPERATE_ELASTICSEARCH_PASSWORD=localelastic12345
+      - CAMUNDA_OPERATE_ZEEBEELASTICSEARCH_URL=http://elasticsearch:9200
+      - CAMUNDA_OPERATE_ZEEBEELASTICSEARCH_USERNAME=elastic
+      - CAMUNDA_OPERATE_ZEEBEELASTICSEARCH_PASSWORD=localelastic12345
+      - CAMUNDA_OPERATE_BACKUP_REPOSITORYNAME=camunda-backup
+      - SERVER_SERVLET_CONTEXTPATH=/operate
+      - JAVA_TOOL_OPTIONS=-Xms512m -Xmx512m
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      zeebe:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo > /dev/tcp/localhost/8080"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 60s
     restart: unless-stopped
 
   backup-controller:
@@ -71,8 +200,6 @@ services:
       - DEFAULT_S3_ENDPOINT=http://minio:9000
       - DEFAULT_S3_ACCESSKEY=localminio
       - DEFAULT_S3_SECRETKEY=localminio12345
-      - ELASTICSEARCH_PASSWORD_TEST_CAMUNDA_INSTANCE=localelastic12345
-      - S3_SECRETKEY_TEST_CAMUNDA_INSTANCE=localminio12345
       - PROBE_ALLOW_PRIVATE_IPS=true
     volumes:
       - controller_data:/data
@@ -82,6 +209,21 @@ services:
       minio:
         condition: service_healthy
     restart: unless-stopped
+    profiles: [all]
+
+  seed:
+    image: curlimages/curl:latest
+    depends_on:
+      zeebe:
+        condition: service_healthy
+      operate:
+        condition: service_healthy
+    volumes:
+      - ./camunda:/camunda:ro
+    entrypoint: /bin/sh
+    command: ["/camunda/seed.sh"]
+    restart: "no"
+    profiles: [all]
 
 volumes:
   minio_data:
