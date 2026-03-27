@@ -92,6 +92,8 @@ spec:
             - name: ALERT_WEBHOOK_URL
               value: {{ .Values.config.alertWebhookURL | quote }}
             {{- end }}
+            - name: PROBE_ALLOW_PRIVATE_IPS
+              value: {{ .Values.config.probeAllowPrivateIPs | quote }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

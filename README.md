@@ -115,7 +115,7 @@ DATA_DIR=/data \
 
 Two Docker Compose files are provided in `deployments/`:
 
-- **`docker-compose.yaml`** — Full stack including the backup controller (always starts)
+- **`docker-compose.yaml`** — Full stack including the backup controller (with `--profile all`)
 - **`docker-compose.support-only.yaml`** — Support services only (for running the controller locally or in K8s)
 
 Both files use profiles to control which services start:
@@ -125,13 +125,13 @@ Both files use profiles to control which services start:
 | `minio` | MinIO (S3-compatible storage) |
 | `es` | MinIO + Elasticsearch |
 | `zeebe` | MinIO + Elasticsearch + Zeebe |
-| `all` | MinIO + Elasticsearch + Zeebe + Operate + Nginx + Seed |
+| `all` | MinIO + Elasticsearch + Zeebe + Operate + Nginx + Seed + Backup Controller |
 
 ```bash
-# Start MinIO + Elasticsearch + backup controller
+# Start MinIO + Elasticsearch (no controller)
 docker compose -f deployments/docker-compose.yaml --profile es up --build
 
-# Start everything
+# Start everything including the backup controller
 docker compose -f deployments/docker-compose.yaml --profile all up --build
 
 # Start only MinIO + ES (no controller — e.g. when running controller via `go run` or in K8s)

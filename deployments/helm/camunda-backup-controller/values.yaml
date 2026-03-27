@@ -69,6 +69,7 @@ config:
   backupPollInterval: 5
   backupMaxAttempts: 120
   backupStuckTimeoutMinutes: 120
+  probeAllowPrivateIPs: true
 
   elasticsearch:
     endpoint: ""

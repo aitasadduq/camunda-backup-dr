@@ -4,9 +4,7 @@
 #   minio  — MinIO only
 #   es     — MinIO + Elasticsearch
 #   zeebe  — MinIO + Elasticsearch + Zeebe
-#   all    — MinIO + Elasticsearch + Zeebe + Operate + Nginx + Seed
-#
-# The backup controller starts with all profiles (no profile restriction).
+#   all    — MinIO + Elasticsearch + Zeebe + Operate + Nginx + Seed + Backup Controller
 #
 # Usage:
 #   docker compose -f deployments/docker-compose.yaml --profile es up --build
@@ -28,7 +26,6 @@
 #   Elasticsearch:  elastic / localelastic12345
 #
 # NOTE: Uses ES 8.15 (not 9.x) for Camunda 8.6 compatibility.
-# The main docker-compose.yaml uses ES 9.x for standalone backup controller testing.
 
 services:
   minio:
@@ -185,6 +182,7 @@ services:
       retries: 15
       start_period: 60s
     restart: unless-stopped
+    profiles: [all]
 
   backup-controller:
     build:
@@ -208,6 +206,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      es-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     profiles: [all]
 
