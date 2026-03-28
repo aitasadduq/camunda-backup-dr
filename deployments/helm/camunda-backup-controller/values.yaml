@@ -1,0 +1,107 @@
+image:
+  repository: camunda-backup-controller
+  pullPolicy: IfNotPresent
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automount: false
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  fsGroup: 1000
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: camunda-backup.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 256Mi
+
+persistence:
+  enabled: true
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 1Gi
+  existingClaim: ""
+
+config:
+  port: 8080
+  logLevel: info
+  dataDir: /data
+
+  schedule: "0 2 * * *"
+  successRetention: 7
+  failureRetention: 7
+
+  backupPollInterval: 5
+  backupMaxAttempts: 120
+  backupStuckTimeoutMinutes: 120
+  probeAllowPrivateIPs: true
+
+  elasticsearch:
+    endpoint: ""
+    username: ""
+    snapshotRepository: camunda-backup
+    snapshotNamePrefix: ""
+
+  s3:
+    endpoint: ""
+    bucket: camunda-backups
+    region: us-east-1
+    prefix: ""
+    usePathStyle: true
+
+  alertWebhookURL: ""
+
+secrets:
+  elasticsearch:
+    password: ""
+  s3:
+    accessKey: ""
+    secretKey: ""
+
+  # Per-instance credential overrides
+  # instanceOverrides:
+  #   my-cluster:
+  #     elasticsearchPassword: ""
+  #     s3SecretKey: ""
+  instanceOverrides: {}
+
+extraEnv: []
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
