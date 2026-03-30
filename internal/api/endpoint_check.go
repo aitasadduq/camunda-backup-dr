@@ -329,8 +329,8 @@ var probeS3WithSDK = func(endpoint, accessKey, secretKey string) EndpointCheckRe
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	customResolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-		return aws.Endpoint{
+	customResolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) { //nolint:staticcheck
+		return aws.Endpoint{ //nolint:staticcheck
 			URL:               endpoint,
 			HostnameImmutable: true,
 			SigningRegion:     "us-east-1",
@@ -340,7 +340,7 @@ var probeS3WithSDK = func(endpoint, accessKey, secretKey string) EndpointCheckRe
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx,
 		awsconfig.WithRegion("us-east-1"),
 		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
-		awsconfig.WithEndpointResolverWithOptions(customResolver),
+		awsconfig.WithEndpointResolverWithOptions(customResolver), //nolint:staticcheck
 	)
 	if err != nil {
 		return EndpointCheckResponse{

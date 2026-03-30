@@ -89,8 +89,8 @@ func NewS3Client(cfg S3Config, logger *utils.Logger) (*S3Client, error) {
 	}
 
 	// Create custom endpoint resolver for MinIO/custom S3 endpoints
-	customResolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-		return aws.Endpoint{
+	customResolver := aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) { //nolint:staticcheck
+		return aws.Endpoint{ //nolint:staticcheck
 			URL:               cfg.Endpoint,
 			HostnameImmutable: true,
 			SigningRegion:     cfg.Region,
@@ -105,7 +105,7 @@ func NewS3Client(cfg S3Config, logger *utils.Logger) (*S3Client, error) {
 			cfg.SecretKey,
 			"",
 		)),
-		config.WithEndpointResolverWithOptions(customResolver),
+		config.WithEndpointResolverWithOptions(customResolver), //nolint:staticcheck
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
