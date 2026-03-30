@@ -298,7 +298,7 @@ func (o *Orchestrator) executeZeebeBackup(ctx context.Context, instance *models.
 		if readErr != nil {
 			o.writeLog(instance.ID, backupID, fmt.Sprintf("failed to read Zeebe backup error response body: %v", readErr))
 		}
-		return types.ComponentStatusFailed, fmt.Errorf("Zeebe backup trigger failed with status %d: %s", resp.StatusCode, string(body))
+		return types.ComponentStatusFailed, fmt.Errorf("zeebe backup trigger failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
 	o.writeLog(instance.ID, backupID, "Zeebe backup triggered successfully")
@@ -331,7 +331,7 @@ func (o *Orchestrator) executeOperateBackup(ctx context.Context, instance *model
 		if readErr != nil {
 			o.writeLog(instance.ID, backupID, fmt.Sprintf("Failed to read Operate backup error response body: %v", readErr))
 		}
-		return types.ComponentStatusFailed, fmt.Errorf("Operate backup trigger failed with status %d: %s", resp.StatusCode, string(body))
+		return types.ComponentStatusFailed, fmt.Errorf("operate backup trigger failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
 	o.writeLog(instance.ID, backupID, "Operate backup triggered successfully")
@@ -362,9 +362,9 @@ func (o *Orchestrator) executeTasklistBackup(ctx context.Context, instance *mode
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		body, readErr := io.ReadAll(resp.Body)
 		if readErr != nil {
-			return types.ComponentStatusFailed, fmt.Errorf("Tasklist backup trigger failed with status %d and could not read response body: %v", resp.StatusCode, readErr)
+			return types.ComponentStatusFailed, fmt.Errorf("tasklist backup trigger failed with status %d and could not read response body: %v", resp.StatusCode, readErr)
 		}
-		return types.ComponentStatusFailed, fmt.Errorf("Tasklist backup trigger failed with status %d: %s", resp.StatusCode, string(body))
+		return types.ComponentStatusFailed, fmt.Errorf("tasklist backup trigger failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
 	o.writeLog(instance.ID, backupID, "Tasklist backup triggered successfully")
@@ -397,7 +397,7 @@ func (o *Orchestrator) executeOptimizeBackup(ctx context.Context, instance *mode
 		if readErr != nil {
 			o.writeLog(instance.ID, backupID, fmt.Sprintf("Failed to read Optimize backup error response body: %v", readErr))
 		}
-		return types.ComponentStatusFailed, fmt.Errorf("Optimize backup trigger failed with status %d: %s", resp.StatusCode, string(body))
+		return types.ComponentStatusFailed, fmt.Errorf("optimize backup trigger failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
 	o.writeLog(instance.ID, backupID, "Optimize backup triggered successfully")

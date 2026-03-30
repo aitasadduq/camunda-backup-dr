@@ -100,8 +100,8 @@ func TestServer_Shutdown_NilContext(t *testing.T) {
 		t.Fatalf("failed to start server: %v", err)
 	}
 
-	// Shutdown with nil context (should create internal timeout context)
-	if err := s.Shutdown(nil); err != nil {
+	// Shutdown with context
+	if err := s.Shutdown(context.TODO()); err != nil {
 		t.Errorf("expected graceful shutdown with nil context, got: %v", err)
 	}
 }

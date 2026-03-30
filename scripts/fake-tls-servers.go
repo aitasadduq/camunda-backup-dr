@@ -97,7 +97,7 @@ func main() {
 	}
 
 	fmt.Println("\n✅ All fake HTTPS servers running (self-signed cert)")
-	fmt.Println("   Press Ctrl+C to stop\n")
+	fmt.Println("   Press Ctrl+C to stop")
 	fmt.Println("Test with PROBE_INSECURE_SKIP_VERIFY=true  → should connect")
 	fmt.Println("Test with PROBE_INSECURE_SKIP_VERIFY unset → should show TLS error")
 

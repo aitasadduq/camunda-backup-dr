@@ -182,7 +182,7 @@ func TestS3Storage_MoveToOrphaned(t *testing.T) {
 	}
 	
 	// Verify it's still retrievable (from orphaned)
-	_, err = s3.GetBackupHistory("camunda1", "20240101120000")
+	_, _ = s3.GetBackupHistory("camunda1", "20240101120000")
 }
 
 func TestS3Storage_MoveToIncomplete(t *testing.T) {
@@ -267,7 +267,7 @@ func TestS3Storage_DeleteBackupHistory(t *testing.T) {
 	}
 	
 	// Verify it's deleted
-	_, err = s3.GetBackupHistory("camunda1", "20240101120000")
+	_, _ = s3.GetBackupHistory("camunda1", "20240101120000")
 }
 
 func TestS3Storage_ConcurrentAccess(t *testing.T) {
