@@ -47,6 +47,9 @@ type Config struct {
 
 	// Backup Stuck Detection
 	BackupStuckTimeoutMinutes int // 0 = disabled
+
+	// Base Path for serving behind a reverse proxy (e.g. "/backup")
+	BasePath string
 }
 
 // Load loads configuration from environment variables with defaults
@@ -89,6 +92,9 @@ func Load() (*Config, error) {
 
 		// Backup Stuck Detection (default: 120 minutes = 2 hours)
 		BackupStuckTimeoutMinutes: getEnvAsInt("BACKUP_STUCK_TIMEOUT_MINUTES", 120),
+
+		// Base Path
+		BasePath: normalizeBasePath(getEnv("BASE_PATH", "/")),
 	}
 
 	// Validate configuration
@@ -150,6 +156,18 @@ func getEnvAsInt(key string, defaultValue int) int {
 		}
 	}
 	return defaultValue
+}
+
+// normalizeBasePath ensures the base path starts with "/" and has no trailing slash.
+// Examples: "" -> "/", "/" -> "/", "/backup" -> "/backup", "/backup/" -> "/backup"
+func normalizeBasePath(p string) string {
+	if p == "" || p == "/" {
+		return "/"
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return strings.TrimRight(p, "/")
 }
 
 // NormalizeForEnvVar converts a Camunda instance ID into a valid environment

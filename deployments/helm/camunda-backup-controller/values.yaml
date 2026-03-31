@@ -70,6 +70,7 @@ config:
   backupMaxAttempts: 120
   backupStuckTimeoutMinutes: 120
   probeAllowPrivateIPs: true
+  basePath: "/"
 
   elasticsearch:
     endpoint: ""

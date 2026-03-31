@@ -22,7 +22,7 @@ func newTestRouter() (*Router, *mockCamundaManager, *mockOrchestrator, *mockHist
 	ret := &mockRetentionManager{}
 	lfr := &mockLogFileReader{logs: make(map[string]string)}
 	handlers := NewHandlers(cm, orch, hist, sched, ret, lfr, logger, nil)
-	router := NewRouter(handlers, nil)
+	router := NewRouter(handlers, nil, "/")
 	return router, cm, orch, hist, sched, ret
 }
 
@@ -367,7 +367,7 @@ func newTestRouterWithWebFS() *Router {
 	ret := &mockRetentionManager{}
 	lfr := &mockLogFileReader{logs: make(map[string]string)}
 	handlers := NewHandlers(cm, orch, hist, sched, ret, lfr, logger, nil)
-	return NewRouter(handlers, newTestFS())
+	return NewRouter(handlers, newTestFS(), "/")
 }
 
 func TestRouter_StaticServing_RootServesIndexHTML(t *testing.T) {
@@ -471,7 +471,7 @@ func TestRouter_StaticServing_NilWebFS(t *testing.T) {
 	ret := &mockRetentionManager{}
 	lfr := &mockLogFileReader{logs: make(map[string]string)}
 	handlers := NewHandlers(cm, orch, hist, sched, ret, lfr, logger, nil)
-	router := NewRouter(handlers, nil)
+	router := NewRouter(handlers, nil, "/")
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
@@ -527,9 +527,9 @@ func TestRouter_StaticServing_DirectoryTraversal_Returns404(t *testing.T) {
 
 		router.ServeHTTP(w, req)
 
-		// Either a 301 redirect (mux cleanup) or a 404 (our guard) is acceptable
-		if w.Code != http.StatusNotFound && w.Code != http.StatusMovedPermanently {
-			t.Errorf("expected 404 or 301 for traversal path %q, got %d", p, w.Code)
+		// A redirect (301/307 from mux cleanup) or a 404 (our guard) is acceptable
+		if w.Code != http.StatusNotFound && w.Code != http.StatusMovedPermanently && w.Code != http.StatusTemporaryRedirect {
+			t.Errorf("expected 404, 301, or 307 for traversal path %q, got %d", p, w.Code)
 		}
 	}
 }

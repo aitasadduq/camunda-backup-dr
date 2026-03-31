@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -11,14 +12,16 @@ type Router struct {
 	handlers *Handlers
 	mux      *http.ServeMux
 	webFS    fs.FS
+	basePath string // e.g. "/" or "/backup"
 }
 
 // NewRouter creates a new router with the given handlers
-func NewRouter(handlers *Handlers, webFS fs.FS) *Router {
+func NewRouter(handlers *Handlers, webFS fs.FS, basePath string) *Router {
 	router := &Router{
 		handlers: handlers,
 		mux:      http.NewServeMux(),
 		webFS:    webFS,
+		basePath: basePath,
 	}
 	router.registerRoutes()
 	return router
@@ -99,6 +102,16 @@ func (r *Router) registerRoutes() {
 				http.NotFound(w, req)
 				return
 			}
+
+			// Inject <base href> so relative asset/API paths resolve
+			// correctly when served behind a reverse proxy with a context path.
+			baseHref := "/"
+			if r.basePath != "/" {
+				baseHref = r.basePath + "/"
+			}
+			baseTag := `<base href="` + baseHref + `">`
+			data = bytes.Replace(data, []byte("<head>"), []byte("<head>\n    "+baseTag), 1)
+
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Write(data)
 		})

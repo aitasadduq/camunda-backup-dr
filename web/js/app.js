@@ -142,7 +142,7 @@ async function loadDashboard() {
     if (!statusEl) return;
 
     try {
-        const data = await api.get('/api/status');
+        const data = await api.get('api/status');
         state.systemStatus = data;
         renderDashboard(data);
         updateHeaderStatus(data);
@@ -285,7 +285,7 @@ function startBackupPolling() {
     if (state.pollingIntervalId) return;
     state.pollingIntervalId = setInterval(async () => {
         try {
-            const data = await api.get('/api/status');
+            const data = await api.get('api/status');
             state.systemStatus = data;
             updateHeaderStatus(data);
 
@@ -324,7 +324,7 @@ function resumeBackupPolling() {
 // ============================================================
 async function triggerBackup(instanceId, instanceName) {
     try {
-        const data = await api.post(`/api/camundas/${instanceId}/backup`);
+        const data = await api.post(`api/camundas/${instanceId}/backup`);
         state.activeBackupInstanceId = instanceId;
         state.activeBackupId = data.backup_id;
         showToast(`Backup triggered for ${instanceName} (ID: ${data.backup_id})`, 'success');
@@ -345,7 +345,7 @@ async function loadInstances() {
     el.innerHTML = '<div class="flex justify-center py-8"><div class="spinner"></div></div>';
 
     try {
-        const instances = await api.get('/api/camundas');
+        const instances = await api.get('api/camundas');
         state.instances = instances || [];
         state.instancesStale = false;
         renderInstancesTable(instances);
@@ -364,7 +364,7 @@ async function getInstances() {
     if (!state.instancesStale && state.instances.length > 0) {
         return state.instances;
     }
-    const instances = await api.get('/api/camundas');
+    const instances = await api.get('api/camundas');
     state.instances = instances || [];
     state.instancesStale = false;
     return state.instances;
@@ -595,7 +595,7 @@ function checkEndpointStatus(inputEl, type, statusId) {
                 }
             }
 
-            const result = await api.request('POST', '/api/check-endpoint', body);
+            const result = await api.request('POST', 'api/check-endpoint', body);
 
             if (result.status === 'connected') {
                 dot.className = 'status-dot w-2.5 h-2.5 rounded-full bg-green-500';
@@ -646,7 +646,7 @@ async function checkInstanceListEndpoints(instances) {
     for (const instance of instances) {
         // Always check Camunda base URL
         if (instance.base_url) {
-            api.request('POST', '/api/check-endpoint', { url: instance.base_url, type: 'camunda', instance_id: instance.id })
+            api.request('POST', 'api/check-endpoint', { url: instance.base_url, type: 'camunda', instance_id: instance.id })
                 .then(r => updateListDot(document.getElementById(`list-camunda-${instance.id}`), r.status, r.message))
                 .catch(e => updateListDot(document.getElementById(`list-camunda-${instance.id}`), 'unreachable', e.message || 'Check failed'));
         }
@@ -654,7 +654,7 @@ async function checkInstanceListEndpoints(instances) {
         // Check ES if enabled and endpoint configured
         const esComp = (instance.components || []).find(c => c.name === 'elasticsearch');
         if (esComp && esComp.enabled && instance.elasticsearch_endpoint) {
-            api.request('POST', '/api/check-endpoint', {
+            api.request('POST', 'api/check-endpoint', {
                 url: instance.elasticsearch_endpoint,
                 type: 'elasticsearch',
                 instance_id: instance.id,
@@ -665,7 +665,7 @@ async function checkInstanceListEndpoints(instances) {
 
         // Check S3 if endpoint configured
         if (instance.s3_endpoint) {
-            api.request('POST', '/api/check-endpoint', {
+            api.request('POST', 'api/check-endpoint', {
                 url: instance.s3_endpoint,
                 type: 's3',
                 instance_id: instance.id,
@@ -686,7 +686,7 @@ async function openInstanceForm(existingInstance) {
     // In create mode, fetch server-side defaults to pre-populate the form
     if (!isEdit) {
         try {
-            const resp = await fetch('/api/defaults');
+            const resp = await fetch('api/defaults');
             if (resp.ok) {
                 const defaults = await resp.json();
                 instance = {
@@ -953,10 +953,10 @@ async function saveInstance(event, editId) {
 
     try {
         if (editId) {
-            await api.put(`/api/camundas/${editId}`, payload);
+            await api.put(`api/camundas/${editId}`, payload);
             showToast('Instance updated successfully', 'success');
         } else {
-            await api.post('/api/camundas', payload);
+            await api.post('api/camundas', payload);
             showToast('Instance created successfully', 'success');
         }
         closeModal();
@@ -969,7 +969,7 @@ async function saveInstance(event, editId) {
 
 async function toggleInstance(id, enable) {
     try {
-        await api.post(`/api/camundas/${id}/${enable ? 'enable' : 'disable'}`);
+        await api.post(`api/camundas/${id}/${enable ? 'enable' : 'disable'}`);
         showToast(`Instance ${enable ? 'enabled' : 'disabled'}`, 'success');
         invalidateInstancesCache();
         loadInstances();
@@ -983,7 +983,7 @@ async function confirmDeleteInstance(id, name) {
     if (!confirmed) return;
 
     try {
-        await api.del(`/api/camundas/${id}`);
+        await api.del(`api/camundas/${id}`);
         showToast('Instance deleted', 'success');
         invalidateInstancesCache();
         loadInstances();
@@ -1063,11 +1063,11 @@ async function loadBackups(instanceId, filter) {
 
     let path;
     switch (filter) {
-        case 'completed': path = `/api/camundas/${instanceId}/backups?status=COMPLETED`; break;
-        case 'failed': path = `/api/camundas/${instanceId}/backups/failed`; break;
-        case 'incomplete': path = `/api/camundas/${instanceId}/backups/incomplete`; break;
-        case 'orphaned': path = `/api/camundas/${instanceId}/backups/orphaned`; break;
-        default: path = `/api/camundas/${instanceId}/backups`;
+        case 'completed': path = `api/camundas/${instanceId}/backups?status=COMPLETED`; break;
+        case 'failed': path = `api/camundas/${instanceId}/backups/failed`; break;
+        case 'incomplete': path = `api/camundas/${instanceId}/backups/incomplete`; break;
+        case 'orphaned': path = `api/camundas/${instanceId}/backups/orphaned`; break;
+        default: path = `api/camundas/${instanceId}/backups`;
     }
 
     try {
@@ -1150,7 +1150,7 @@ function renderBackupsTable(instanceId, backups) {
 // ============================================================
 async function showBackupDetail(instanceId, backupId) {
     try {
-        const backup = await api.get(`/api/camundas/${instanceId}/backups/${backupId}`);
+        const backup = await api.get(`api/camundas/${instanceId}/backups/${backupId}`);
         const components = backup.components || {};
 
         const html = `
@@ -1227,7 +1227,7 @@ async function showBackupDetail(instanceId, backupId) {
 
 async function viewBackupLogs(instanceId, backupId) {
     try {
-        const logs = await api.get(`/api/camundas/${instanceId}/backups/${backupId}/logs`);
+        const logs = await api.get(`api/camundas/${instanceId}/backups/${backupId}/logs`);
         const html = `
             <div class="bg-white rounded-xl shadow-xl w-full max-w-4xl">
                 <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
@@ -1260,7 +1260,7 @@ async function confirmDeleteBackup(instanceId, backupId) {
     if (!confirmed) return;
 
     try {
-        await api.del(`/api/camundas/${instanceId}/backups/${backupId}`);
+        await api.del(`api/camundas/${instanceId}/backups/${backupId}`);
         showToast('Backup deleted', 'success');
         loadBackups(instanceId, state.backupFilter);
     } catch (err) {
