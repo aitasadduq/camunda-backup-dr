@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aitasadduq/camunda-backup-dr/internal/config"
 	"github.com/aitasadduq/camunda-backup-dr/internal/models"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
 )
@@ -146,5 +147,60 @@ func TestServer_Start_PortConflict(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		s.Shutdown(ctx)
+	}
+}
+
+func TestServer_BasePath_PrefixStripping(t *testing.T) {
+	logger := utils.NewLogger("error")
+	cm := &mockCamundaManager{instances: []models.CamundaInstance{}}
+	orch := &mockOrchestrator{}
+	hist := &mockHistoryProvider{history: []*models.BackupHistory{}}
+	sched := &mockScheduler{running: true}
+	ret := &mockRetentionManager{}
+	lfr := &mockLogFileReader{logs: make(map[string]string)}
+
+	cfg := &config.Config{BasePath: "/backup"}
+	s := NewServer(0, cm, orch, hist, sched, ret, lfr, logger, nil, cfg)
+
+	if err := s.Start(); err != nil {
+		t.Fatalf("failed to start server: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		s.Shutdown(ctx)
+	}()
+
+	tcpAddr, ok := s.listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("listener address is not *net.TCPAddr: %T", s.listener.Addr())
+	}
+	base := fmt.Sprintf("http://127.0.0.1:%d", tcpAddr.Port)
+
+	tests := []struct {
+		path     string
+		wantCode int
+	}{
+		{"/backup/api/status", http.StatusOK},
+		{"/backup/", http.StatusNotFound},        // no webFS, static 404
+		{"/backup", http.StatusTemporaryRedirect}, // redirect to /backup/
+		{"/backupextra", http.StatusNotFound},    // must not match /backup prefix
+		{"/other", http.StatusNotFound},          // unrelated path
+	}
+
+	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+
+	for _, tt := range tests {
+		resp, err := client.Get(base + tt.path)
+		if err != nil {
+			t.Errorf("GET %s: request error: %v", tt.path, err)
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode != tt.wantCode {
+			t.Errorf("GET %s: got %d, want %d", tt.path, resp.StatusCode, tt.wantCode)
+		}
 	}
 }

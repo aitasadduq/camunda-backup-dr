@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -137,7 +138,19 @@ func (c *Config) Validate() error {
 		return utils.ErrInvalidConfiguration
 	}
 
+	if !validBasePath(c.BasePath) {
+		return utils.ErrInvalidConfiguration
+	}
+
 	return nil
+}
+
+var basePathPattern = regexp.MustCompile(`^(/[a-zA-Z0-9_-]+)+$`)
+
+// validBasePath returns true for "/" or any path matching /seg1/seg2/...
+// with only alphanumeric, hyphen, and underscore segments.
+func validBasePath(p string) bool {
+	return p == "" || p == "/" || basePathPattern.MatchString(p)
 }
 
 // getEnv retrieves an environment variable or returns a default value

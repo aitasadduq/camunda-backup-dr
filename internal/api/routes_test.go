@@ -787,3 +787,38 @@ func TestContainsDotDot(t *testing.T) {
 		}
 	}
 }
+
+func TestRouter_StaticServing_BaseHrefInjection(t *testing.T) {
+	tests := []struct {
+		basePath     string
+		wantBaseHref string
+	}{
+		{"/", `<base href="/">`},
+		{"/backup", `<base href="/backup/">`},
+		{"/a/b", `<base href="/a/b/">`},
+	}
+	for _, tt := range tests {
+		logger := utils.NewLogger("error")
+		cm := &mockCamundaManager{instances: []models.CamundaInstance{}}
+		orch := &mockOrchestrator{}
+		hist := &mockHistoryProvider{history: []*models.BackupHistory{}}
+		sched := &mockScheduler{running: true}
+		ret := &mockRetentionManager{}
+		lfr := &mockLogFileReader{logs: make(map[string]string)}
+		handlers := NewHandlers(cm, orch, hist, sched, ret, lfr, logger, nil)
+		router := NewRouter(handlers, newTestFS(), tt.basePath)
+
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("basePath=%q: got status %d, want 200", tt.basePath, w.Code)
+			continue
+		}
+		body := w.Body.String()
+		if !strings.Contains(body, tt.wantBaseHref) {
+			t.Errorf("basePath=%q: response body does not contain %q\nbody: %s", tt.basePath, tt.wantBaseHref, body)
+		}
+	}
+}

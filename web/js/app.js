@@ -686,19 +686,16 @@ async function openInstanceForm(existingInstance) {
     // In create mode, fetch server-side defaults to pre-populate the form
     if (!isEdit) {
         try {
-            const resp = await fetch('api/defaults');
-            if (resp.ok) {
-                const defaults = await resp.json();
-                instance = {
-                    schedule: defaults.schedule || '0 2 * * *',
-                    success_retention: defaults.success_retention || 7,
-                    failure_retention: defaults.failure_retention || 7,
-                    elasticsearch_endpoint: defaults.elasticsearch_endpoint || '',
-                    elasticsearch_username: defaults.elasticsearch_username || '',
-                    s3_endpoint: defaults.s3_endpoint || '',
-                    s3_accesskey: defaults.s3_accesskey || '',
-                };
-            }
+            const defaults = await api.get('api/defaults');
+            instance = {
+                schedule: defaults.schedule || '0 2 * * *',
+                success_retention: defaults.success_retention || 7,
+                failure_retention: defaults.failure_retention || 7,
+                elasticsearch_endpoint: defaults.elasticsearch_endpoint || '',
+                elasticsearch_username: defaults.elasticsearch_username || '',
+                s3_endpoint: defaults.s3_endpoint || '',
+                s3_accesskey: defaults.s3_accesskey || '',
+            };
         } catch (e) {
             console.warn('Failed to fetch defaults, using hardcoded fallbacks:', e);
         }

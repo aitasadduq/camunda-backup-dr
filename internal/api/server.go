@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/config"
@@ -61,7 +62,11 @@ func NewServer(
 		stripped := http.StripPrefix(basePath, handler)
 		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == basePath {
-				http.Redirect(w, r, basePath+"/", http.StatusMovedPermanently)
+				http.Redirect(w, r, basePath+"/", http.StatusTemporaryRedirect)
+				return
+			}
+			if !strings.HasPrefix(r.URL.Path, basePath+"/") {
+				http.NotFound(w, r)
 				return
 			}
 			stripped.ServeHTTP(w, r)

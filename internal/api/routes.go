@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"html"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -109,7 +110,7 @@ func (r *Router) registerRoutes() {
 			if r.basePath != "/" {
 				baseHref = r.basePath + "/"
 			}
-			baseTag := `<base href="` + baseHref + `">`
+			baseTag := `<base href="` + html.EscapeString(baseHref) + `">`
 			data = bytes.Replace(data, []byte("<head>"), []byte("<head>\n    "+baseTag), 1)
 
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
