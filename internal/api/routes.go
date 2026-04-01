@@ -95,7 +95,13 @@ func (r *Router) registerRoutes() {
 				return
 			}
 
-			// For root and any other non-API path, serve index.html directly.
+			// Only serve index.html for the exact root path.
+			// Unknown paths must 404 — not fall through to the SPA.
+			if urlPath != "/" {
+				http.NotFound(w, req)
+				return
+			}
+
 			// We read the file and write it ourselves to avoid http.FileServer's
 			// redirect from /index.html -> / which causes a redirect loop.
 			data, err := fs.ReadFile(r.webFS, "index.html")

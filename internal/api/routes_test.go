@@ -425,21 +425,17 @@ func TestRouter_StaticServing_JSFile(t *testing.T) {
 	}
 }
 
-func TestRouter_StaticServing_SPAFallback(t *testing.T) {
+func TestRouter_StaticServing_UnknownPathReturns404(t *testing.T) {
 	router := newTestRouterWithWebFS()
 
-	// A random non-API, non-asset path should serve index.html
+	// A random non-API, non-asset path should return 404, not serve index.html
 	req := httptest.NewRequest(http.MethodGet, "/some/unknown/path", nil)
 	w := httptest.NewRecorder()
 
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
-	}
-	body := w.Body.String()
-	if !strings.Contains(body, "<!DOCTYPE html>") {
-		t.Errorf("expected index.html for SPA fallback, got: %s", body)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d", w.Code)
 	}
 }
 
