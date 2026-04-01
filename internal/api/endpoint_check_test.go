@@ -736,7 +736,7 @@ func TestCheckEndpointHandler_RouteRegistered(t *testing.T) {
 
 	logger := utils.NewLogger("debug")
 	handlers := NewHandlers(&mockCamundaManager{}, nil, nil, nil, nil, nil, logger, nil)
-	router := NewRouter(handlers, nil)
+	router := NewRouter(handlers, nil, "/")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

@@ -22,7 +22,7 @@ func newTestRouter() (*Router, *mockCamundaManager, *mockOrchestrator, *mockHist
 	ret := &mockRetentionManager{}
 	lfr := &mockLogFileReader{logs: make(map[string]string)}
 	handlers := NewHandlers(cm, orch, hist, sched, ret, lfr, logger, nil)
-	router := NewRouter(handlers, nil)
+	router := NewRouter(handlers, nil, "/")
 	return router, cm, orch, hist, sched, ret
 }
 
@@ -367,7 +367,7 @@ func newTestRouterWithWebFS() *Router {
 	ret := &mockRetentionManager{}
 	lfr := &mockLogFileReader{logs: make(map[string]string)}
 	handlers := NewHandlers(cm, orch, hist, sched, ret, lfr, logger, nil)
-	return NewRouter(handlers, newTestFS())
+	return NewRouter(handlers, newTestFS(), "/")
 }
 
 func TestRouter_StaticServing_RootServesIndexHTML(t *testing.T) {
@@ -425,21 +425,17 @@ func TestRouter_StaticServing_JSFile(t *testing.T) {
 	}
 }
 
-func TestRouter_StaticServing_SPAFallback(t *testing.T) {
+func TestRouter_StaticServing_UnknownPathReturns404(t *testing.T) {
 	router := newTestRouterWithWebFS()
 
-	// A random non-API, non-asset path should serve index.html
+	// A random non-API, non-asset path should return 404, not serve index.html
 	req := httptest.NewRequest(http.MethodGet, "/some/unknown/path", nil)
 	w := httptest.NewRecorder()
 
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", w.Code)
-	}
-	body := w.Body.String()
-	if !strings.Contains(body, "<!DOCTYPE html>") {
-		t.Errorf("expected index.html for SPA fallback, got: %s", body)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d", w.Code)
 	}
 }
 
@@ -471,7 +467,7 @@ func TestRouter_StaticServing_NilWebFS(t *testing.T) {
 	ret := &mockRetentionManager{}
 	lfr := &mockLogFileReader{logs: make(map[string]string)}
 	handlers := NewHandlers(cm, orch, hist, sched, ret, lfr, logger, nil)
-	router := NewRouter(handlers, nil)
+	router := NewRouter(handlers, nil, "/")
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
@@ -527,9 +523,9 @@ func TestRouter_StaticServing_DirectoryTraversal_Returns404(t *testing.T) {
 
 		router.ServeHTTP(w, req)
 
-		// Either a 301 redirect (mux cleanup) or a 404 (our guard) is acceptable
-		if w.Code != http.StatusNotFound && w.Code != http.StatusMovedPermanently {
-			t.Errorf("expected 404 or 301 for traversal path %q, got %d", p, w.Code)
+		// A redirect (301/307 from mux cleanup) or a 404 (our guard) is acceptable
+		if w.Code != http.StatusNotFound && w.Code != http.StatusMovedPermanently && w.Code != http.StatusTemporaryRedirect {
+			t.Errorf("expected 404, 301, or 307 for traversal path %q, got %d", p, w.Code)
 		}
 	}
 }
@@ -784,6 +780,41 @@ func TestContainsDotDot(t *testing.T) {
 		got := containsDotDot(tt.path)
 		if got != tt.expected {
 			t.Errorf("containsDotDot(%q) = %v, want %v", tt.path, got, tt.expected)
+		}
+	}
+}
+
+func TestRouter_StaticServing_BaseHrefInjection(t *testing.T) {
+	tests := []struct {
+		basePath     string
+		wantBaseHref string
+	}{
+		{"/", `<base href="/">`},
+		{"/backup", `<base href="/backup/">`},
+		{"/a/b", `<base href="/a/b/">`},
+	}
+	for _, tt := range tests {
+		logger := utils.NewLogger("error")
+		cm := &mockCamundaManager{instances: []models.CamundaInstance{}}
+		orch := &mockOrchestrator{}
+		hist := &mockHistoryProvider{history: []*models.BackupHistory{}}
+		sched := &mockScheduler{running: true}
+		ret := &mockRetentionManager{}
+		lfr := &mockLogFileReader{logs: make(map[string]string)}
+		handlers := NewHandlers(cm, orch, hist, sched, ret, lfr, logger, nil)
+		router := NewRouter(handlers, newTestFS(), tt.basePath)
+
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("basePath=%q: got status %d, want 200", tt.basePath, w.Code)
+			continue
+		}
+		body := w.Body.String()
+		if !strings.Contains(body, tt.wantBaseHref) {
+			t.Errorf("basePath=%q: response body does not contain %q\nbody: %s", tt.basePath, tt.wantBaseHref, body)
 		}
 	}
 }

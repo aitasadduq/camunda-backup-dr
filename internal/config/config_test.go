@@ -888,3 +888,23 @@ func TestEnvVarNormalizationConsistency(t *testing.T) {
 		t.Errorf("GetElasticsearchSnapshotNamePrefix: got %q, want %q", got, "test-prefix")
 	}
 }
+
+func TestNormalizeBasePath(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"", "/"},
+		{"/", "/"},
+		{"/backup", "/backup"},
+		{"/backup/", "/backup"},
+		{"backup", "/backup"},
+		{"/a/b/c", "/a/b/c"},
+		{"/a/b/c/", "/a/b/c"},
+	}
+	for _, tt := range tests {
+		if got := normalizeBasePath(tt.input); got != tt.want {
+			t.Errorf("normalizeBasePath(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}

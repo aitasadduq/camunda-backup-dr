@@ -1,6 +1,8 @@
 package api
 
 import (
+	"bytes"
+	"html"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -11,14 +13,16 @@ type Router struct {
 	handlers *Handlers
 	mux      *http.ServeMux
 	webFS    fs.FS
+	basePath string // e.g. "/" or "/backup"
 }
 
 // NewRouter creates a new router with the given handlers
-func NewRouter(handlers *Handlers, webFS fs.FS) *Router {
+func NewRouter(handlers *Handlers, webFS fs.FS, basePath string) *Router {
 	router := &Router{
 		handlers: handlers,
 		mux:      http.NewServeMux(),
 		webFS:    webFS,
+		basePath: basePath,
 	}
 	router.registerRoutes()
 	return router
@@ -91,7 +95,13 @@ func (r *Router) registerRoutes() {
 				return
 			}
 
-			// For root and any other non-API path, serve index.html directly.
+			// Only serve index.html for the exact root path.
+			// Unknown paths must 404 — not fall through to the SPA.
+			if urlPath != "/" {
+				http.NotFound(w, req)
+				return
+			}
+
 			// We read the file and write it ourselves to avoid http.FileServer's
 			// redirect from /index.html -> / which causes a redirect loop.
 			data, err := fs.ReadFile(r.webFS, "index.html")
@@ -99,6 +109,16 @@ func (r *Router) registerRoutes() {
 				http.NotFound(w, req)
 				return
 			}
+
+			// Inject <base href> so relative asset/API paths resolve
+			// correctly when served behind a reverse proxy with a context path.
+			baseHref := "/"
+			if r.basePath != "/" {
+				baseHref = r.basePath + "/"
+			}
+			baseTag := `<base href="` + html.EscapeString(baseHref) + `">`
+			data = bytes.Replace(data, []byte("<head>"), []byte("<head>\n    "+baseTag), 1)
+
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Write(data)
 		})

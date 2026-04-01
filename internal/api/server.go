@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/config"
@@ -35,8 +36,13 @@ func NewServer(
 	webFS fs.FS,
 	cfg *config.Config,
 ) *Server {
+	basePath := "/"
+	if cfg != nil {
+		basePath = cfg.BasePath
+	}
+
 	handlers := NewHandlers(camundaManager, orchestrator, historyProvider, scheduler, retentionManager, logFileReader, logger, cfg)
-	router := NewRouter(handlers, webFS)
+	router := NewRouter(handlers, webFS, basePath)
 
 	// Apply middleware chain
 	middlewareChain := ChainMiddleware(
@@ -47,6 +53,26 @@ func NewServer(
 		ContentTypeMiddleware(),
 	)
 
+	handler := middlewareChain(router)
+
+	// When a base path is configured (e.g. "/backup"), strip the prefix
+	// so that the router sees clean paths like "/api/..." and "/css/...".
+	// Also redirect "/backup" -> "/backup/" so relative URLs resolve correctly.
+	if basePath != "/" {
+		stripped := http.StripPrefix(basePath, handler)
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == basePath {
+				http.Redirect(w, r, basePath+"/", http.StatusTemporaryRedirect)
+				return
+			}
+			if !strings.HasPrefix(r.URL.Path, basePath+"/") {
+				http.NotFound(w, r)
+				return
+			}
+			stripped.ServeHTTP(w, r)
+		})
+	}
+
 	return &Server{
 		handlers: handlers,
 		router:   router,
@@ -54,7 +80,7 @@ func NewServer(
 		port:     port,
 		server: &http.Server{
 			Addr:         fmt.Sprintf(":%d", port),
-			Handler:      middlewareChain(router),
+			Handler:      handler,
 			ReadTimeout:  30 * time.Second,
 			WriteTimeout: 120 * time.Second,
 			IdleTimeout:  120 * time.Second,
