@@ -85,6 +85,10 @@ config:
     prefix: ""
     usePathStyle: true
 
+  exporter:
+    pauseMaxRetries: 5
+    pauseRetryDelay: 3
+
   alertWebhookURL: ""
 
 secrets:
