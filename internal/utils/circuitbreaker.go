@@ -66,6 +66,20 @@ func NewCircuitBreaker(name string, config CircuitBreakerConfig) *CircuitBreaker
 	}
 }
 
+// NewCircuitBreakerWithAlerter creates a circuit breaker that sends an
+// AlertCircuitOpen notification whenever the circuit transitions to OPEN.
+func NewCircuitBreakerWithAlerter(name string, config CircuitBreakerConfig, alerter *Alerter) *CircuitBreaker {
+	cb := NewCircuitBreaker(name, config)
+	if alerter != nil {
+		cb.OnStateChange(func(cbName string, from, to CircuitState) {
+			if to == CircuitOpen {
+				alerter.AlertCircuitOpen(cbName)
+			}
+		})
+	}
+	return cb
+}
+
 // OnStateChange sets a callback invoked when the circuit state changes.
 func (cb *CircuitBreaker) OnStateChange(fn func(name string, from, to CircuitState)) {
 	cb.mu.Lock()

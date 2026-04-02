@@ -107,12 +107,20 @@ func main() {
 
 	// Initialize alerter for critical failure notifications
 	alerter := utils.NewAlerter(cfg.AlertWebhookURL, logger)
+	alerter.SetFilter(utils.AlertFilter{
+		BackupFailed:   cfg.AlertEnableBackupFailed,
+		CleanupFailed:  cfg.AlertEnableCleanupFailed,
+		StuckBackup:    cfg.AlertEnableStuckBackup,
+		CircuitOpen:    cfg.AlertEnableCircuitOpen,
+		SchedulerError: cfg.AlertEnableSchedulerError,
+	})
 	if alerter.IsEnabled() {
 		logger.Info("Alert webhook configured: notifications enabled")
 	} else {
 		logger.Info("Alert webhook not configured: notifications disabled")
 	}
 	backupOrchestrator.SetAlerter(alerter)
+	retentionManager.SetAlerter(alerter)
 
 	// Create backup executor adapter for scheduler
 	backupExecutor := &backupExecutorAdapter{orchestrator: backupOrchestrator}

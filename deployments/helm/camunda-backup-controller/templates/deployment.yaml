@@ -91,6 +91,16 @@ spec:
             {{- if .Values.config.alertWebhookURL }}
             - name: ALERT_WEBHOOK_URL
               value: {{ .Values.config.alertWebhookURL | quote }}
+            - name: ALERT_ENABLE_BACKUP_FAILED
+              value: {{ .Values.config.alerts.backupFailed | quote }}
+            - name: ALERT_ENABLE_CLEANUP_FAILED
+              value: {{ .Values.config.alerts.cleanupFailed | quote }}
+            - name: ALERT_ENABLE_STUCK_BACKUP
+              value: {{ .Values.config.alerts.stuckBackup | quote }}
+            - name: ALERT_ENABLE_CIRCUIT_OPEN
+              value: {{ .Values.config.alerts.circuitOpen | quote }}
+            - name: ALERT_ENABLE_SCHEDULER_ERROR
+              value: {{ .Values.config.alerts.schedulerError | quote }}
             {{- end }}
             - name: PROBE_ALLOW_PRIVATE_IPS
               value: {{ .Values.config.probeAllowPrivateIPs | quote }}

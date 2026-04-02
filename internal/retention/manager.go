@@ -22,6 +22,7 @@ type Manager struct {
 	httpClient  *camunda.HTTPClient
 	cfg         *config.Config
 	logger      *utils.Logger
+	alerter     *utils.Alerter
 }
 
 func NewManager(s3Storage storage.S3Storage, fileStorage storage.FileStorage, httpClient *camunda.HTTPClient, cfg *config.Config, logger *utils.Logger) *Manager {
@@ -32,6 +33,11 @@ func NewManager(s3Storage storage.S3Storage, fileStorage storage.FileStorage, ht
 		cfg:         cfg,
 		logger:      logger,
 	}
+}
+
+// SetAlerter sets the alerter for cleanup failure notifications.
+func (m *Manager) SetAlerter(alerter *utils.Alerter) {
+	m.alerter = alerter
 }
 
 type RetentionResult struct {
@@ -235,7 +241,11 @@ func (m *Manager) deleteESSnapshot(ctx context.Context, instance *models.Camunda
 	)
 
 	if err := esClient.DeleteSnapshot(ctx, repository, snapshotName); err != nil {
-		result.Errors = append(result.Errors, fmt.Sprintf("failed to delete ES snapshot %s/%s for backup %s: %v", repository, snapshotName, backup.BackupID, err))
+		errMsg := fmt.Sprintf("failed to delete ES snapshot %s/%s for backup %s: %v", repository, snapshotName, backup.BackupID, err)
+		result.Errors = append(result.Errors, errMsg)
+		if m.alerter != nil {
+			m.alerter.AlertCleanupFailed(instance.ID, backup.BackupID, errMsg)
+		}
 	} else {
 		m.logger.Info("[retention] Deleted ES snapshot %s/%s for backup %s", repository, snapshotName, backup.BackupID)
 	}
@@ -250,7 +260,11 @@ func (m *Manager) deleteComponentBackup(ctx context.Context, endpoint, instanceI
 	deleteURL := strings.TrimRight(endpoint, "/") + "/" + backupID
 	resp, err := m.httpClient.Delete(ctx, deleteURL, nil)
 	if err != nil {
-		result.Errors = append(result.Errors, fmt.Sprintf("failed to delete %s backup %s: %v", componentName, backupID, err))
+		errMsg := fmt.Sprintf("failed to delete %s backup %s: %v", componentName, backupID, err)
+		result.Errors = append(result.Errors, errMsg)
+		if m.alerter != nil {
+			m.alerter.AlertCleanupFailed(instanceID, backupID, errMsg)
+		}
 		return
 	}
 	defer resp.Body.Close()
@@ -263,7 +277,11 @@ func (m *Manager) deleteComponentBackup(ctx context.Context, endpoint, instanceI
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		m.logger.Info("[retention] Deleted %s backup %s for instance %s", componentName, backupID, instanceID)
 	} else {
-		result.Errors = append(result.Errors, fmt.Sprintf("%s backup deletion returned status %d for backup %s", componentName, resp.StatusCode, backupID))
+		errMsg := fmt.Sprintf("%s backup deletion returned status %d for backup %s", componentName, resp.StatusCode, backupID)
+		result.Errors = append(result.Errors, errMsg)
+		if m.alerter != nil {
+			m.alerter.AlertCleanupFailed(instanceID, backupID, errMsg)
+		}
 	}
 }
 

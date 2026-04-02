@@ -125,6 +125,9 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	// Load initial jobs from configured instances
 	if err := s.loadJobsFromInstances(); err != nil {
 		s.logger.Warn("Failed to load initial jobs: %v", err)
+		if s.alerter != nil {
+			s.alerter.AlertSchedulerError(fmt.Sprintf("Failed to load initial jobs: %v", err))
+		}
 	}
 
 	// Start the main scheduling loop
@@ -286,6 +289,9 @@ func (s *Scheduler) executeJob(ctx context.Context, job *Job) {
 		instance, err := s.instanceProvider.GetInstance(instanceID)
 		if err != nil {
 			s.logger.Error("Failed to get instance %s for scheduled backup: %v", instanceID, err)
+			if s.alerter != nil {
+				s.alerter.AlertSchedulerError(fmt.Sprintf("Failed to get instance %s for scheduled backup: %v", instanceID, err))
+			}
 			return
 		}
 
@@ -300,6 +306,9 @@ func (s *Scheduler) executeJob(ctx context.Context, job *Job) {
 		// Execute the backup
 		if err := s.executor.ExecuteScheduledBackup(ctx, instance); err != nil {
 			s.logger.Error("Scheduled backup failed for instance %s: %v", instance.Name, err)
+			if s.alerter != nil {
+				s.alerter.AlertSchedulerError(fmt.Sprintf("Scheduled backup failed for instance %s: %v", instance.Name, err))
+			}
 		} else {
 			s.logger.Info("Scheduled backup completed for instance: %s", instance.Name)
 		}

@@ -87,6 +87,13 @@ config:
 
   alertWebhookURL: ""
 
+  alerts:
+    backupFailed: true
+    cleanupFailed: true
+    stuckBackup: true
+    circuitOpen: true
+    schedulerError: true
+
 secrets:
   elasticsearch:
     password: ""
