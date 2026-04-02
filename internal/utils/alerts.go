@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -53,6 +54,7 @@ type Alerter struct {
 	webhookURL string
 	client     *http.Client
 	logger     *Logger
+	mu         sync.RWMutex
 	filter     AlertFilter
 }
 
@@ -68,8 +70,10 @@ func NewAlerter(webhookURL string, logger *Logger) *Alerter {
 	}
 }
 
-// SetFilter configures which alert types are enabled.
+// SetFilter configures which alert types are enabled. Safe for concurrent use.
 func (a *Alerter) SetFilter(filter AlertFilter) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.filter = filter
 }
 
@@ -115,7 +119,7 @@ func (a *Alerter) sendAsync(alert Alert) {
 
 	resp, err := a.client.Do(req)
 	if err != nil {
-		a.logger.Error("Failed to send alert to %s: %v", a.webhookURL, err)
+		a.logger.Error("Failed to send alert: %v", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -128,7 +132,10 @@ func (a *Alerter) sendAsync(alert Alert) {
 // Convenience methods for common alert patterns.
 
 func (a *Alerter) AlertBackupFailed(instanceID, backupID, reason string) {
-	if !a.filter.BackupFailed {
+	a.mu.RLock()
+	enabled := a.filter.BackupFailed
+	a.mu.RUnlock()
+	if !enabled {
 		return
 	}
 	a.SendAlert(AlertCritical, "Backup Failed", fmt.Sprintf("Backup %s failed for instance %s: %s", backupID, instanceID, reason), map[string]string{
@@ -138,7 +145,10 @@ func (a *Alerter) AlertBackupFailed(instanceID, backupID, reason string) {
 }
 
 func (a *Alerter) AlertCircuitOpen(serviceName string) {
-	if !a.filter.CircuitOpen {
+	a.mu.RLock()
+	enabled := a.filter.CircuitOpen
+	a.mu.RUnlock()
+	if !enabled {
 		return
 	}
 	a.SendAlert(AlertWarning, "Circuit Breaker Open", fmt.Sprintf("Circuit breaker opened for service: %s", serviceName), map[string]string{
@@ -147,7 +157,10 @@ func (a *Alerter) AlertCircuitOpen(serviceName string) {
 }
 
 func (a *Alerter) AlertCleanupFailed(instanceID, backupID, reason string) {
-	if !a.filter.CleanupFailed {
+	a.mu.RLock()
+	enabled := a.filter.CleanupFailed
+	a.mu.RUnlock()
+	if !enabled {
 		return
 	}
 	a.SendAlert(AlertWarning, "Cleanup Failed", fmt.Sprintf("Cleanup failed for backup %s (instance %s): %s", backupID, instanceID, reason), map[string]string{
@@ -157,7 +170,10 @@ func (a *Alerter) AlertCleanupFailed(instanceID, backupID, reason string) {
 }
 
 func (a *Alerter) AlertStuckBackup(instanceID, jobID string, duration time.Duration) {
-	if !a.filter.StuckBackup {
+	a.mu.RLock()
+	enabled := a.filter.StuckBackup
+	a.mu.RUnlock()
+	if !enabled {
 		return
 	}
 	a.SendAlert(AlertCritical, "Stuck Backup Detected", fmt.Sprintf("Backup for instance %s (job %s) has been running for %s", instanceID, jobID, duration.Round(time.Second)), map[string]string{
@@ -168,7 +184,10 @@ func (a *Alerter) AlertStuckBackup(instanceID, jobID string, duration time.Durat
 }
 
 func (a *Alerter) AlertSchedulerError(message string) {
-	if !a.filter.SchedulerError {
+	a.mu.RLock()
+	enabled := a.filter.SchedulerError
+	a.mu.RUnlock()
+	if !enabled {
 		return
 	}
 	a.SendAlert(AlertCritical, "Scheduler Error", message, nil)
