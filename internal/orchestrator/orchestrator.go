@@ -170,10 +170,19 @@ func (o *Orchestrator) ExecuteBackup(ctx context.Context, req BackupRequest) (*m
 		o.executeComponentsSequential(ctx, req.CamundaInstance, execution)
 	}
 
-	// Resume exporting after component backups complete (always, regardless of outcome)
+	// Resume exporting after component backups complete (always, regardless of outcome).
+	// Use an independent context so a cancelled backup context does not prevent the resume.
 	if req.CamundaInstance.ExportingEndpoint != "" {
-		if err := o.resumeExporting(ctx, req.CamundaInstance, backupID); err != nil {
-			o.writeLog(req.CamundaInstance.ID, backupID, fmt.Sprintf("WARNING: Failed to resume exporting: %v", err))
+		resumeCtx, resumeCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer resumeCancel()
+		if err := o.resumeExporting(resumeCtx, req.CamundaInstance, backupID); err != nil {
+			msg := fmt.Sprintf("Backup components completed but exporter resume failed: %v", err)
+			o.writeLog(req.CamundaInstance.ID, backupID, msg)
+			execution.Status = types.BackupStatusFailed
+			execution.ErrorMessage = msg
+			if o.alerter != nil {
+				o.alerter.AlertBackupFailed(req.CamundaInstance.ID, backupID, "exporter resume failed after backup")
+			}
 		}
 	}
 
@@ -492,10 +501,17 @@ func (o *Orchestrator) executeElasticsearchBackup(ctx context.Context, instance 
 // pauseExporting pauses the Zeebe exporter before backup.
 // It retries until the response body contains "status": 204 or retries are exhausted.
 func (o *Orchestrator) pauseExporting(ctx context.Context, instance *models.CamundaInstance, backupID string) error {
-	endpoint := strings.TrimRight(instance.ExportingEndpoint, "/") + "/pause"
-	if instance.SoftExportPause {
-		endpoint += "?soft=true"
+	base := strings.TrimRight(instance.ExportingEndpoint, "/") + "/pause"
+	u, err := url.Parse(base)
+	if err != nil {
+		return fmt.Errorf("invalid exporting endpoint %q: %w", instance.ExportingEndpoint, err)
 	}
+	if instance.SoftExportPause {
+		q := u.Query()
+		q.Set("soft", "true")
+		u.RawQuery = q.Encode()
+	}
+	endpoint := u.String()
 
 	maxRetries := 5
 	retryDelay := 3 * time.Second
