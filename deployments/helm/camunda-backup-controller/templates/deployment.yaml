@@ -102,6 +102,10 @@ spec:
             - name: ALERT_ENABLE_SCHEDULER_ERROR
               value: {{ .Values.config.alerts.schedulerError | default true | quote }}
             {{- end }}
+            - name: EXPORTER_PAUSE_MAX_RETRIES
+              value: {{ (.Values.config.exporter).pauseMaxRetries | default 5 | quote }}
+            - name: EXPORTER_PAUSE_RETRY_DELAY
+              value: {{ (.Values.config.exporter).pauseRetryDelay | default 3 | quote }}
             - name: PROBE_ALLOW_PRIVATE_IPS
               value: {{ .Values.config.probeAllowPrivateIPs | quote }}
             - name: BASE_PATH

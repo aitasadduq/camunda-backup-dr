@@ -897,6 +897,30 @@ async function openInstanceForm(existingInstance) {
                         </div>
                     </div>
                 </div>
+
+                <!-- Exporter Configuration (collapsed) -->
+                <div class="border border-gray-200 rounded-lg">
+                    <button type="button" class="accordion-toggle w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-gray-700" onclick="toggleAccordion(this)">
+                        Exporter Configuration
+                        <svg class="accordion-icon w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                    </button>
+                    <div class="accordion-content px-4 pb-4 space-y-3">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Exporting Endpoint</label>
+                            <input type="text" name="exporting_endpoint" value="${escapeAttr(instance.exporting_endpoint || '')}"
+                                class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                placeholder="http://zeebe:9600/actuator/exporting">
+                            <p class="mt-1 text-xs text-gray-400">Base URL for the Zeebe exporting actuator. Leave empty to skip pause/resume during backups.</p>
+                        </div>
+                        <div>
+                            <label class="flex items-center gap-2 text-sm">
+                                <input type="checkbox" name="soft_export_pause" ${instance.soft_export_pause ? 'checked' : ''} class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                                Soft Pause
+                            </label>
+                            <p class="mt-1 text-xs text-gray-400">When enabled, appends ?soft=true to the pause request. A soft pause allows in-flight records to complete before pausing.</p>
+                        </div>
+                    </div>
+                </div>
             </form>
             <div class="px-6 py-4 border-t border-gray-200 flex justify-end gap-2">
                 <button onclick="closeModal()" class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50">
@@ -946,6 +970,8 @@ async function saveInstance(event, editId) {
         elasticsearch_username: fd.get('elasticsearch_username') || '',
         s3_endpoint: fd.get('s3_endpoint') || '',
         s3_accesskey: fd.get('s3_accesskey') || '',
+        exporting_endpoint: fd.get('exporting_endpoint') || '',
+        soft_export_pause: fd.get('soft_export_pause') === 'on',
     };
 
     try {

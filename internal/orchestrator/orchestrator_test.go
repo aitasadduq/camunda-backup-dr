@@ -2714,3 +2714,360 @@ func TestExecuteBackup_HandleBackupFailure_ErrorMessagePreserved(t *testing.T) {
 		t.Errorf("Expected history FAILED, got: %s", history.Status)
 	}
 }
+
+func TestPauseExporting_Success(t *testing.T) {
+	var pauseCalled atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/actuator/exporting/pause" && r.Method == http.MethodPost {
+			pauseCalled.Store(true)
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": 204})
+			return
+		}
+		if r.URL.Path == "/actuator/exporting/resume" && r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": 204})
+			return
+		}
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"message": "Backup triggered"})
+		} else if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"state": "COMPLETED"})
+		}
+	}))
+	defer server.Close()
+
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	cfg := setupTestConfig()
+	cfg.ExporterPauseMaxRetries = 3
+	cfg.ExporterPauseRetryDelay = 1
+	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, cfg, logger, 100*time.Millisecond, 50)
+
+	instance := setupTestInstance("test-instance", "Test Instance")
+	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
+	instance.OperateBackupEndpoint = server.URL + "/operate/backup"
+	instance.TasklistBackupEndpoint = server.URL + "/tasklist/backup"
+	instance.ExportingEndpoint = server.URL + "/actuator/exporting"
+
+	ctx := context.Background()
+	execution, err := orch.ExecuteBackup(ctx, BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+	})
+
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if execution.Status != types.BackupStatusCompleted {
+		t.Errorf("Expected COMPLETED, got: %s", execution.Status)
+	}
+	if !pauseCalled.Load() {
+		t.Error("Expected pause endpoint to be called")
+	}
+}
+
+func TestPauseExporting_SoftPause(t *testing.T) {
+	var receivedQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/actuator/exporting/pause" {
+			receivedQuery = r.URL.RawQuery
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": 204})
+			return
+		}
+		if r.URL.Path == "/actuator/exporting/resume" {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": 204})
+			return
+		}
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"message": "Backup triggered"})
+		} else if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"state": "COMPLETED"})
+		}
+	}))
+	defer server.Close()
+
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	cfg := setupTestConfig()
+	cfg.ExporterPauseMaxRetries = 3
+	cfg.ExporterPauseRetryDelay = 1
+	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, cfg, logger, 100*time.Millisecond, 50)
+
+	instance := setupTestInstance("test-instance", "Test Instance")
+	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
+	instance.OperateBackupEndpoint = server.URL + "/operate/backup"
+	instance.TasklistBackupEndpoint = server.URL + "/tasklist/backup"
+	instance.ExportingEndpoint = server.URL + "/actuator/exporting"
+	instance.SoftExportPause = true
+
+	ctx := context.Background()
+	_, err := orch.ExecuteBackup(ctx, BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+	})
+
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if receivedQuery != "soft=true" {
+		t.Errorf("Expected query 'soft=true', got: %q", receivedQuery)
+	}
+}
+
+func TestPauseExporting_FailureAbortsBackup(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/actuator/exporting/pause" {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": 500})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"message": "ok"})
+	}))
+	defer server.Close()
+
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.HTTPClientConfig{
+		Timeout:       5 * time.Second,
+		MaxRetries:    0,
+		RetryDelay:    100 * time.Millisecond,
+		MaxRetryDelay: 1 * time.Second,
+	}, utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	cfg := setupTestConfig()
+	cfg.ExporterPauseMaxRetries = 1
+	cfg.ExporterPauseRetryDelay = 1
+	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, cfg, logger, 100*time.Millisecond, 50)
+
+	instance := setupTestInstance("test-instance", "Test Instance")
+	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
+	instance.OperateBackupEndpoint = server.URL + "/operate/backup"
+	instance.TasklistBackupEndpoint = server.URL + "/tasklist/backup"
+	instance.ExportingEndpoint = server.URL + "/actuator/exporting"
+
+	ctx := context.Background()
+	execution, err := orch.ExecuteBackup(ctx, BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+	})
+
+	if err != nil {
+		t.Fatalf("Expected no error (failure captured in execution), got: %v", err)
+	}
+	if execution.Status != types.BackupStatusFailed {
+		t.Errorf("Expected FAILED, got: %s", execution.Status)
+	}
+	if !strings.Contains(execution.ErrorMessage, "pause exporting") {
+		t.Errorf("Expected error message about pause, got: %s", execution.ErrorMessage)
+	}
+}
+
+func TestPauseExporting_RetryThenSucceed(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/actuator/exporting/pause" {
+			count := attempts.Add(1)
+			if count < 3 {
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]interface{}{"status": 500})
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": 204})
+			return
+		}
+		if r.URL.Path == "/actuator/exporting/resume" {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": 204})
+			return
+		}
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"message": "Backup triggered"})
+		} else if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"state": "COMPLETED"})
+		}
+	}))
+	defer server.Close()
+
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.HTTPClientConfig{
+		Timeout:       5 * time.Second,
+		MaxRetries:    0,
+		RetryDelay:    100 * time.Millisecond,
+		MaxRetryDelay: 1 * time.Second,
+	}, utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	cfg := setupTestConfig()
+	cfg.ExporterPauseMaxRetries = 5
+	cfg.ExporterPauseRetryDelay = 1
+	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, cfg, logger, 100*time.Millisecond, 50)
+
+	instance := setupTestInstance("test-instance", "Test Instance")
+	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
+	instance.OperateBackupEndpoint = server.URL + "/operate/backup"
+	instance.TasklistBackupEndpoint = server.URL + "/tasklist/backup"
+	instance.ExportingEndpoint = server.URL + "/actuator/exporting"
+
+	ctx := context.Background()
+	execution, err := orch.ExecuteBackup(ctx, BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+	})
+
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if execution.Status != types.BackupStatusCompleted {
+		t.Errorf("Expected COMPLETED, got: %s", execution.Status)
+	}
+	if attempts.Load() < 3 {
+		t.Errorf("Expected at least 3 pause attempts, got: %d", attempts.Load())
+	}
+}
+
+func TestResumeExporting_CalledAfterBackup(t *testing.T) {
+	var resumeCalled atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/actuator/exporting/pause" {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": 204})
+			return
+		}
+		if r.URL.Path == "/actuator/exporting/resume" {
+			resumeCalled.Store(true)
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"status": 204})
+			return
+		}
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"message": "Backup triggered"})
+		} else if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"state": "COMPLETED"})
+		}
+	}))
+	defer server.Close()
+
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	cfg := setupTestConfig()
+	cfg.ExporterPauseMaxRetries = 3
+	cfg.ExporterPauseRetryDelay = 1
+	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, cfg, logger, 100*time.Millisecond, 50)
+
+	instance := setupTestInstance("test-instance", "Test Instance")
+	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
+	instance.OperateBackupEndpoint = server.URL + "/operate/backup"
+	instance.TasklistBackupEndpoint = server.URL + "/tasklist/backup"
+	instance.ExportingEndpoint = server.URL + "/actuator/exporting"
+
+	ctx := context.Background()
+	_, err := orch.ExecuteBackup(ctx, BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+	})
+
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if !resumeCalled.Load() {
+		t.Error("Expected resume endpoint to be called after backup")
+	}
+}
+
+func TestNoExportingEndpoint_SkipsPauseResume(t *testing.T) {
+	var exportingCalled atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "exporting") {
+			exportingCalled.Store(true)
+		}
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"message": "Backup triggered"})
+		} else if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"state": "COMPLETED"})
+		}
+	}))
+	defer server.Close()
+
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	orch := NewOrchestrator(fileStorage, s3Storage, httpClient, setupTestConfig(), logger, 100*time.Millisecond, 50)
+
+	instance := setupTestInstance("test-instance", "Test Instance")
+	instance.ZeebeBackupEndpoint = server.URL + "/zeebe/backup"
+	instance.OperateBackupEndpoint = server.URL + "/operate/backup"
+	instance.TasklistBackupEndpoint = server.URL + "/tasklist/backup"
+	// ExportingEndpoint intentionally left empty
+
+	ctx := context.Background()
+	execution, err := orch.ExecuteBackup(ctx, BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+	})
+
+	if err != nil {
+		t.Fatalf("Expected no error, got: %v", err)
+	}
+	if execution.Status != types.BackupStatusCompleted {
+		t.Errorf("Expected COMPLETED, got: %s", execution.Status)
+	}
+	if exportingCalled.Load() {
+		t.Error("Expected exporting endpoints NOT to be called when ExportingEndpoint is empty")
+	}
+}
+
+func TestCallExportingEndpoint_StatusAsString(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{"status": "204"})
+	}))
+	defer server.Close()
+
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	orch := NewOrchestrator(newMockFileStorage(), newMockS3Storage(), httpClient, setupTestConfig(), logger, 100*time.Millisecond, 50)
+
+	err := orch.callExportingEndpoint(context.Background(), server.URL+"/pause")
+	if err != nil {
+		t.Errorf("Expected success for status '204' as string, got: %v", err)
+	}
+}
+
+func TestCallExportingEndpoint_NonSuccessStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{"status": 500})
+	}))
+	defer server.Close()
+
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	orch := NewOrchestrator(newMockFileStorage(), newMockS3Storage(), httpClient, setupTestConfig(), logger, 100*time.Millisecond, 50)
+
+	err := orch.callExportingEndpoint(context.Background(), server.URL+"/pause")
+	if err == nil {
+		t.Error("Expected error for non-204 status")
+	}
+}

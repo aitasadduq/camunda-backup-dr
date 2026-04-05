@@ -35,6 +35,10 @@ type CamundaInstance struct {
 	TasklistBackupEndpoint string `json:"tasklist_backup_endpoint"`
 	OptimizeBackupEndpoint string `json:"optimize_backup_endpoint"`
 
+	// Exporter Configuration
+	ExportingEndpoint string `json:"exporting_endpoint"`
+	SoftExportPause   bool   `json:"soft_export_pause"`
+
 	// Component Settings
 	Components        []CamundaComponentConfig `json:"components"`
 	ParallelExecution bool                     `json:"parallel_execution"`

@@ -54,6 +54,10 @@ type Config struct {
 	// Backup Stuck Detection
 	BackupStuckTimeoutMinutes int // 0 = disabled
 
+	// Exporter Pause/Resume Configuration
+	ExporterPauseMaxRetries int // Maximum retries for pause/resume requests
+	ExporterPauseRetryDelay int // Delay between retries in seconds
+
 	// Base Path for serving behind a reverse proxy (e.g. "/backup")
 	BasePath string
 }
@@ -104,6 +108,10 @@ func Load() (*Config, error) {
 		// Backup Stuck Detection (default: 120 minutes = 2 hours)
 		BackupStuckTimeoutMinutes: getEnvAsInt("BACKUP_STUCK_TIMEOUT_MINUTES", 120),
 
+		// Exporter Pause/Resume
+		ExporterPauseMaxRetries: getEnvAsInt("EXPORTER_PAUSE_MAX_RETRIES", 5),
+		ExporterPauseRetryDelay: getEnvAsInt("EXPORTER_PAUSE_RETRY_DELAY", 3),
+
 		// Base Path
 		BasePath: normalizeBasePath(getEnv("BASE_PATH", "/")),
 	}
@@ -145,6 +153,14 @@ func (c *Config) Validate() error {
 	}
 
 	if c.DefaultBackupMaxAttempts <= 0 {
+		return utils.ErrInvalidConfiguration
+	}
+
+	if c.ExporterPauseMaxRetries < 0 {
+		return utils.ErrInvalidConfiguration
+	}
+
+	if c.ExporterPauseRetryDelay < 0 {
 		return utils.ErrInvalidConfiguration
 	}
 
