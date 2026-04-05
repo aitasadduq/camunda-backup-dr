@@ -1,13 +1,19 @@
 package retention
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/aitasadduq/camunda-backup-dr/internal/camunda"
+	"github.com/aitasadduq/camunda-backup-dr/internal/config"
 	"github.com/aitasadduq/camunda-backup-dr/internal/models"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
 	"github.com/aitasadduq/camunda-backup-dr/pkg/types"
@@ -846,5 +852,195 @@ func TestDeleteBackup_OrphanedAndIncompleteBothSkipped_ReturnsNotFound(t *testin
 	err := mgr.DeleteBackup("inst-1", "nonexistent")
 	if err != utils.ErrBackupNotFound {
 		t.Errorf("expected ErrBackupNotFound, got %v", err)
+	}
+}
+
+// --- Alerter tests ---
+
+func TestSetAlerter(t *testing.T) {
+	mgr, _, _ := newTestManager()
+	if mgr.alerter != nil {
+		t.Fatal("expected nil alerter initially")
+	}
+	alerter := utils.NewAlerter("http://example.com", utils.NewLogger("info"))
+	mgr.SetAlerter(alerter)
+	if mgr.alerter == nil {
+		t.Fatal("expected non-nil alerter after SetAlerter")
+	}
+}
+
+func TestDeleteComponentBackup_AlertsOnBadStatus(t *testing.T) {
+	// Component server returns 500 for DELETE requests
+	componentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer componentServer.Close()
+
+	// Alert webhook captures alerts
+	var alertCount int32
+	alertServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&alertCount, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer alertServer.Close()
+
+	logger := utils.NewLogger("debug")
+	httpClient := camunda.NewHTTPClient(camunda.HTTPClientConfig{
+		Timeout:    5 * time.Second,
+		MaxRetries: 0,
+	}, logger)
+
+	s3 := newMockS3Storage()
+	fs := newMockFileStorage()
+	mgr := NewManager(s3, fs, httpClient, nil, logger)
+
+	alerter := utils.NewAlerter(alertServer.URL, logger)
+	mgr.SetAlerter(alerter)
+
+	now := time.Now()
+	instance := &models.CamundaInstance{
+		ID:                    "inst-1",
+		SuccessRetention:      1,
+		FailureRetention:      1,
+		ZeebeBackupEndpoint:   componentServer.URL + "/zeebe",
+	}
+
+	// Add 3 completed backups so retention prunes the oldest
+	s3.addBackup("inst-1", "b1", types.BackupStatusCompleted, now.Add(-3*time.Hour))
+	s3.addBackup("inst-1", "b2", types.BackupStatusCompleted, now.Add(-2*time.Hour))
+	s3.addBackup("inst-1", "b3", types.BackupStatusCompleted, now.Add(-1*time.Hour))
+
+	// Add Zeebe component info to backups that will be pruned
+	s3.mu.Lock()
+	s3.backupHistory["inst-1"]["b1"].Components = map[string]models.ComponentBackupInfo{
+		types.ComponentZeebe: {Enabled: true, Status: types.ComponentStatusCompleted},
+	}
+	s3.backupHistory["inst-1"]["b2"].Components = map[string]models.ComponentBackupInfo{
+		types.ComponentZeebe: {Enabled: true, Status: types.ComponentStatusCompleted},
+	}
+	s3.mu.Unlock()
+
+	mgr.ApplyRetention(instance)
+
+	// Wait for async alert delivery
+	time.Sleep(500 * time.Millisecond)
+
+	count := atomic.LoadInt32(&alertCount)
+	if count < 1 {
+		t.Errorf("expected at least 1 cleanup alert for bad HTTP status, got %d", count)
+	}
+}
+
+func TestDeleteComponentBackup_NoAlertWhenAlerterNil(t *testing.T) {
+	// Component server returns 500 for DELETE requests
+	componentServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer componentServer.Close()
+
+	logger := utils.NewLogger("debug")
+	httpClient := camunda.NewHTTPClient(camunda.HTTPClientConfig{
+		Timeout:    5 * time.Second,
+		MaxRetries: 0,
+	}, logger)
+
+	s3 := newMockS3Storage()
+	fs := newMockFileStorage()
+	mgr := NewManager(s3, fs, httpClient, nil, logger)
+	// No alerter set — should not panic
+
+	now := time.Now()
+	instance := &models.CamundaInstance{
+		ID:                    "inst-1",
+		SuccessRetention:      1,
+		FailureRetention:      1,
+		ZeebeBackupEndpoint:   componentServer.URL + "/zeebe",
+	}
+
+	s3.addBackup("inst-1", "b1", types.BackupStatusCompleted, now.Add(-2*time.Hour))
+	s3.addBackup("inst-1", "b2", types.BackupStatusCompleted, now.Add(-1*time.Hour))
+
+	s3.mu.Lock()
+	s3.backupHistory["inst-1"]["b1"].Components = map[string]models.ComponentBackupInfo{
+		types.ComponentZeebe: {Enabled: true, Status: types.ComponentStatusCompleted},
+	}
+	s3.mu.Unlock()
+
+	// Should not panic with nil alerter
+	result := mgr.ApplyRetention(instance)
+	if len(result.Errors) == 0 {
+		t.Error("expected errors from failed component deletion")
+	}
+}
+
+func TestDeleteESSnapshot_AlertsOnError(t *testing.T) {
+	// ES server that returns 500 for snapshot deletion
+	esServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "snapshot deletion failed"})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer esServer.Close()
+
+	// Alert webhook
+	var alertCount int32
+	alertServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&alertCount, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer alertServer.Close()
+
+	logger := utils.NewLogger("debug")
+	httpClient := camunda.NewHTTPClient(camunda.HTTPClientConfig{
+		Timeout:    5 * time.Second,
+		MaxRetries: 0,
+	}, logger)
+
+	cfg := &config.Config{
+		DefaultElasticsearchSnapshotRepository: "test-repo",
+	}
+
+	s3 := newMockS3Storage()
+	fs := newMockFileStorage()
+	mgr := NewManager(s3, fs, httpClient, cfg, logger)
+
+	alerter := utils.NewAlerter(alertServer.URL, logger)
+	mgr.SetAlerter(alerter)
+
+	now := time.Now()
+	instance := &models.CamundaInstance{
+		ID:                      "inst-1",
+		SuccessRetention:        1,
+		FailureRetention:        1,
+		ElasticsearchEndpoint:   esServer.URL,
+		ElasticsearchUsername:   "elastic",
+	}
+
+	// Add 2 completed backups with ES component so oldest gets pruned
+	s3.addBackup("inst-1", "b1", types.BackupStatusCompleted, now.Add(-2*time.Hour))
+	s3.addBackup("inst-1", "b2", types.BackupStatusCompleted, now.Add(-1*time.Hour))
+
+	s3.mu.Lock()
+	s3.backupHistory["inst-1"]["b1"].Components = map[string]models.ComponentBackupInfo{
+		types.ComponentElasticsearch: {
+			Enabled:            true,
+			Status:             types.ComponentStatusCompleted,
+			SnapshotRepository: "test-repo",
+			SnapshotName:       "b1",
+		},
+	}
+	s3.mu.Unlock()
+
+	mgr.ApplyRetention(instance)
+
+	// Wait for async alert
+	time.Sleep(500 * time.Millisecond)
+
+	count := atomic.LoadInt32(&alertCount)
+	if count < 1 {
+		t.Errorf("expected at least 1 cleanup alert for ES snapshot deletion failure, got %d", count)
 	}
 }

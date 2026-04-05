@@ -91,6 +91,16 @@ spec:
             {{- if .Values.config.alertWebhookURL }}
             - name: ALERT_WEBHOOK_URL
               value: {{ .Values.config.alertWebhookURL | quote }}
+            - name: ALERT_ENABLE_BACKUP_FAILED
+              value: {{ .Values.config.alerts.backupFailed | default true | quote }}
+            - name: ALERT_ENABLE_CLEANUP_FAILED
+              value: {{ .Values.config.alerts.cleanupFailed | default true | quote }}
+            - name: ALERT_ENABLE_STUCK_BACKUP
+              value: {{ .Values.config.alerts.stuckBackup | default true | quote }}
+            - name: ALERT_ENABLE_CIRCUIT_OPEN
+              value: {{ .Values.config.alerts.circuitOpen | default true | quote }}
+            - name: ALERT_ENABLE_SCHEDULER_ERROR
+              value: {{ .Values.config.alerts.schedulerError | default true | quote }}
             {{- end }}
             - name: EXPORTER_PAUSE_MAX_RETRIES
               value: {{ (.Values.config.exporter).pauseMaxRetries | default 5 | quote }}

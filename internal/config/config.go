@@ -44,7 +44,12 @@ type Config struct {
 	DefaultElasticsearchPassword string
 
 	// Alert Configuration
-	AlertWebhookURL string
+	AlertWebhookURL          string
+	AlertEnableBackupFailed  bool
+	AlertEnableCleanupFailed bool
+	AlertEnableStuckBackup   bool
+	AlertEnableCircuitOpen   bool
+	AlertEnableSchedulerError bool
 
 	// Backup Stuck Detection
 	BackupStuckTimeoutMinutes int // 0 = disabled
@@ -93,7 +98,12 @@ func Load() (*Config, error) {
 		DefaultElasticsearchPassword: getEnv("DEFAULT_ELASTICSEARCH_PASSWORD", ""),
 
 		// Alert Configuration
-		AlertWebhookURL: getEnv("ALERT_WEBHOOK_URL", ""),
+		AlertWebhookURL:           getEnv("ALERT_WEBHOOK_URL", ""),
+		AlertEnableBackupFailed:   getEnv("ALERT_ENABLE_BACKUP_FAILED", "true") == "true",
+		AlertEnableCleanupFailed:  getEnv("ALERT_ENABLE_CLEANUP_FAILED", "true") == "true",
+		AlertEnableStuckBackup:    getEnv("ALERT_ENABLE_STUCK_BACKUP", "true") == "true",
+		AlertEnableCircuitOpen:    getEnv("ALERT_ENABLE_CIRCUIT_OPEN", "true") == "true",
+		AlertEnableSchedulerError: getEnv("ALERT_ENABLE_SCHEDULER_ERROR", "true") == "true",
 
 		// Backup Stuck Detection (default: 120 minutes = 2 hours)
 		BackupStuckTimeoutMinutes: getEnvAsInt("BACKUP_STUCK_TIMEOUT_MINUTES", 120),

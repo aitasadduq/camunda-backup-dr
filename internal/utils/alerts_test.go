@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -104,6 +105,91 @@ func TestAlerter_SendAlert_ServerError(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for webhook call")
+	}
+}
+
+func TestAlerter_Filter_DisablesSpecificAlerts(t *testing.T) {
+	var mu sync.Mutex
+	var alerts []Alert
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var alert Alert
+		json.NewDecoder(r.Body).Decode(&alert)
+		mu.Lock()
+		alerts = append(alerts, alert)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	logger := NewLogger("info")
+	a := NewAlerter(server.URL, logger)
+	a.SetFilter(AlertFilter{
+		BackupFailed:   true,
+		CleanupFailed:  false,
+		StuckBackup:    false,
+		CircuitOpen:    false,
+		SchedulerError: true,
+	})
+
+	a.AlertBackupFailed("prod", "b1", "timeout")
+	a.AlertCleanupFailed("prod", "b2", "S3 error")
+	a.AlertStuckBackup("prod", "j1", 2*time.Hour)
+	a.AlertCircuitOpen("elasticsearch")
+	a.AlertSchedulerError("scheduler crashed")
+
+	// Wait for async delivery of enabled alerts
+	time.Sleep(500 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(alerts) != 2 {
+		t.Fatalf("expected 2 alerts (only enabled ones), got %d", len(alerts))
+	}
+
+	titles := map[string]bool{}
+	for _, a := range alerts {
+		titles[a.Title] = true
+	}
+	if !titles["Backup Failed"] {
+		t.Error("expected Backup Failed alert")
+	}
+	if !titles["Scheduler Error"] {
+		t.Error("expected Scheduler Error alert")
+	}
+}
+
+func TestAlerter_Filter_AllDisabled(t *testing.T) {
+	var received int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&received, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	logger := NewLogger("info")
+	a := NewAlerter(server.URL, logger)
+	a.SetFilter(AlertFilter{})
+
+	a.AlertBackupFailed("prod", "b1", "timeout")
+	a.AlertCleanupFailed("prod", "b2", "S3 error")
+	a.AlertStuckBackup("prod", "j1", 2*time.Hour)
+	a.AlertCircuitOpen("elasticsearch")
+	a.AlertSchedulerError("scheduler crashed")
+
+	time.Sleep(500 * time.Millisecond)
+
+	if count := atomic.LoadInt32(&received); count != 0 {
+		t.Errorf("expected 0 alerts when all disabled, got %d", count)
+	}
+}
+
+func TestAlerter_DefaultFilter_AllEnabled(t *testing.T) {
+	f := DefaultAlertFilter()
+	if !f.BackupFailed || !f.CleanupFailed || !f.StuckBackup || !f.CircuitOpen || !f.SchedulerError {
+		t.Error("default filter should enable all alerts")
 	}
 }
 
