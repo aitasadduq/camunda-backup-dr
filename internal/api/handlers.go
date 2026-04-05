@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -243,6 +244,25 @@ func (h *Handlers) ListCamundaInstancesHandler(w http.ResponseWriter, r *http.Re
 	writeJSON(w, http.StatusOK, instances)
 }
 
+// validateExportingEndpoint returns an error if the endpoint is non-empty but
+// has an unsupported scheme or resolves to a private/loopback address (SSRF guard).
+func validateExportingEndpoint(endpoint string) error {
+	if endpoint == "" {
+		return nil
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return utils.NewValidationError("exporting_endpoint is not a valid URL")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return utils.NewValidationError("exporting_endpoint must use http or https")
+	}
+	if isBlockedHost(u.Hostname()) {
+		return utils.NewValidationError("exporting_endpoint must not target private or loopback addresses (set PROBE_ALLOW_PRIVATE_IPS=true to allow)")
+	}
+	return nil
+}
+
 // CreateCamundaInstanceHandler handles creating a new Camunda instance
 func (h *Handlers) CreateCamundaInstanceHandler(w http.ResponseWriter, r *http.Request) {
 	var instance models.CamundaInstance
@@ -264,6 +284,10 @@ func (h *Handlers) CreateCamundaInstanceHandler(w http.ResponseWriter, r *http.R
 	}
 	if instance.BaseURL == "" {
 		writeAppError(w, utils.NewValidationError("BaseURL is required"))
+		return
+	}
+	if err := validateExportingEndpoint(instance.ExportingEndpoint); err != nil {
+		writeAppError(w, err)
 		return
 	}
 
@@ -366,6 +390,10 @@ func (h *Handlers) UpdateCamundaInstanceHandler(w http.ResponseWriter, r *http.R
 	var updates models.CamundaInstance
 	if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "Invalid JSON body: "+err.Error())
+		return
+	}
+	if err := validateExportingEndpoint(updates.ExportingEndpoint); err != nil {
+		writeAppError(w, err)
 		return
 	}
 

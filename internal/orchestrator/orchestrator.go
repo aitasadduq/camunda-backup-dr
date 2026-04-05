@@ -142,6 +142,25 @@ func (o *Orchestrator) ExecuteBackup(ctx context.Context, req BackupRequest) (*m
 		o.writeLog(req.CamundaInstance.ID, backupID, fmt.Sprintf("Failed to store initial backup history: %v", err))
 	}
 
+	// Pause exporting before executing component backups
+	if req.CamundaInstance.ExportingEndpoint != "" {
+		if err := o.pauseExporting(ctx, req.CamundaInstance, backupID); err != nil {
+			execution.Status = types.BackupStatusFailed
+			execution.ErrorMessage = fmt.Sprintf("Failed to pause exporting: %v", err)
+			o.writeLog(req.CamundaInstance.ID, backupID, execution.ErrorMessage)
+			now := time.Now()
+			execution.EndTime = &now
+			if storeErr := o.s3Storage.UpdateBackupStatus(req.CamundaInstance.ID, backupID, execution.Status); storeErr != nil {
+				o.logger.Error("Failed to update backup status in S3: %v", storeErr)
+			}
+			history = o.createBackupHistory(req, execution)
+			if storeErr := o.s3Storage.StoreBackupHistory(history); storeErr != nil {
+				o.logger.Error("Failed to update backup history: %v", storeErr)
+			}
+			return execution, nil
+		}
+	}
+
 	// Execute components based on execution mode
 	if req.CamundaInstance.ParallelExecution {
 		o.writeLog(req.CamundaInstance.ID, backupID, "Executing components in parallel mode")
@@ -149,6 +168,22 @@ func (o *Orchestrator) ExecuteBackup(ctx context.Context, req BackupRequest) (*m
 	} else {
 		o.writeLog(req.CamundaInstance.ID, backupID, "Executing components in sequential mode")
 		o.executeComponentsSequential(ctx, req.CamundaInstance, execution)
+	}
+
+	// Resume exporting after component backups complete (always, regardless of outcome).
+	// Use an independent context so a cancelled backup context does not prevent the resume.
+	if req.CamundaInstance.ExportingEndpoint != "" {
+		resumeCtx, resumeCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer resumeCancel()
+		if err := o.resumeExporting(resumeCtx, req.CamundaInstance, backupID); err != nil {
+			msg := fmt.Sprintf("Backup components completed but exporter resume failed: %v", err)
+			o.writeLog(req.CamundaInstance.ID, backupID, msg)
+			execution.Status = types.BackupStatusFailed
+			execution.ErrorMessage = msg
+			if o.alerter != nil {
+				o.alerter.AlertBackupFailed(req.CamundaInstance.ID, backupID, "exporter resume failed after backup")
+			}
+		}
 	}
 
 	// Finalize backup execution
@@ -461,6 +496,137 @@ func (o *Orchestrator) executeElasticsearchBackup(ctx context.Context, instance 
 	}
 
 	return status, nil
+}
+
+// pauseExporting pauses the Zeebe exporter before backup.
+// It retries until the response body contains "status": 204 or retries are exhausted.
+func (o *Orchestrator) pauseExporting(ctx context.Context, instance *models.CamundaInstance, backupID string) error {
+	base := strings.TrimRight(instance.ExportingEndpoint, "/") + "/pause"
+	u, err := url.Parse(base)
+	if err != nil {
+		return fmt.Errorf("invalid exporting endpoint %q: %w", instance.ExportingEndpoint, err)
+	}
+	if instance.SoftExportPause {
+		q := u.Query()
+		q.Set("soft", "true")
+		u.RawQuery = q.Encode()
+	}
+	endpoint := u.String()
+
+	maxRetries := 5
+	retryDelay := 3 * time.Second
+	if o.cfg != nil {
+		if o.cfg.ExporterPauseMaxRetries > 0 {
+			maxRetries = o.cfg.ExporterPauseMaxRetries
+		}
+		if o.cfg.ExporterPauseRetryDelay > 0 {
+			retryDelay = time.Duration(o.cfg.ExporterPauseRetryDelay) * time.Second
+		}
+	}
+
+	o.writeLog(instance.ID, backupID, fmt.Sprintf("Pausing exporting (soft=%v)", instance.SoftExportPause))
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			o.writeLog(instance.ID, backupID, fmt.Sprintf("Retrying pause exporting (attempt %d/%d)", attempt+1, maxRetries+1))
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(retryDelay):
+			}
+		}
+
+		err := o.callExportingEndpoint(ctx, endpoint)
+		if err == nil {
+			o.writeLog(instance.ID, backupID, "Exporting paused successfully")
+			return nil
+		}
+
+		o.writeLog(instance.ID, backupID, fmt.Sprintf("Pause exporting attempt %d/%d failed: %v", attempt+1, maxRetries+1, err))
+	}
+
+	return fmt.Errorf("failed to pause exporting after %d attempts", maxRetries+1)
+}
+
+// resumeExporting resumes the Zeebe exporter after backup.
+// It retries until the response body contains "status": 204 or retries are exhausted.
+func (o *Orchestrator) resumeExporting(ctx context.Context, instance *models.CamundaInstance, backupID string) error {
+	endpoint := strings.TrimRight(instance.ExportingEndpoint, "/") + "/resume"
+
+	maxRetries := 5
+	retryDelay := 3 * time.Second
+	if o.cfg != nil {
+		if o.cfg.ExporterPauseMaxRetries > 0 {
+			maxRetries = o.cfg.ExporterPauseMaxRetries
+		}
+		if o.cfg.ExporterPauseRetryDelay > 0 {
+			retryDelay = time.Duration(o.cfg.ExporterPauseRetryDelay) * time.Second
+		}
+	}
+
+	o.writeLog(instance.ID, backupID, "Resuming exporting")
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			o.writeLog(instance.ID, backupID, fmt.Sprintf("Retrying resume exporting (attempt %d/%d)", attempt+1, maxRetries+1))
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(retryDelay):
+			}
+		}
+
+		err := o.callExportingEndpoint(ctx, endpoint)
+		if err == nil {
+			o.writeLog(instance.ID, backupID, "Exporting resumed successfully")
+			return nil
+		}
+
+		o.writeLog(instance.ID, backupID, fmt.Sprintf("Resume exporting attempt %d/%d failed: %v", attempt+1, maxRetries+1, err))
+	}
+
+	return fmt.Errorf("failed to resume exporting after %d attempts", maxRetries+1)
+}
+
+// callExportingEndpoint calls a pause/resume endpoint and verifies the response body
+// contains "status": 204 to confirm success.
+func (o *Orchestrator) callExportingEndpoint(ctx context.Context, endpoint string) error {
+	resp, err := o.httpClient.Post(ctx, endpoint, nil, nil)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return fmt.Errorf("failed to parse response body: %w (body: %s)", err, string(body))
+	}
+
+	status, ok := result["status"]
+	if !ok {
+		return fmt.Errorf("response missing 'status' field (body: %s)", string(body))
+	}
+
+	// The status field can be a number (float64 from JSON) or a string
+	switch v := status.(type) {
+	case float64:
+		if int(v) == 204 {
+			return nil
+		}
+		return fmt.Errorf("unexpected status %v in response body (body: %s)", v, string(body))
+	case string:
+		if v == "204" {
+			return nil
+		}
+		return fmt.Errorf("unexpected status %q in response body (body: %s)", v, string(body))
+	default:
+		return fmt.Errorf("unexpected status type %T in response body (body: %s)", status, string(body))
+	}
 }
 
 // pollElasticsearchSnapshot polls the Elasticsearch snapshot status until completion or failure
