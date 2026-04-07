@@ -89,7 +89,10 @@ func clearLoadEnvVars(t *testing.T) {
 		"DEFAULT_ELASTICSEARCH_SNAPSHOT_REPOSITORY", "DEFAULT_ELASTICSEARCH_SNAPSHOT_NAME_PREFIX",
 		"DEFAULT_S3_ENDPOINT", "DEFAULT_S3_ACCESSKEY", "DEFAULT_S3_SECRETKEY",
 		"DEFAULT_ELASTICSEARCH_PASSWORD",
-		"ALERT_WEBHOOK_URL", "BACKUP_STUCK_TIMEOUT_MINUTES",
+		"ALERT_WEBHOOK_URL",
+		"ALERT_ENABLE_BACKUP_FAILED", "ALERT_ENABLE_CLEANUP_FAILED", "ALERT_ENABLE_STUCK_BACKUP",
+		"ALERT_ENABLE_CIRCUIT_OPEN", "ALERT_ENABLE_SCHEDULER_ERROR", "ALERT_ENABLE_EXPORTER_RESUME_FAILED",
+		"BACKUP_STUCK_TIMEOUT_MINUTES",
 	}
 	for _, k := range keys {
 		t.Setenv(k, "")
@@ -166,6 +169,24 @@ func TestLoad_Defaults(t *testing.T) {
 	// Alert
 	if cfg.AlertWebhookURL != "" {
 		t.Errorf("AlertWebhookURL = %q, want empty", cfg.AlertWebhookURL)
+	}
+	if !cfg.AlertEnableBackupFailed {
+		t.Error("AlertEnableBackupFailed default = false, want true")
+	}
+	if !cfg.AlertEnableCleanupFailed {
+		t.Error("AlertEnableCleanupFailed default = false, want true")
+	}
+	if !cfg.AlertEnableStuckBackup {
+		t.Error("AlertEnableStuckBackup default = false, want true")
+	}
+	if !cfg.AlertEnableCircuitOpen {
+		t.Error("AlertEnableCircuitOpen default = false, want true")
+	}
+	if !cfg.AlertEnableSchedulerError {
+		t.Error("AlertEnableSchedulerError default = false, want true")
+	}
+	if !cfg.AlertEnableExporterResumeFailed {
+		t.Error("AlertEnableExporterResumeFailed default = false, want true")
 	}
 
 	// Stuck timeout
