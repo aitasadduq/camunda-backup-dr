@@ -97,6 +97,7 @@ config:
     stuckBackup: true
     circuitOpen: true
     schedulerError: true
+    exporterResumeFailed: true
 
 secrets:
   elasticsearch:

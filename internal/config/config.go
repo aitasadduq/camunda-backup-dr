@@ -49,7 +49,8 @@ type Config struct {
 	AlertEnableCleanupFailed bool
 	AlertEnableStuckBackup   bool
 	AlertEnableCircuitOpen   bool
-	AlertEnableSchedulerError bool
+	AlertEnableSchedulerError       bool
+	AlertEnableExporterResumeFailed bool
 
 	// Backup Stuck Detection
 	BackupStuckTimeoutMinutes int // 0 = disabled
@@ -103,7 +104,8 @@ func Load() (*Config, error) {
 		AlertEnableCleanupFailed:  getEnv("ALERT_ENABLE_CLEANUP_FAILED", "true") == "true",
 		AlertEnableStuckBackup:    getEnv("ALERT_ENABLE_STUCK_BACKUP", "true") == "true",
 		AlertEnableCircuitOpen:    getEnv("ALERT_ENABLE_CIRCUIT_OPEN", "true") == "true",
-		AlertEnableSchedulerError: getEnv("ALERT_ENABLE_SCHEDULER_ERROR", "true") == "true",
+		AlertEnableSchedulerError:       getEnv("ALERT_ENABLE_SCHEDULER_ERROR", "true") == "true",
+		AlertEnableExporterResumeFailed: getEnv("ALERT_ENABLE_EXPORTER_RESUME_FAILED", "true") == "true",
 
 		// Backup Stuck Detection (default: 120 minutes = 2 hours)
 		BackupStuckTimeoutMinutes: getEnvAsInt("BACKUP_STUCK_TIMEOUT_MINUTES", 120),

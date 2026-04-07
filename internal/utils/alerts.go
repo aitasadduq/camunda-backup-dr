@@ -30,21 +30,23 @@ type Alert struct {
 
 // AlertFilter controls which alert types are enabled.
 type AlertFilter struct {
-	BackupFailed   bool
-	CleanupFailed  bool
-	StuckBackup    bool
-	CircuitOpen    bool
-	SchedulerError bool
+	BackupFailed         bool
+	CleanupFailed        bool
+	StuckBackup          bool
+	CircuitOpen          bool
+	SchedulerError       bool
+	ExporterResumeFailed bool
 }
 
 // DefaultAlertFilter returns a filter with all alerts enabled.
 func DefaultAlertFilter() AlertFilter {
 	return AlertFilter{
-		BackupFailed:   true,
-		CleanupFailed:  true,
-		StuckBackup:    true,
-		CircuitOpen:    true,
-		SchedulerError: true,
+		BackupFailed:         true,
+		CleanupFailed:        true,
+		StuckBackup:          true,
+		CircuitOpen:          true,
+		SchedulerError:       true,
+		ExporterResumeFailed: true,
 	}
 }
 
@@ -191,4 +193,17 @@ func (a *Alerter) AlertSchedulerError(message string) {
 		return
 	}
 	a.SendAlert(AlertCritical, "Scheduler Error", message, nil)
+}
+
+func (a *Alerter) AlertExporterResumeFailed(instanceID, backupID, reason string) {
+	a.mu.RLock()
+	enabled := a.filter.ExporterResumeFailed
+	a.mu.RUnlock()
+	if !enabled {
+		return
+	}
+	a.SendAlert(AlertCritical, "Exporter Resume Failed", fmt.Sprintf("Failed to resume exporter after backup %s (instance %s): %s", backupID, instanceID, reason), map[string]string{
+		"instance_id": instanceID,
+		"backup_id":   backupID,
+	})
 }

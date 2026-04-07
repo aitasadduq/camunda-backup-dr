@@ -181,7 +181,7 @@ func (o *Orchestrator) ExecuteBackup(ctx context.Context, req BackupRequest) (*m
 			execution.Status = types.BackupStatusFailed
 			execution.ErrorMessage = msg
 			if o.alerter != nil {
-				o.alerter.AlertBackupFailed(req.CamundaInstance.ID, backupID, "exporter resume failed after backup")
+				o.alerter.AlertExporterResumeFailed(req.CamundaInstance.ID, backupID, err.Error())
 			}
 		}
 	}

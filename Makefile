@@ -1,4 +1,4 @@
-.PHONY: build clean run test test-coverage test-integration test-e2e help test-all deps lint fmt
+.PHONY: build clean run test test-coverage test-integration test-e2e help test-all deps lint fmt tailwind
 
 # Binary name
 BINARY_NAME=backup-controller
@@ -22,6 +22,7 @@ help:
 	@echo "  deps             - Download dependencies"
 	@echo "  lint             - Run linters"
 	@echo "  fmt              - Format code"
+	@echo "  tailwind         - Rebuild bundled Tailwind CSS (requires tailwindcss CLI)"
 
 build:
 	@echo "Building $(BINARY_NAME)..."
@@ -79,3 +80,8 @@ lint:
 fmt:
 	@echo "Formatting code..."
 	@go fmt ./...
+
+tailwind:
+	@echo "Rebuilding Tailwind CSS..."
+	@tailwindcss -c web/tailwind.config.js -i web/css/tailwind-input.css -o web/css/tailwind.css --minify
+	@echo "Tailwind CSS rebuilt: web/css/tailwind.css"
