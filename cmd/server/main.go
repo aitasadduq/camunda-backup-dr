@@ -108,11 +108,12 @@ func main() {
 	// Initialize alerter for critical failure notifications
 	alerter := utils.NewAlerter(cfg.AlertWebhookURL, logger)
 	alerter.SetFilter(utils.AlertFilter{
-		BackupFailed:   cfg.AlertEnableBackupFailed,
-		CleanupFailed:  cfg.AlertEnableCleanupFailed,
-		StuckBackup:    cfg.AlertEnableStuckBackup,
-		CircuitOpen:    cfg.AlertEnableCircuitOpen,
-		SchedulerError: cfg.AlertEnableSchedulerError,
+		BackupFailed:         cfg.AlertEnableBackupFailed,
+		CleanupFailed:        cfg.AlertEnableCleanupFailed,
+		StuckBackup:          cfg.AlertEnableStuckBackup,
+		CircuitOpen:          cfg.AlertEnableCircuitOpen,
+		SchedulerError:       cfg.AlertEnableSchedulerError,
+		ExporterResumeFailed: cfg.AlertEnableExporterResumeFailed,
 	})
 	if alerter.IsEnabled() {
 		logger.Info("Alert webhook configured: notifications enabled")

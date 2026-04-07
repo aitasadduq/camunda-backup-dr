@@ -125,11 +125,12 @@ func TestAlerter_Filter_DisablesSpecificAlerts(t *testing.T) {
 	logger := NewLogger("info")
 	a := NewAlerter(server.URL, logger)
 	a.SetFilter(AlertFilter{
-		BackupFailed:   true,
-		CleanupFailed:  false,
-		StuckBackup:    false,
-		CircuitOpen:    false,
-		SchedulerError: true,
+		BackupFailed:         true,
+		CleanupFailed:        false,
+		StuckBackup:          false,
+		CircuitOpen:          false,
+		SchedulerError:       true,
+		ExporterResumeFailed: false,
 	})
 
 	a.AlertBackupFailed("prod", "b1", "timeout")
@@ -137,6 +138,7 @@ func TestAlerter_Filter_DisablesSpecificAlerts(t *testing.T) {
 	a.AlertStuckBackup("prod", "j1", 2*time.Hour)
 	a.AlertCircuitOpen("elasticsearch")
 	a.AlertSchedulerError("scheduler crashed")
+	a.AlertExporterResumeFailed("prod", "b3", "connection refused")
 
 	// Wait for async delivery of enabled alerts
 	time.Sleep(500 * time.Millisecond)
@@ -178,6 +180,7 @@ func TestAlerter_Filter_AllDisabled(t *testing.T) {
 	a.AlertStuckBackup("prod", "j1", 2*time.Hour)
 	a.AlertCircuitOpen("elasticsearch")
 	a.AlertSchedulerError("scheduler crashed")
+	a.AlertExporterResumeFailed("prod", "b3", "connection refused")
 
 	time.Sleep(500 * time.Millisecond)
 
@@ -188,7 +191,7 @@ func TestAlerter_Filter_AllDisabled(t *testing.T) {
 
 func TestAlerter_DefaultFilter_AllEnabled(t *testing.T) {
 	f := DefaultAlertFilter()
-	if !f.BackupFailed || !f.CleanupFailed || !f.StuckBackup || !f.CircuitOpen || !f.SchedulerError {
+	if !f.BackupFailed || !f.CleanupFailed || !f.StuckBackup || !f.CircuitOpen || !f.SchedulerError || !f.ExporterResumeFailed {
 		t.Error("default filter should enable all alerts")
 	}
 }
@@ -197,7 +200,7 @@ func TestAlerter_ConvenienceMethods(t *testing.T) {
 	var mu sync.Mutex
 	var alerts []Alert
 	var received sync.WaitGroup
-	received.Add(5)
+	received.Add(6)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var alert Alert
@@ -218,6 +221,7 @@ func TestAlerter_ConvenienceMethods(t *testing.T) {
 	a.AlertCleanupFailed("prod", "backup-123", "S3 error")
 	a.AlertStuckBackup("prod", "job-1", 2*time.Hour)
 	a.AlertSchedulerError("scheduler crashed")
+	a.AlertExporterResumeFailed("prod", "backup-456", "connection refused")
 
 	done := make(chan struct{})
 	go func() {
@@ -234,7 +238,7 @@ func TestAlerter_ConvenienceMethods(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	if len(alerts) != 5 {
-		t.Fatalf("expected 5 alerts, got %d", len(alerts))
+	if len(alerts) != 6 {
+		t.Fatalf("expected 6 alerts, got %d", len(alerts))
 	}
 }
