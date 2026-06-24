@@ -44,10 +44,11 @@ type CamundaInstance struct {
 	ParallelExecution bool                     `json:"parallel_execution"`
 
 	// External Systems
-	ElasticsearchEndpoint string `json:"elasticsearch_endpoint"`
-	ElasticsearchUsername string `json:"elasticsearch_username"`
-	BackupIDS3Endpoint    string `json:"s3_endpoint"`
-	BackupIDS3AccessKey   string `json:"s3_accesskey"`
+	ElasticsearchEndpoint           string `json:"elasticsearch_endpoint"`
+	ElasticsearchUsername           string `json:"elasticsearch_username"`
+	ElasticsearchSnapshotRepository string `json:"elasticsearch_snapshot_repository,omitempty"`
+	BackupIDS3Endpoint              string `json:"s3_endpoint"`
+	BackupIDS3AccessKey             string `json:"s3_accesskey"`
 
 	// Computed fields for UI guidance
 	ElasticsearchPasswordEnvVar string `json:"elasticsearch_password_env_var,omitempty"`

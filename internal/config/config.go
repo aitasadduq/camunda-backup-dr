@@ -228,10 +228,13 @@ func (c *Config) GetElasticsearchPassword(camundaInstanceID string) string {
 }
 
 // GetElasticsearchSnapshotRepository retrieves the snapshot repository name for a Camunda instance.
-// First checks for instance-specific env var, then falls back to default.
-func (c *Config) GetElasticsearchSnapshotRepository(camundaInstanceID string) string {
+// Priority: instance-specific env var > instanceValue (UI-configured) > global default.
+func (c *Config) GetElasticsearchSnapshotRepository(camundaInstanceID string, instanceValue string) string {
 	if repo := os.Getenv("ELASTICSEARCH_SNAPSHOT_REPOSITORY_" + NormalizeForEnvVar(camundaInstanceID)); repo != "" {
 		return repo
+	}
+	if instanceValue != "" {
+		return instanceValue
 	}
 	return c.DefaultElasticsearchSnapshotRepository
 }

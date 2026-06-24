@@ -783,36 +783,55 @@ func TestGetS3SecretKey(t *testing.T) {
 
 func TestGetElasticsearchSnapshotRepository(t *testing.T) {
 	tests := []struct {
-		name       string
-		instanceID string
-		envKey     string
-		envValue   string
-		defaultVal string
-		expected   string
+		name          string
+		instanceID    string
+		envKey        string
+		envValue      string
+		instanceValue string
+		defaultVal    string
+		expected      string
 	}{
 		{
-			name:       "instance-specific override",
-			instanceID: "my-cluster",
-			envKey:     "ELASTICSEARCH_SNAPSHOT_REPOSITORY_MY_CLUSTER",
-			envValue:   "custom-repo",
-			defaultVal: "camunda-backup",
-			expected:   "custom-repo",
+			name:          "env var takes highest priority",
+			instanceID:    "my-cluster",
+			envKey:        "ELASTICSEARCH_SNAPSHOT_REPOSITORY_MY_CLUSTER",
+			envValue:      "env-repo",
+			instanceValue: "ui-repo",
+			defaultVal:    "camunda-backup",
+			expected:      "env-repo",
 		},
 		{
-			name:       "falls back to default when no env var",
-			instanceID: "other-cluster",
-			envKey:     "",
-			envValue:   "",
-			defaultVal: "camunda-backup",
-			expected:   "camunda-backup",
+			name:          "instance value used when no env var",
+			instanceID:    "my-cluster",
+			envKey:        "",
+			instanceValue: "ui-repo",
+			defaultVal:    "camunda-backup",
+			expected:      "ui-repo",
 		},
 		{
-			name:       "simple id override",
-			instanceID: "prod1",
-			envKey:     "ELASTICSEARCH_SNAPSHOT_REPOSITORY_PROD1",
-			envValue:   "prod-repo",
-			defaultVal: "default-repo",
-			expected:   "prod-repo",
+			name:          "falls back to default when no env var or instance value",
+			instanceID:    "other-cluster",
+			envKey:        "",
+			instanceValue: "",
+			defaultVal:    "camunda-backup",
+			expected:      "camunda-backup",
+		},
+		{
+			name:          "env var overrides instance value and default",
+			instanceID:    "prod1",
+			envKey:        "ELASTICSEARCH_SNAPSHOT_REPOSITORY_PROD1",
+			envValue:      "prod-env-repo",
+			instanceValue: "prod-ui-repo",
+			defaultVal:    "default-repo",
+			expected:      "prod-env-repo",
+		},
+		{
+			name:          "instance value overrides default",
+			instanceID:    "prod1",
+			envKey:        "",
+			instanceValue: "prod-ui-repo",
+			defaultVal:    "default-repo",
+			expected:      "prod-ui-repo",
 		},
 	}
 
@@ -822,9 +841,9 @@ func TestGetElasticsearchSnapshotRepository(t *testing.T) {
 			if tt.envKey != "" {
 				setEnvForTest(t, tt.envKey, tt.envValue)
 			}
-			result := cfg.GetElasticsearchSnapshotRepository(tt.instanceID)
+			result := cfg.GetElasticsearchSnapshotRepository(tt.instanceID, tt.instanceValue)
 			if result != tt.expected {
-				t.Errorf("GetElasticsearchSnapshotRepository(%q) = %q, want %q", tt.instanceID, result, tt.expected)
+				t.Errorf("GetElasticsearchSnapshotRepository(%q, %q) = %q, want %q", tt.instanceID, tt.instanceValue, result, tt.expected)
 			}
 		})
 	}
@@ -902,7 +921,7 @@ func TestEnvVarNormalizationConsistency(t *testing.T) {
 	if got := cfg.GetS3SecretKey(instanceID); got != "s3-key" {
 		t.Errorf("GetS3SecretKey: got %q, want %q", got, "s3-key")
 	}
-	if got := cfg.GetElasticsearchSnapshotRepository(instanceID); got != "test-repo" {
+	if got := cfg.GetElasticsearchSnapshotRepository(instanceID, ""); got != "test-repo" {
 		t.Errorf("GetElasticsearchSnapshotRepository: got %q, want %q", got, "test-repo")
 	}
 	if got := cfg.GetElasticsearchSnapshotNamePrefix(instanceID); got != "test-prefix" {

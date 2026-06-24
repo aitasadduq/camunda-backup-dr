@@ -216,7 +216,7 @@ func (m *Manager) deleteESSnapshot(ctx context.Context, instance *models.Camunda
 	snapshotName := compInfo.SnapshotName
 
 	if repository == "" {
-		repository = m.cfg.GetElasticsearchSnapshotRepository(instance.ID)
+		repository = m.cfg.GetElasticsearchSnapshotRepository(instance.ID, instance.ElasticsearchSnapshotRepository)
 	}
 	if snapshotName == "" {
 		namePrefix := m.cfg.GetElasticsearchSnapshotNamePrefix(instance.ID)

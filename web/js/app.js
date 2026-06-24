@@ -507,6 +507,12 @@ function updateEnvVarHints(id) {
         esHint.classList.remove('hidden');
     }
 
+    // Update ES snapshot repo hint
+    const esRepoHint = document.getElementById('es-snapshot-repo-env-hint');
+    if (esRepoHint) {
+        esRepoHint.textContent = `ELASTICSEARCH_SNAPSHOT_REPOSITORY_${normalized}`;
+    }
+
     // Update S3 hint
     const s3Hint = document.getElementById('s3-env-hint');
     if (s3Hint) {
@@ -836,6 +842,13 @@ async function openInstanceForm(existingInstance) {
                                 placeholder="elastic"
                                 oninput="const esInput = this.closest('form').querySelector('[name=elasticsearch_endpoint]'); if (esInput && esInput.value) checkEndpointStatus(esInput, 'elasticsearch', 'es-status')">
                         </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Snapshot Repository</label>
+                            <input type="text" name="elasticsearch_snapshot_repository" value="${escapeAttr(instance.elasticsearch_snapshot_repository || '')}"
+                                class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                placeholder="camunda-backup">
+                            <p class="mt-1 text-xs text-gray-500">Leave blank to use the global default. Overridden by env var <code id="es-snapshot-repo-env-hint">ELASTICSEARCH_SNAPSHOT_REPOSITORY_${escapeHtml((instance.id || '<ID>').toUpperCase().replace(/-/g,'_'))}</code>.</p>
+                        </div>
                         <div id="es-env-hint" class="${instance.elasticsearch_password_env_var ? '' : 'hidden'} bg-blue-50 border border-blue-100 rounded-md p-3 env-var-hint">
                             <p class="text-xs text-blue-800 mb-1 font-medium">Required Environment Variable</p>
                             <p class="text-xs text-blue-600 mb-2">Set this variable on the server to provide the Elasticsearch password:</p>
@@ -968,6 +981,7 @@ async function saveInstance(event, editId) {
         ),
         elasticsearch_endpoint: fd.get('elasticsearch_endpoint') || '',
         elasticsearch_username: fd.get('elasticsearch_username') || '',
+        elasticsearch_snapshot_repository: fd.get('elasticsearch_snapshot_repository') || '',
         s3_endpoint: fd.get('s3_endpoint') || '',
         s3_accesskey: fd.get('s3_accesskey') || '',
         exporting_endpoint: fd.get('exporting_endpoint') || '',
