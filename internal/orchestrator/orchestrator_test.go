@@ -3071,3 +3071,60 @@ func TestCallExportingEndpoint_NonSuccessStatus(t *testing.T) {
 		t.Error("Expected error for non-204 status")
 	}
 }
+
+func TestExecuteElasticsearchBackup_InstanceRepositoryOverridesDefault(t *testing.T) {
+	capturedRepo := ""
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/_snapshot/") {
+			parts := strings.Split(r.URL.Path, "/")
+			if len(parts) >= 3 {
+				capturedRepo = parts[2]
+			}
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"accepted": true})
+			return
+		}
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/_snapshot/") {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"snapshots": []map[string]interface{}{
+					{"snapshot": "snap", "state": "SUCCESS"},
+				},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+
+	cfg := &config.Config{
+		DefaultElasticsearchSnapshotRepository: "global-repo",
+		DefaultElasticsearchSnapshotNamePrefix: "snap",
+	}
+	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, cfg, logger, 50*time.Millisecond, 10)
+
+	instance := setupTestInstance("test-instance", "Test Instance")
+	instance.ElasticsearchEndpoint = server.URL
+	instance.ElasticsearchSnapshotRepository = "instance-repo"
+	instance.Components = []models.CamundaComponentConfig{
+		{Name: types.ComponentElasticsearch, Enabled: true},
+	}
+
+	ctx := context.Background()
+	req := BackupRequest{
+		CamundaInstance: instance,
+		TriggerType:     types.TriggerTypeManual,
+		BackupReason:    "Test instance repo override",
+	}
+
+	orchestrator.ExecuteBackup(ctx, req)
+
+	if capturedRepo != "instance-repo" {
+		t.Errorf("expected snapshot created against 'instance-repo', got %q", capturedRepo)
+	}
+}

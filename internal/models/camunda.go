@@ -13,6 +13,8 @@ import (
 // starting and ending with a letter (no leading/trailing hyphens).
 var validIDPattern = regexp.MustCompile(`^[a-z][a-z-]*[a-z]$|^[a-z]$`)
 
+var validSnapshotRepoPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
+
 // CamundaComponentConfig represents a component configuration
 type CamundaComponentConfig struct {
 	Name    string `json:"name"`
@@ -140,6 +142,9 @@ func (ci *CamundaInstance) Validate() error {
 		return utils.ErrInvalidCamundaInstance
 	}
 	if ci.BackupIDS3AccessKey == "" {
+		return utils.ErrInvalidCamundaInstance
+	}
+	if ci.ElasticsearchSnapshotRepository != "" && !validSnapshotRepoPattern.MatchString(ci.ElasticsearchSnapshotRepository) {
 		return utils.ErrInvalidCamundaInstance
 	}
 

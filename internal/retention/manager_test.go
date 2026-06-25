@@ -1044,3 +1044,64 @@ func TestDeleteESSnapshot_AlertsOnError(t *testing.T) {
 		t.Errorf("expected at least 1 cleanup alert for ES snapshot deletion failure, got %d", count)
 	}
 }
+
+func TestDeleteESSnapshot_UsesInstanceRepository(t *testing.T) {
+	deletedRepo := ""
+	esServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/_snapshot/") {
+			parts := strings.Split(r.URL.Path, "/")
+			if len(parts) >= 3 {
+				deletedRepo = parts[2]
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"acknowledged":true}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer esServer.Close()
+
+	logger := utils.NewLogger("debug")
+	httpClient := camunda.NewHTTPClient(camunda.HTTPClientConfig{
+		Timeout:    5 * time.Second,
+		MaxRetries: 0,
+	}, logger)
+
+	cfg := &config.Config{
+		DefaultElasticsearchSnapshotRepository: "",
+	}
+
+	s3 := newMockS3Storage()
+	fs := newMockFileStorage()
+	mgr := NewManager(s3, fs, httpClient, cfg, logger)
+
+	now := time.Now()
+	instance := &models.CamundaInstance{
+		ID:                              "inst-repo",
+		SuccessRetention:                1,
+		FailureRetention:                1,
+		ElasticsearchEndpoint:           esServer.URL,
+		ElasticsearchSnapshotRepository: "instance-repo",
+	}
+
+	s3.addBackup("inst-repo", "b1", types.BackupStatusCompleted, now.Add(-2*time.Hour))
+	s3.addBackup("inst-repo", "b2", types.BackupStatusCompleted, now.Add(-1*time.Hour))
+
+	s3.mu.Lock()
+	s3.backupHistory["inst-repo"]["b1"].Components = map[string]models.ComponentBackupInfo{
+		types.ComponentElasticsearch: {
+			Enabled:      true,
+			Status:       types.ComponentStatusCompleted,
+			SnapshotName: "b1",
+		},
+	}
+	s3.mu.Unlock()
+
+	mgr.ApplyRetention(instance)
+
+	time.Sleep(200 * time.Millisecond)
+
+	if deletedRepo != "instance-repo" {
+		t.Errorf("expected ES snapshot deleted from 'instance-repo', got %q", deletedRepo)
+	}
+}
