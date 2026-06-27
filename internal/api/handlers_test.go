@@ -2246,3 +2246,59 @@ func TestCreateCamundaInstanceHandler_ESExplicitOverridesDefaults(t *testing.T) 
 		t.Errorf("ES username = %q, want explicit value", inst.ElasticsearchUsername)
 	}
 }
+
+func TestCreateCamundaInstanceHandler_ESSnapshotRepositoryStored(t *testing.T) {
+	logger := utils.NewLogger("error")
+	cm := &mockCamundaManager{instances: []models.CamundaInstance{}}
+	sched := &mockScheduler{running: true}
+	handlers := NewHandlers(cm, nil, nil, sched, nil, nil, logger, nil)
+
+	body := `{
+		"id": "c",
+		"name": "Test",
+		"base_url": "http://camunda.local",
+		"s3_endpoint": "http://s3.local",
+		"s3_accesskey": "key",
+		"elasticsearch_snapshot_repository": "my-custom-repo"
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/api/camundas", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handlers.CreateCamundaInstanceHandler(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(cm.instances) != 1 {
+		t.Fatalf("expected 1 instance, got %d", len(cm.instances))
+	}
+	if cm.instances[0].ElasticsearchSnapshotRepository != "my-custom-repo" {
+		t.Errorf("ElasticsearchSnapshotRepository = %q, want %q", cm.instances[0].ElasticsearchSnapshotRepository, "my-custom-repo")
+	}
+}
+
+func TestCreateCamundaInstanceHandler_ESSnapshotRepositoryEmpty(t *testing.T) {
+	logger := utils.NewLogger("error")
+	cm := &mockCamundaManager{instances: []models.CamundaInstance{}}
+	sched := &mockScheduler{running: true}
+	handlers := NewHandlers(cm, nil, nil, sched, nil, nil, logger, nil)
+
+	body := `{
+		"id": "d",
+		"name": "Test",
+		"base_url": "http://camunda.local",
+		"s3_endpoint": "http://s3.local",
+		"s3_accesskey": "key"
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/api/camundas", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handlers.CreateCamundaInstanceHandler(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if cm.instances[0].ElasticsearchSnapshotRepository != "" {
+		t.Errorf("ElasticsearchSnapshotRepository should be empty when not provided, got %q", cm.instances[0].ElasticsearchSnapshotRepository)
+	}
+}

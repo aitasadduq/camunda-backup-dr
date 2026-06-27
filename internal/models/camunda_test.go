@@ -421,6 +421,12 @@ func TestCamundaInstance_Validate_AllErrors(t *testing.T) {
 		}, utils.ErrNoComponentsEnabled},
 		{"single letter ID is valid", func(ci *CamundaInstance) { ci.ID = "a" }, nil},
 		{"zero success retention is valid", func(ci *CamundaInstance) { ci.SuccessRetention = 0 }, nil},
+		{"snapshot repo with slash is invalid", func(ci *CamundaInstance) { ci.ElasticsearchSnapshotRepository = "repo/traversal" }, utils.ErrInvalidCamundaInstance},
+		{"snapshot repo with dotdot is invalid", func(ci *CamundaInstance) { ci.ElasticsearchSnapshotRepository = "../other" }, utils.ErrInvalidCamundaInstance},
+		{"snapshot repo with percent is invalid", func(ci *CamundaInstance) { ci.ElasticsearchSnapshotRepository = "repo%2ftraversal" }, utils.ErrInvalidCamundaInstance},
+		{"valid snapshot repo is accepted", func(ci *CamundaInstance) { ci.ElasticsearchSnapshotRepository = "camunda-backup" }, nil},
+		{"valid snapshot repo with dots and underscores", func(ci *CamundaInstance) { ci.ElasticsearchSnapshotRepository = "my_repo.v2" }, nil},
+		{"empty snapshot repo is accepted", func(ci *CamundaInstance) { ci.ElasticsearchSnapshotRepository = "" }, nil},
 	}
 
 	for _, tt := range tests {

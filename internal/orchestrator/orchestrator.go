@@ -454,7 +454,7 @@ func (o *Orchestrator) executeElasticsearchBackup(ctx context.Context, instance 
 	}
 
 	// Get snapshot repository from config
-	repository := o.cfg.GetElasticsearchSnapshotRepository(instance.ID)
+	repository := o.cfg.GetElasticsearchSnapshotRepository(instance.ID, instance.ElasticsearchSnapshotRepository)
 	if repository == "" {
 		o.writeLog(instance.ID, backupID, "Elasticsearch backup failed: snapshot repository not configured")
 		return types.ComponentStatusFailed, fmt.Errorf("snapshot repository not configured")
