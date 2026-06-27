@@ -955,6 +955,62 @@ func TestCreateBackupHistory_DurationCalculation(t *testing.T) {
 	}
 }
 
+// Test: per-component timing is propagated into ComponentBackupInfo
+func TestCreateBackupHistory_ComponentDuration(t *testing.T) {
+	fileStorage := newMockFileStorage()
+	s3Storage := newMockS3Storage()
+	httpClient := camunda.NewHTTPClient(camunda.DefaultHTTPClientConfig(), utils.NewLogger("test"))
+	logger := utils.NewLogger("test")
+	orchestrator := NewOrchestrator(fileStorage, s3Storage, httpClient, setupTestConfig(), logger, 100*time.Millisecond, 50)
+
+	start := time.Now()
+	zeebeStart := start.Add(1 * time.Second)
+	zeebeEnd := zeebeStart.Add(12 * time.Second)
+
+	execution := &models.BackupExecution{
+		ID:                "test-backup",
+		BackupID:          "test-backup",
+		CamundaInstanceID: "test-instance",
+		StartTime:         start,
+		Status:            types.BackupStatusCompleted,
+		ComponentStatus: map[string]types.ComponentStatus{
+			types.ComponentZeebe:    types.ComponentStatusCompleted,
+			types.ComponentOptimize: types.ComponentStatusSkipped, // never ran -> no timing
+		},
+		ComponentTimings: map[string]models.ComponentTiming{
+			types.ComponentZeebe: {StartTime: zeebeStart, EndTime: zeebeEnd},
+		},
+	}
+
+	req := BackupRequest{
+		CamundaInstance: setupTestInstance("test-instance", "Test Instance"),
+		TriggerType:     types.TriggerTypeManual,
+		BackupReason:    "Test component duration",
+	}
+
+	history := orchestrator.createBackupHistory(req, execution)
+
+	zeebe, ok := history.Components[types.ComponentZeebe]
+	if !ok {
+		t.Fatal("Expected Zeebe component in history")
+	}
+	if zeebe.DurationSeconds != 12 {
+		t.Errorf("Expected Zeebe duration 12s, got: %d", zeebe.DurationSeconds)
+	}
+	if zeebe.StartTime == nil || zeebe.EndTime == nil {
+		t.Error("Expected Zeebe StartTime and EndTime to be set")
+	}
+
+	// Component without timing should have zero duration and nil times
+	optimize := history.Components[types.ComponentOptimize]
+	if optimize.DurationSeconds != 0 {
+		t.Errorf("Expected Optimize duration 0s, got: %d", optimize.DurationSeconds)
+	}
+	if optimize.StartTime != nil || optimize.EndTime != nil {
+		t.Error("Expected Optimize StartTime and EndTime to be nil")
+	}
+}
+
 func TestCreateBackupHistory_NoDurationWhenNotComplete(t *testing.T) {
 	// Set up orchestrator
 	fileStorage := newMockFileStorage()

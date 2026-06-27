@@ -337,6 +337,39 @@ func (m *Manager) UpdateComponentConfig(instanceID string, componentName string,
 	return nil
 }
 
+// UpdateLastBackup persists the time and status of the most recent backup
+// for an instance. It is best-effort: a missing instance returns an error so
+// callers can log it, but it never mutates unrelated instances.
+func (m *Manager) UpdateLastBackup(id string, backupTime time.Time, status string) error {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	config, err := m.fileStorage.LoadConfiguration()
+	if err != nil {
+		return fmt.Errorf("failed to load configuration: %w", err)
+	}
+
+	found := false
+	for i := range config.CamundaInstances {
+		if config.CamundaInstances[i].ID == id {
+			config.CamundaInstances[i].UpdateLastBackup(backupTime, status)
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return utils.ErrCamundaInstanceNotFound
+	}
+
+	if err := m.fileStorage.SaveConfiguration(config); err != nil {
+		return fmt.Errorf("failed to save configuration: %w", err)
+	}
+
+	m.logger.Info("Updated last backup for instance %s: status=%s", id, status)
+	return nil
+}
+
 // GetEnabledInstances returns all enabled Camunda instances
 func (m *Manager) GetEnabledInstances() ([]models.CamundaInstance, error) {
 	m.mutex.RLock()

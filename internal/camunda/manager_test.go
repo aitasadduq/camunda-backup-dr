@@ -3,6 +3,7 @@ package camunda
 import (
 	"os"
 	"testing"
+	"time"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/config"
 	"github.com/aitasadduq/camunda-backup-dr/internal/models"
@@ -260,6 +261,53 @@ func TestManager_EnableInstance(t *testing.T) {
 
 	if !retrieved.Enabled {
 		t.Error("Instance should be enabled")
+	}
+}
+
+func TestManager_UpdateLastBackup(t *testing.T) {
+	manager, _, cleanup := setupTestManager(t)
+	defer cleanup()
+
+	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
+	instance.BackupIDS3Endpoint = "https://s3.example.com"
+	instance.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
+	if err := manager.CreateInstance(instance); err != nil {
+		t.Fatalf("Failed to create instance: %v", err)
+	}
+
+	// New instances start as never backed up
+	retrieved, err := manager.GetInstance("camunda-a")
+	if err != nil {
+		t.Fatalf("Failed to get instance: %v", err)
+	}
+	if retrieved.LastBackupStatus != "NEVER_BACKED_UP" || retrieved.LastBackupAt != nil {
+		t.Errorf("Expected never-backed-up defaults, got status=%q at=%v", retrieved.LastBackupStatus, retrieved.LastBackupAt)
+	}
+
+	backupTime := time.Now().UTC().Truncate(time.Second)
+	if err := manager.UpdateLastBackup("camunda-a", backupTime, "COMPLETED"); err != nil {
+		t.Fatalf("UpdateLastBackup failed: %v", err)
+	}
+
+	retrieved, err = manager.GetInstance("camunda-a")
+	if err != nil {
+		t.Fatalf("Failed to get instance: %v", err)
+	}
+	if retrieved.LastBackupStatus != "COMPLETED" {
+		t.Errorf("Expected LastBackupStatus COMPLETED, got %q", retrieved.LastBackupStatus)
+	}
+	if retrieved.LastBackupAt == nil || !retrieved.LastBackupAt.Equal(backupTime) {
+		t.Errorf("Expected LastBackupAt %v, got %v", backupTime, retrieved.LastBackupAt)
+	}
+}
+
+func TestManager_UpdateLastBackup_NotFound(t *testing.T) {
+	manager, _, cleanup := setupTestManager(t)
+	defer cleanup()
+
+	err := manager.UpdateLastBackup("does-not-exist", time.Now(), "COMPLETED")
+	if err != utils.ErrCamundaInstanceNotFound {
+		t.Errorf("Expected ErrCamundaInstanceNotFound, got %v", err)
 	}
 }
 

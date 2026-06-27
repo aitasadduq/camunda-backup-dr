@@ -15,8 +15,16 @@ type BackupExecution struct {
 	Status            types.BackupStatus               `json:"status"`
 	BackupID          string                           `json:"backup_id"`
 	ComponentStatus   map[string]types.ComponentStatus `json:"component_status"`
+	ComponentTimings  map[string]ComponentTiming       `json:"-"`
 	ErrorMessage      string                           `json:"error_message,omitempty"`
 	Logs              []string                         `json:"logs"`
+}
+
+// ComponentTiming captures per-component execution timing. Zero values mean
+// the component has not started or not finished yet.
+type ComponentTiming struct {
+	StartTime time.Time
+	EndTime   time.Time
 }
 
 // BackupHistory represents a backup history entry stored in S3
@@ -75,8 +83,29 @@ func NewBackupExecution(camundaInstanceID, backupID string) *BackupExecution {
 		Status:            types.BackupStatusRunning,
 		BackupID:          backupID,
 		ComponentStatus:   make(map[string]types.ComponentStatus),
+		ComponentTimings:  make(map[string]ComponentTiming),
 		Logs:              []string{},
 	}
+}
+
+// StartComponent records the start time for a component backup.
+func (be *BackupExecution) StartComponent(component string) {
+	if be.ComponentTimings == nil {
+		be.ComponentTimings = make(map[string]ComponentTiming)
+	}
+	t := be.ComponentTimings[component]
+	t.StartTime = time.Now()
+	be.ComponentTimings[component] = t
+}
+
+// EndComponent records the end time for a component backup.
+func (be *BackupExecution) EndComponent(component string) {
+	if be.ComponentTimings == nil {
+		be.ComponentTimings = make(map[string]ComponentTiming)
+	}
+	t := be.ComponentTimings[component]
+	t.EndTime = time.Now()
+	be.ComponentTimings[component] = t
 }
 
 // UpdateComponentStatus updates the status of a component
