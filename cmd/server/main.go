@@ -105,6 +105,14 @@ func main() {
 	})
 	logger.Info("Retention manager initialized and wired to orchestrator")
 
+	// Persist last-backup time/status to the instance config after each backup
+	// so the UI reflects the most recent backup result.
+	backupOrchestrator.SetLastBackupFunc(func(instanceID string, backupTime time.Time, status string) {
+		if err := camundaManager.UpdateLastBackup(instanceID, backupTime, status); err != nil {
+			logger.Error("Failed to update last backup for instance %s: %v", instanceID, err)
+		}
+	})
+
 	// Initialize alerter for critical failure notifications
 	alerter := utils.NewAlerter(cfg.AlertWebhookURL, logger)
 	alerter.SetFilter(utils.AlertFilter{

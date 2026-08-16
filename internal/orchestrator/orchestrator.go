@@ -26,6 +26,10 @@ import (
 // access both success and failure retention counts and component config.
 type RetentionFunc func(instance *models.CamundaInstance)
 
+// LastBackupFunc is a callback invoked after a backup reaches a terminal state
+// to persist the instance's last-backup time and status (e.g. for the UI).
+type LastBackupFunc func(instanceID string, backupTime time.Time, status string)
+
 // Orchestrator manages the backup workflow for Camunda instances
 type Orchestrator struct {
 	fileStorage     storage.FileStorage
@@ -38,6 +42,7 @@ type Orchestrator struct {
 	pollInterval    time.Duration
 	maxPollAttempts int
 	retentionFunc   RetentionFunc
+	lastBackupFunc  LastBackupFunc
 	alerter         *utils.Alerter
 }
 
@@ -65,6 +70,11 @@ func NewOrchestrator(
 // SetRetentionFunc sets the callback invoked after a successful backup.
 func (o *Orchestrator) SetRetentionFunc(fn RetentionFunc) {
 	o.retentionFunc = fn
+}
+
+// SetLastBackupFunc sets the callback invoked to persist last-backup metadata.
+func (o *Orchestrator) SetLastBackupFunc(fn LastBackupFunc) {
+	o.lastBackupFunc = fn
 }
 
 // SetAlerter sets the alerter used for critical failure notifications.
@@ -115,6 +125,20 @@ func (o *Orchestrator) ExecuteBackup(ctx context.Context, req BackupRequest) (*m
 
 	// Ensure we clear the running flag when done (mutex not held during backup)
 	defer o.backupRunning.Store(false)
+
+	// Persist the last-backup result for the instance on every terminal path
+	// now that this request owns the backup slot. Runs before the running flag
+	// is cleared; reads execution's final status at return time.
+	defer func() {
+		if o.lastBackupFunc == nil {
+			return
+		}
+		backupTime := time.Now()
+		if execution.EndTime != nil {
+			backupTime = *execution.EndTime
+		}
+		o.lastBackupFunc(req.CamundaInstance.ID, backupTime, string(execution.Status))
+	}()
 
 	// Store backup ID in S3 before triggering components
 	if err := o.s3Storage.StoreLatestBackupID(req.CamundaInstance.ID, backupID); err != nil {
@@ -233,6 +257,7 @@ func (o *Orchestrator) executeComponentsParallel(ctx context.Context, instance *
 			// Update status to running
 			mu.Lock()
 			execution.UpdateComponentStatus(comp, types.ComponentStatusRunning)
+			execution.StartComponent(comp)
 			mu.Unlock()
 
 			// Execute component backup
@@ -241,6 +266,7 @@ func (o *Orchestrator) executeComponentsParallel(ctx context.Context, instance *
 			// Update status
 			mu.Lock()
 			execution.UpdateComponentStatus(comp, status)
+			execution.EndComponent(comp)
 			if err != nil {
 				o.writeLog(instance.ID, execution.BackupID, fmt.Sprintf("Component %s failed: %v", comp, err))
 			}
@@ -267,6 +293,7 @@ func (o *Orchestrator) executeComponentsSequential(ctx context.Context, instance
 	for _, component := range enabledComponents {
 		// Update status to running
 		execution.UpdateComponentStatus(component, types.ComponentStatusRunning)
+		execution.StartComponent(component)
 		o.writeLog(instance.ID, execution.BackupID, fmt.Sprintf("Starting backup for component: %s", component))
 
 		// Execute component backup
@@ -274,6 +301,7 @@ func (o *Orchestrator) executeComponentsSequential(ctx context.Context, instance
 
 		// Update status
 		execution.UpdateComponentStatus(component, status)
+		execution.EndComponent(component)
 
 		if err != nil {
 			o.writeLog(instance.ID, execution.BackupID, fmt.Sprintf("Component %s failed: %v", component, err))
@@ -878,12 +906,26 @@ func (o *Orchestrator) createBackupHistory(req BackupRequest, execution *models.
 		history.DurationSeconds = &duration
 	}
 
-	// Add component information
+	// Add component information, including per-component timing when available
 	for component, status := range execution.ComponentStatus {
-		history.Components[component] = models.ComponentBackupInfo{
+		info := models.ComponentBackupInfo{
 			Enabled: true,
 			Status:  status,
 		}
+		if timing, ok := execution.ComponentTimings[component]; ok {
+			if !timing.StartTime.IsZero() {
+				start := timing.StartTime
+				info.StartTime = &start
+			}
+			if !timing.EndTime.IsZero() {
+				end := timing.EndTime
+				info.EndTime = &end
+			}
+			if !timing.StartTime.IsZero() && !timing.EndTime.IsZero() {
+				info.DurationSeconds = int(timing.EndTime.Sub(timing.StartTime).Seconds())
+			}
+		}
+		history.Components[component] = info
 	}
 
 	// Calculate backup stats

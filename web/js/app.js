@@ -291,11 +291,45 @@ function startBackupPolling() {
 
             if (data.active_backups === 0) {
                 stopBackupPolling();
-                showToast('Backup completed', 'success');
+                await notifyBackupResult();
                 if (state.currentTab === 'dashboard') loadDashboard();
             }
         } catch (err) { console.error('Backup polling error:', err.message || err); }
     }, BACKUP_POLLING_INTERVAL_MS);
+}
+
+/**
+ * Reports the outcome of the just-finished backup. Looks up the actual final
+ * status of the tracked backup so we surface failures/incompletes instead of
+ * always claiming success.
+ */
+async function notifyBackupResult() {
+    const instanceId = state.activeBackupInstanceId;
+    const backupId = state.activeBackupId;
+    // Clear tracking up front so we never double-report the same backup.
+    state.activeBackupInstanceId = null;
+    state.activeBackupId = null;
+
+    if (!instanceId || !backupId) {
+        showToast('Backup finished', 'info');
+        return;
+    }
+
+    try {
+        const backup = await api.get(`api/camundas/${instanceId}/backups/${backupId}`);
+        const status = (backup.status || '').toUpperCase();
+        if (status === 'COMPLETED') {
+            showToast('Backup completed successfully', 'success');
+        } else if (status === 'FAILED') {
+            showToast(`Backup failed${backup.error_message ? ': ' + backup.error_message : ''}`, 'error');
+        } else if (status === 'INCOMPLETE') {
+            showToast('Backup incomplete: not all components finished', 'warning');
+        } else {
+            showToast(`Backup finished with status: ${backup.status || 'unknown'}`, 'info');
+        }
+    } catch (err) {
+        showToast('Backup finished, but its final status could not be determined', 'warning');
+    }
 }
 
 function stopBackupPolling() {
@@ -1038,14 +1072,20 @@ async function loadBackupsTab() {
         const instances = await getInstances();
         renderBackupsTabControls(instances);
 
-        if (instances.length > 0) {
-            const sel = state.selectedInstanceId || instances[0].id;
-            state.selectedInstanceId = sel;
-            document.getElementById('backup-instance-select').value = sel;
-            loadBackups(sel, state.backupFilter);
+        if (instances.length === 0) {
+            renderBackupsEmptyState();
+            return;
         }
+
+        // Reset selection if it points to an instance that no longer exists
+        let sel = state.selectedInstanceId;
+        if (!instances.some(i => i.id === sel)) sel = instances[0].id;
+        state.selectedInstanceId = sel;
+        const select = document.getElementById('backup-instance-select');
+        if (select) select.value = sel;
+        loadBackups(sel, state.backupFilter);
     } catch (err) {
-        const el = document.getElementById('backups-content');
+        const el = document.getElementById('backups-table-container');
         if (el) el.innerHTML = `<div class="empty-state"><p>Failed to load instances</p></div>`;
     }
 }
@@ -1053,6 +1093,13 @@ async function loadBackupsTab() {
 function renderBackupsTabControls(instances) {
     const controls = document.getElementById('backups-controls');
     if (!controls) return;
+
+    // With no instances there is nothing to select or filter — hide the controls
+    // entirely so we don't show an empty, unusable dropdown.
+    if (!instances || instances.length === 0) {
+        controls.innerHTML = '';
+        return;
+    }
 
     controls.innerHTML = `
         <div class="flex flex-col sm:flex-row items-start sm:items-center gap-3">
@@ -1069,6 +1116,18 @@ function renderBackupsTabControls(instances) {
                     </button>
                 `).join('')}
             </div>
+        </div>
+    `;
+}
+
+function renderBackupsEmptyState() {
+    const el = document.getElementById('backups-table-container');
+    if (!el) return;
+    el.innerHTML = `
+        <div class="empty-state">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"/></svg>
+            <p class="text-lg font-medium text-gray-600">No Instances Configured</p>
+            <p class="text-sm mt-1">Add a Camunda instance to start viewing backups. <a href="#" onclick="showTab('instances'); return false;" class="text-blue-600 hover:underline">Add one</a>.</p>
         </div>
     `;
 }
@@ -1224,7 +1283,7 @@ async function showBackupDetail(instanceId, backupId) {
                                     </div>
                                     <div class="grid grid-cols-2 gap-2 text-xs text-gray-500">
                                         <div>Enabled: ${comp.enabled ? 'Yes' : 'No'}</div>
-                                        <div>Duration: ${comp.duration_seconds ? formatDuration(comp.duration_seconds) : '—'}</div>
+                                        <div>Duration: ${(comp.end_time && comp.status !== 'SKIPPED') ? formatDuration(comp.duration_seconds || 0) : '—'}</div>
                                         ${comp.snapshot_name ? `<div>Snapshot: ${escapeHtml(comp.snapshot_name)}</div>` : ''}
                                         ${comp.snapshot_repository ? `<div>Repository: ${escapeHtml(comp.snapshot_repository)}</div>` : ''}
                                     </div>

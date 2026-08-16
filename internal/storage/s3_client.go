@@ -117,6 +117,13 @@ func NewS3Client(cfg S3Config, logger *utils.Logger) (*S3Client, error) {
 	usePathStyle := cfg.UsePathStyle
 	client := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
 		o.UsePathStyle = usePathStyle
+		// Only calculate/validate checksums when explicitly required. The SDK
+		// default ("when supported") adds a default CRC32 checksum to uploads,
+		// which forces "Content-Encoding: aws-chunked" with a streaming trailer.
+		// Several S3-compatible providers (e.g. Oracle OCI Object Storage) do not
+		// support aws-chunked encoding and reject such requests, so disable it.
+		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+		o.ResponseChecksumValidation = aws.ResponseChecksumValidationWhenRequired
 	})
 
 	return &S3Client{
