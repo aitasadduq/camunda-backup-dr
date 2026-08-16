@@ -30,6 +30,7 @@ type EndpointCheckRequest struct {
 	Username   string `json:"username,omitempty"`
 	Password   string `json:"password,omitempty"`
 	AccessKey  string `json:"access_key,omitempty"`
+	SecretKey  string `json:"secret_key,omitempty"`
 }
 
 // EndpointCheckResponse represents the result of an endpoint connectivity check
@@ -158,9 +159,9 @@ func (h *Handlers) CheckEndpointHandler(w http.ResponseWriter, r *http.Request) 
 		}
 		result = probeElasticsearch(req.URL, req.Username, password)
 	case "s3":
-		// Look up secret key: instance-specific env var > default
-		secretKey := ""
-		if req.InstanceID != "" && h.cfg != nil {
+		// Look up secret key: request body > instance-specific env var > default
+		secretKey := req.SecretKey
+		if secretKey == "" && req.InstanceID != "" && h.cfg != nil {
 			secretKey = h.cfg.GetS3SecretKey(req.InstanceID)
 		}
 		result = probeS3(req.URL, req.AccessKey, secretKey)

@@ -760,3 +760,94 @@ func TestCheckEndpointHandler_RouteRegistered(t *testing.T) {
 		t.Errorf("Expected connected status from routed request, got %q", resp.Status)
 	}
 }
+
+func TestCheckEndpointHandler_S3SecretKeyFromRequest(t *testing.T) {
+	origProbe := probeS3WithSDK
+	defer func() { probeS3WithSDK = origProbe }()
+
+	var gotSecretKey string
+	probeS3WithSDK = func(endpoint, accessKey, secretKey string) EndpointCheckResponse {
+		gotSecretKey = secretKey
+		return EndpointCheckResponse{Status: EndpointStatusConnected, Message: "Connected and authenticated"}
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	// A secret key typed in the UI takes precedence over the env var
+	t.Setenv("S3_SECRETKEY_MY_INSTANCE", "from-env")
+
+	h := setupCheckEndpointHandlers(t)
+	_, resp := doCheckEndpoint(t, h, EndpointCheckRequest{
+		URL:        srv.URL,
+		Type:       "s3",
+		InstanceID: "my-instance",
+		AccessKey:  "AKIAIOSFODNN7EXAMPLE",
+		SecretKey:  "typed-in-ui",
+	})
+
+	if gotSecretKey != "typed-in-ui" {
+		t.Errorf("probe received secret key %q, want %q", gotSecretKey, "typed-in-ui")
+	}
+	if resp.Status != EndpointStatusConnected {
+		t.Errorf("Expected status %q, got %q", EndpointStatusConnected, resp.Status)
+	}
+}
+
+func TestCheckEndpointHandler_S3SecretKeyFallsBackToEnv(t *testing.T) {
+	origProbe := probeS3WithSDK
+	defer func() { probeS3WithSDK = origProbe }()
+
+	var gotSecretKey string
+	probeS3WithSDK = func(endpoint, accessKey, secretKey string) EndpointCheckResponse {
+		gotSecretKey = secretKey
+		return EndpointCheckResponse{Status: EndpointStatusConnected, Message: "Connected and authenticated"}
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	t.Setenv("S3_SECRETKEY_MY_INSTANCE", "from-env")
+
+	h := setupCheckEndpointHandlers(t)
+	doCheckEndpoint(t, h, EndpointCheckRequest{
+		URL:        srv.URL,
+		Type:       "s3",
+		InstanceID: "my-instance",
+		AccessKey:  "AKIAIOSFODNN7EXAMPLE",
+	})
+
+	if gotSecretKey != "from-env" {
+		t.Errorf("probe received secret key %q, want %q", gotSecretKey, "from-env")
+	}
+}
+
+func TestCheckEndpointHandler_ESPasswordFromRequestOverridesEnv(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "Basic "+basicAuth("elastic", "typed-in-ui") {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	t.Setenv("ELASTICSEARCH_PASSWORD_TEST_CLUSTER", "from-env")
+
+	h := setupCheckEndpointHandlers(t)
+	_, resp := doCheckEndpoint(t, h, EndpointCheckRequest{
+		URL:        srv.URL,
+		Type:       "elasticsearch",
+		InstanceID: "test-cluster",
+		Username:   "elastic",
+		Password:   "typed-in-ui",
+	})
+
+	if resp.Status != EndpointStatusConnected {
+		t.Errorf("Expected status %q, got %q (message: %s)", EndpointStatusConnected, resp.Status, resp.Message)
+	}
+}

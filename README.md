@@ -178,9 +178,24 @@ The application is configured via environment variables:
 - `DEFAULT_S3_ENDPOINT` - Default S3 endpoint (default: "")
 - `DEFAULT_S3_ACCESSKEY` - Default S3 access key (default: "")
 
-#### Per-Instance Credentials (Future)
+#### Per-Instance Credentials
 - `ELASTICSEARCH_PASSWORD_<CAMUNDA_ID>` - Elasticsearch password for specific instance
 - `S3_SECRETKEY_<CAMUNDA_ID>` - S3 secret key for specific instance
+
+The Elasticsearch password and S3 secret key can also be entered directly in the
+instance form in the web UI, alongside the username and access key. Resolution order
+for each instance:
+
+1. The instance-specific environment variable above
+2. The credential entered in the UI
+3. The global default (`DEFAULT_ELASTICSEARCH_PASSWORD` / `DEFAULT_S3_SECRETKEY`)
+
+UI-entered credentials are stored in `$DATA_DIR/secrets.json` with `0600` permissions,
+separate from `config.json`. They are never returned by the API — the API only reports
+whether a credential is set (`elasticsearch_password_set` / `s3_secret_key_set`), so a
+saved value cannot be read back through the UI. Because this file lives on the data
+volume in plaintext, the environment variables remain the recommended option wherever a
+secret manager is available.
 
 ### Development
 

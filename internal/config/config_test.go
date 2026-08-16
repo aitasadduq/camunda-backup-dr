@@ -948,3 +948,80 @@ func TestNormalizeBasePath(t *testing.T) {
 		}
 	}
 }
+
+// stubSecretProvider implements SecretProvider for testing.
+type stubSecretProvider struct {
+	esPasswords map[string]string
+	s3Keys      map[string]string
+}
+
+func (s *stubSecretProvider) ElasticsearchPassword(id string) string { return s.esPasswords[id] }
+func (s *stubSecretProvider) S3SecretKey(id string) string           { return s.s3Keys[id] }
+
+func TestSecretProviderPrecedence(t *testing.T) {
+	provider := &stubSecretProvider{
+		esPasswords: map[string]string{"camunda-a": "ui-pw-a", "camunda-b": "ui-pw-b"},
+		s3Keys:      map[string]string{"camunda-a": "ui-key-a", "camunda-b": "ui-key-b"},
+	}
+
+	t.Run("UI secret wins over global default", func(t *testing.T) {
+		cfg := &Config{DefaultElasticsearchPassword: "global-pw", DefaultS3SecretKey: "global-key"}
+		cfg.SetSecretProvider(provider)
+
+		if got := cfg.GetElasticsearchPassword("camunda-a"); got != "ui-pw-a" {
+			t.Errorf("GetElasticsearchPassword = %q, want %q", got, "ui-pw-a")
+		}
+		if got := cfg.GetS3SecretKey("camunda-a"); got != "ui-key-a" {
+			t.Errorf("GetS3SecretKey = %q, want %q", got, "ui-key-a")
+		}
+	})
+
+	t.Run("instance env var wins over UI secret", func(t *testing.T) {
+		cfg := &Config{DefaultElasticsearchPassword: "global-pw", DefaultS3SecretKey: "global-key"}
+		cfg.SetSecretProvider(provider)
+		setEnvForTest(t, "ELASTICSEARCH_PASSWORD_CAMUNDA_B", "env-pw-b")
+		setEnvForTest(t, "S3_SECRETKEY_CAMUNDA_B", "env-key-b")
+
+		if got := cfg.GetElasticsearchPassword("camunda-b"); got != "env-pw-b" {
+			t.Errorf("GetElasticsearchPassword = %q, want %q", got, "env-pw-b")
+		}
+		if got := cfg.GetS3SecretKey("camunda-b"); got != "env-key-b" {
+			t.Errorf("GetS3SecretKey = %q, want %q", got, "env-key-b")
+		}
+	})
+
+	t.Run("secrets are resolved per instance", func(t *testing.T) {
+		cfg := &Config{}
+		cfg.SetSecretProvider(provider)
+
+		if got := cfg.GetElasticsearchPassword("camunda-b"); got != "ui-pw-b" {
+			t.Errorf("GetElasticsearchPassword = %q, want %q", got, "ui-pw-b")
+		}
+		if got := cfg.GetS3SecretKey("camunda-b"); got != "ui-key-b" {
+			t.Errorf("GetS3SecretKey = %q, want %q", got, "ui-key-b")
+		}
+	})
+
+	t.Run("falls back to default when no UI secret is stored", func(t *testing.T) {
+		cfg := &Config{DefaultElasticsearchPassword: "global-pw", DefaultS3SecretKey: "global-key"}
+		cfg.SetSecretProvider(provider)
+
+		if got := cfg.GetElasticsearchPassword("camunda-unknown"); got != "global-pw" {
+			t.Errorf("GetElasticsearchPassword = %q, want %q", got, "global-pw")
+		}
+		if got := cfg.GetS3SecretKey("camunda-unknown"); got != "global-key" {
+			t.Errorf("GetS3SecretKey = %q, want %q", got, "global-key")
+		}
+	})
+
+	t.Run("behavior is unchanged when no provider is registered", func(t *testing.T) {
+		cfg := &Config{DefaultElasticsearchPassword: "global-pw", DefaultS3SecretKey: "global-key"}
+
+		if got := cfg.GetElasticsearchPassword("camunda-a"); got != "global-pw" {
+			t.Errorf("GetElasticsearchPassword = %q, want %q", got, "global-pw")
+		}
+		if got := cfg.GetS3SecretKey("camunda-a"); got != "global-key" {
+			t.Errorf("GetS3SecretKey = %q, want %q", got, "global-key")
+		}
+	})
+}

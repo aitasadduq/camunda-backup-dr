@@ -56,6 +56,8 @@ After every change, run in this order:
 - Structured contextual loggers: `BackupLogger` (with backup ID), `ContextLogger` (with operation/component/instance) — see `internal/utils/logger.go`
 - Adapter pattern in `main.go`: `backupExecutorAdapter` bridges orchestrator to scheduler
 - Per-instance credential overrides via env vars: `ELASTICSEARCH_PASSWORD_<INSTANCE_ID>`, `S3_SECRETKEY_<INSTANCE_ID>` (hyphens → underscores, uppercased)
+- Credentials can also be entered in the UI; they go to `internal/secrets` (`$DATA_DIR/secrets.json`, 0600), never to `config.json`. Resolution order is instance env var > UI-stored secret > global default, wired via `config.SetSecretProvider`
+- `web/css/tailwind.css` is a pre-built, purged bundle and there is no Node toolchain here — new markup must reuse utility classes already present in that file, or add rules to the hand-written `web/css/styles.css`
 - S3 is the authoritative source of backup existence and restore eligibility; file storage only holds config and logs
 - Tests use table-driven patterns, mock interfaces, `httptest.Server` for external services, and `testEnv` struct with deferred cleanup
 - Build tags: `//go:build integration` for ES/S3 tests, `//go:build e2e` for end-to-end tests
@@ -63,7 +65,7 @@ After every change, run in this order:
 - For implementation status, see `planning/checklist.md`
 
 ## Don't
-- Don't store credentials in file storage or config JSON — use environment variables only
+- Don't store credentials in config JSON or logs — use environment variables, or the `internal/secrets` store for UI-entered values
 - Don't allow concurrent backups (scheduled or manual) — the scheduler and orchestrator enforce this via `atomic.Bool`
 - Don't delete the most recent successful backup during retention cleanup — retention manager has safety guards for this
 - Don't bypass the `AppError` system for HTTP error responses — use `ToHTTPError()` to convert errors to consistent JSON responses

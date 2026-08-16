@@ -52,9 +52,18 @@ type CamundaInstance struct {
 	BackupIDS3Endpoint              string `json:"s3_endpoint"`
 	BackupIDS3AccessKey             string `json:"s3_accesskey"`
 
+	// Write-only credential inputs. Set by the API when the user enters a
+	// credential in the UI; nil means "leave unchanged", a pointer to "" means
+	// "clear". These are stripped before the instance is persisted to
+	// config.json — the values live in the secrets store instead.
+	ElasticsearchPassword *string `json:"elasticsearch_password,omitempty"`
+	BackupIDS3SecretKey   *string `json:"s3_secret_key,omitempty"`
+
 	// Computed fields for UI guidance
 	ElasticsearchPasswordEnvVar string `json:"elasticsearch_password_env_var,omitempty"`
 	BackupIDS3SecretKeyEnvVar   string `json:"s3_secret_key_env_var,omitempty"`
+	ElasticsearchPasswordSet    bool   `json:"elasticsearch_password_set,omitempty"`
+	BackupIDS3SecretKeySet      bool   `json:"s3_secret_key_set,omitempty"`
 
 	// Metadata
 	CreatedAt        time.Time  `json:"created_at"`
@@ -166,6 +175,17 @@ func (ci *CamundaInstance) Validate() error {
 	}
 
 	return nil
+}
+
+// ClearTransientFields removes credentials and computed UI hints so they are
+// never written to config.json. Credentials belong in the secrets store.
+func (ci *CamundaInstance) ClearTransientFields() {
+	ci.ElasticsearchPassword = nil
+	ci.BackupIDS3SecretKey = nil
+	ci.ElasticsearchPasswordEnvVar = ""
+	ci.BackupIDS3SecretKeyEnvVar = ""
+	ci.ElasticsearchPasswordSet = false
+	ci.BackupIDS3SecretKeySet = false
 }
 
 // UpdateLastBackup updates the last backup information

@@ -61,6 +61,22 @@ type Config struct {
 
 	// Base Path for serving behind a reverse proxy (e.g. "/backup")
 	BasePath string
+
+	// secretProvider resolves credentials entered through the UI. Optional.
+	secretProvider SecretProvider
+}
+
+// SecretProvider resolves per-instance credentials that were entered through
+// the UI rather than supplied as environment variables.
+type SecretProvider interface {
+	ElasticsearchPassword(camundaInstanceID string) string
+	S3SecretKey(camundaInstanceID string) string
+}
+
+// SetSecretProvider registers the provider consulted by GetElasticsearchPassword
+// and GetS3SecretKey when no instance-specific environment variable is set.
+func (c *Config) SetSecretProvider(p SecretProvider) {
+	c.secretProvider = p
 }
 
 // Load loads configuration from environment variables with defaults
@@ -219,10 +235,15 @@ func NormalizeForEnvVar(camundaInstanceID string) string {
 }
 
 // GetElasticsearchPassword retrieves Elasticsearch password for a specific Camunda instance.
-// First checks for instance-specific env var, then falls back to DefaultElasticsearchPassword.
+// Priority: instance-specific env var > UI-stored secret > DefaultElasticsearchPassword.
 func (c *Config) GetElasticsearchPassword(camundaInstanceID string) string {
 	if pw := os.Getenv("ELASTICSEARCH_PASSWORD_" + NormalizeForEnvVar(camundaInstanceID)); pw != "" {
 		return pw
+	}
+	if c.secretProvider != nil {
+		if pw := c.secretProvider.ElasticsearchPassword(camundaInstanceID); pw != "" {
+			return pw
+		}
 	}
 	return c.DefaultElasticsearchPassword
 }
@@ -249,10 +270,15 @@ func (c *Config) GetElasticsearchSnapshotNamePrefix(camundaInstanceID string) st
 }
 
 // GetS3SecretKey retrieves S3 secret key for a specific Camunda instance.
-// First checks for instance-specific env var, then falls back to DefaultS3SecretKey.
+// Priority: instance-specific env var > UI-stored secret > DefaultS3SecretKey.
 func (c *Config) GetS3SecretKey(camundaInstanceID string) string {
 	if sk := os.Getenv("S3_SECRETKEY_" + NormalizeForEnvVar(camundaInstanceID)); sk != "" {
 		return sk
+	}
+	if c.secretProvider != nil {
+		if sk := c.secretProvider.S3SecretKey(camundaInstanceID); sk != "" {
+			return sk
+		}
 	}
 	return c.DefaultS3SecretKey
 }
