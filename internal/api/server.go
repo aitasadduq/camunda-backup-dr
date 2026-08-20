@@ -23,6 +23,11 @@ type Server struct {
 	port     int
 }
 
+// SetSecretStore registers the store used to persist credentials entered in the UI.
+func (s *Server) SetSecretStore(store SecretStore) {
+	s.handlers.SetSecretStore(store)
+}
+
 // NewServer creates a new HTTP server
 func NewServer(
 	port int,

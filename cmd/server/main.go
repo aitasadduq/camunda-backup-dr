@@ -15,6 +15,7 @@ import (
 	"github.com/aitasadduq/camunda-backup-dr/internal/orchestrator"
 	"github.com/aitasadduq/camunda-backup-dr/internal/retention"
 	"github.com/aitasadduq/camunda-backup-dr/internal/scheduler"
+	"github.com/aitasadduq/camunda-backup-dr/internal/secrets"
 	"github.com/aitasadduq/camunda-backup-dr/internal/storage"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
 	"github.com/aitasadduq/camunda-backup-dr/pkg/types"
@@ -44,6 +45,15 @@ func main() {
 		log.Fatalf("Failed to initialize file storage: %v", err)
 	}
 	logger.Info("File storage initialized successfully")
+
+	// Initialize the secret store for credentials entered through the UI
+	secretStore, err := secrets.NewStore(cfg.DataDir, logger)
+	if err != nil {
+		logger.Error("Failed to initialize secret store: %v", err)
+		log.Fatalf("Failed to initialize secret store: %v", err)
+	}
+	cfg.SetSecretProvider(secretStore)
+	logger.Info("Secret store initialized successfully")
 
 	// Initialize S3 storage
 	var s3Storage storage.S3Storage
@@ -166,6 +176,7 @@ func main() {
 		web.FS,
 		cfg,
 	)
+	server.SetSecretStore(secretStore)
 
 	// Start HTTP server
 	if err := server.Start(); err != nil {

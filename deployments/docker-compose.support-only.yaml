@@ -25,10 +25,15 @@
 #   Elasticsearch:  elastic / localelastic12345
 #
 # NOTE: Uses ES 8.15 (not 9.x) for Camunda 8.6 compatibility.
+#
+# Registries: nothing here pulls from Docker Hub (docker.io), which is blocked on
+# some networks. Sources: quay.io (MinIO, curl), docker.elastic.co (Elasticsearch),
+# ghcr.io (nginx), mirror.gcr.io (Camunda + the Go/Alpine build bases, which have no
+# vendor-native public registry).
 
 services:
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:latest
     command: server /data --console-address ":9001"
     ports:
       - "9000:9000"
@@ -48,7 +53,7 @@ services:
     profiles: [minio, es, zeebe, all]
 
   minio-init:
-    image: minio/mc:latest
+    image: quay.io/minio/mc:latest
     depends_on:
       minio:
         condition: service_healthy
@@ -66,7 +71,7 @@ services:
     build:
       context: ./elasticsearch
       args:
-        ES_IMAGE: elasticsearch:8.15.0
+        ES_IMAGE: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
     ports:
       - "9200:9200"
     environment:
@@ -91,7 +96,7 @@ services:
     profiles: [es, zeebe, all]
 
   es-init:
-    image: curlimages/curl:latest
+    image: quay.io/curl/curl:latest
     depends_on:
       elasticsearch:
         condition: service_healthy
@@ -112,7 +117,7 @@ services:
     profiles: [es, zeebe, all]
 
   nginx:
-    image: nginx:alpine
+    image: ghcr.io/jitesoft/nginx
     ports:
       - "8090:80"
     volumes:
@@ -126,7 +131,9 @@ services:
     profiles: [all]
 
   zeebe:
-    image: camunda/zeebe:8.6.0
+    # Camunda publishes only to Docker Hub (registry.camunda.cloud refuses
+    # anonymous pulls), so these come via Google mirror of Docker Hub.
+    image: mirror.gcr.io/camunda/zeebe:8.6.0
     ports:
       - "26500:26500"
     environment:
@@ -157,7 +164,8 @@ services:
     profiles: [zeebe, all]
 
   operate:
-    image: camunda/operate:8.6.0
+    # See the note on the zeebe service above.
+    image: mirror.gcr.io/camunda/operate:8.6.0
     environment:
       - CAMUNDA_OPERATE_ZEEBE_GATEWAYADDRESS=zeebe:26500
       - CAMUNDA_OPERATE_ELASTICSEARCH_URL=http://elasticsearch:9200
@@ -184,7 +192,7 @@ services:
     profiles: [all]
 
   seed:
-    image: curlimages/curl:latest
+    image: quay.io/curl/curl:latest
     depends_on:
       zeebe:
         condition: service_healthy

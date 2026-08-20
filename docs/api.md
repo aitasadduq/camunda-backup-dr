@@ -852,10 +852,11 @@ Probes an external endpoint (Camunda, Elasticsearch, or S3) to verify reachabili
 |---|---|---|---|
 | `url` | string | **yes** | The endpoint URL to probe |
 | `type` | string | no | Probe type: `camunda`, `elasticsearch`, `s3`, or omit for generic |
-| `instance_id` | string | no | Instance ID used to look up secrets from environment variables |
+| `instance_id` | string | no | Instance ID used to resolve stored credentials |
 | `username` | string | no | Username for Elasticsearch basic auth |
-| `password` | string | no | Password for Elasticsearch basic auth (falls back to env var `ELASTICSEARCH_PASSWORD_<INSTANCE_ID>`) |
-| `access_key` | string | no | S3 access key (secret key is read from env var `S3_SECRETKEY_<INSTANCE_ID>`) |
+| `password` | string | no | Password for Elasticsearch basic auth. When omitted, resolved for `instance_id` in order: env var `ELASTICSEARCH_PASSWORD_<INSTANCE_ID>` → UI-stored secret → `DEFAULT_ELASTICSEARCH_PASSWORD` |
+| `access_key` | string | no | S3 access key |
+| `secret_key` | string | no | S3 secret key. When omitted, resolved for `instance_id` in order: env var `S3_SECRETKEY_<INSTANCE_ID>` → UI-stored secret → `DEFAULT_S3_SECRETKEY` |
 
 **Response:** `200 OK`
 
@@ -945,8 +946,12 @@ Generic — unreachable:
 | `elasticsearch_username` | string | Elasticsearch username |
 | `s3_endpoint` | string | S3-compatible storage endpoint |
 | `s3_accesskey` | string | S3 access key |
+| `elasticsearch_password` | string | *(write-only)* ES password to store for this instance. Omit to leave the stored value unchanged; send `""` to clear it. Never returned in responses. |
+| `s3_secret_key` | string | *(write-only)* S3 secret key to store for this instance. Omit to leave the stored value unchanged; send `""` to clear it. Never returned in responses. |
 | `elasticsearch_password_env_var` | string | *(read-only)* Environment variable name for ES password |
 | `s3_secret_key_env_var` | string | *(read-only)* Environment variable name for S3 secret key |
+| `elasticsearch_password_set` | boolean | *(read-only)* Whether an ES password is stored for this instance |
+| `s3_secret_key_set` | boolean | *(read-only)* Whether an S3 secret key is stored for this instance |
 | `created_at` | string (ISO 8601) | Creation timestamp |
 | `updated_at` | string (ISO 8601) | Last update timestamp |
 | `last_backup_at` | string (ISO 8601) | *(optional)* Timestamp of last backup |

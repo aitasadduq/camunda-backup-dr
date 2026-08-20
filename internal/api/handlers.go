@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -64,6 +65,15 @@ type LogFileReader interface {
 	ReadLogFile(camundaInstanceID, backupID string) (string, error)
 }
 
+// SecretStore defines the interface for per-instance credentials entered via the UI.
+type SecretStore interface {
+	SetElasticsearchPassword(camundaInstanceID, value string) error
+	SetS3SecretKey(camundaInstanceID, value string) error
+	HasElasticsearchPassword(camundaInstanceID string) bool
+	HasS3SecretKey(camundaInstanceID string) bool
+	DeleteInstance(camundaInstanceID string) error
+}
+
 // Handlers contains HTTP request handlers
 type Handlers struct {
 	camundaManager   CamundaManager
@@ -74,6 +84,57 @@ type Handlers struct {
 	logFileReader    LogFileReader
 	logger           *utils.Logger
 	cfg              *config.Config
+	secrets          SecretStore
+}
+
+// SetSecretStore registers the store used to persist credentials entered in the UI.
+func (h *Handlers) SetSecretStore(store SecretStore) {
+	h.secrets = store
+}
+
+// applySecrets persists the credentials submitted for an instance. A nil field
+// leaves the stored value untouched; a pointer to "" clears it.
+// The returned error names which credential failed so the caller can tell the
+// user their credential was not saved rather than reporting success.
+func (h *Handlers) applySecrets(instanceID string, esPassword, s3SecretKey *string) error {
+	if h.secrets == nil {
+		return nil
+	}
+	if esPassword != nil {
+		if err := h.secrets.SetElasticsearchPassword(instanceID, *esPassword); err != nil {
+			h.logger.Error("Failed to store Elasticsearch password for instance %s: %v", instanceID, err)
+			return fmt.Errorf("failed to store Elasticsearch password: %w", err)
+		}
+	}
+	if s3SecretKey != nil {
+		if err := h.secrets.SetS3SecretKey(instanceID, *s3SecretKey); err != nil {
+			h.logger.Error("Failed to store S3 secret key for instance %s: %v", instanceID, err)
+			return fmt.Errorf("failed to store S3 secret key: %w", err)
+		}
+	}
+	return nil
+}
+
+// clearStoredSecrets removes any credentials left over for an instance ID.
+// Instance IDs are user-chosen and reusable, so a new instance must never
+// inherit credentials from a previous instance that used the same ID.
+func (h *Handlers) clearStoredSecrets(instanceID string) {
+	if h.secrets == nil {
+		return
+	}
+	if err := h.secrets.DeleteInstance(instanceID); err != nil {
+		h.logger.Warn("Failed to clear stale secrets for instance %s: %v", instanceID, err)
+	}
+}
+
+// markSecretsSet populates the read-only flags telling the UI which credentials
+// are already stored. The values themselves are never returned.
+func (h *Handlers) markSecretsSet(instance *models.CamundaInstance) {
+	if h.secrets == nil {
+		return
+	}
+	instance.ElasticsearchPasswordSet = h.secrets.HasElasticsearchPassword(instance.ID)
+	instance.BackupIDS3SecretKeySet = h.secrets.HasS3SecretKey(instance.ID)
 }
 
 // NewHandlers creates a new handlers instance
@@ -241,6 +302,10 @@ func (h *Handlers) ListCamundaInstancesHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	for i := range instances {
+		h.markSecretsSet(&instances[i])
+	}
+
 	writeJSON(w, http.StatusOK, instances)
 }
 
@@ -317,6 +382,9 @@ func (h *Handlers) CreateCamundaInstanceHandler(w http.ResponseWriter, r *http.R
 			instance.BackupIDS3AccessKey = h.cfg.DefaultS3AccessKey
 		}
 	}
+	// Capture submitted credentials before the manager strips them
+	esPassword, s3SecretKey := instance.ElasticsearchPassword, instance.BackupIDS3SecretKey
+
 	if len(instance.Components) == 0 {
 		instance.Components = []models.CamundaComponentConfig{
 			{Name: types.ComponentZeebe, Enabled: true},
@@ -341,11 +409,24 @@ func (h *Handlers) CreateCamundaInstanceHandler(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// Register job with scheduler if enabled
+	// Drop any credentials left behind by a previous instance with this ID
+	h.clearStoredSecrets(instance.ID)
+
+	secretErr := h.applySecrets(instance.ID, esPassword, s3SecretKey)
+	h.markSecretsSet(&instance)
+
+	// Register job with scheduler if enabled. The instance exists either way,
+	// so this runs even when credential storage failed.
 	if h.scheduler != nil && instance.Enabled && instance.Schedule != "" {
 		if err := h.scheduler.RegisterJob(instance.ID, instance.Schedule, instance.Enabled); err != nil {
 			h.logger.Warn("Failed to register scheduler job for instance %s: %v", instance.ID, err)
 		}
+	}
+
+	if secretErr != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error",
+			"Camunda instance created, but its credentials were not saved: "+secretErr.Error())
+		return
 	}
 
 	writeSuccess(w, http.StatusCreated, "Camunda instance created successfully", instance)
@@ -376,6 +457,8 @@ func (h *Handlers) GetCamundaInstanceHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	h.markSecretsSet(instance)
+
 	writeJSON(w, http.StatusOK, instance)
 }
 
@@ -397,6 +480,9 @@ func (h *Handlers) UpdateCamundaInstanceHandler(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	// Capture submitted credentials before the manager strips them
+	esPassword, s3SecretKey := updates.ElasticsearchPassword, updates.BackupIDS3SecretKey
+
 	if err := h.camundaManager.UpdateInstance(id, &updates); err != nil {
 		if err == utils.ErrCamundaInstanceNotFound {
 			writeError(w, http.StatusNotFound, "not_found", "Camunda instance not found")
@@ -411,11 +497,20 @@ func (h *Handlers) UpdateCamundaInstanceHandler(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// Update scheduler job
+	secretErr := h.applySecrets(id, esPassword, s3SecretKey)
+
+	// Update scheduler job. The instance was updated either way, so this runs
+	// even when credential storage failed.
 	if h.scheduler != nil && updates.Schedule != "" {
 		if err := h.scheduler.UpdateJob(id, updates.Schedule, updates.Enabled); err != nil {
 			h.logger.Warn("Failed to update scheduler job for instance %s: %v", id, err)
 		}
+	}
+
+	if secretErr != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error",
+			"Camunda instance updated, but its credentials were not saved: "+secretErr.Error())
+		return
 	}
 
 	writeSuccess(w, http.StatusOK, "Camunda instance updated successfully", nil)
@@ -437,6 +532,12 @@ func (h *Handlers) DeleteCamundaInstanceHandler(w http.ResponseWriter, r *http.R
 		h.logger.Error("Failed to delete Camunda instance: %v", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to delete Camunda instance")
 		return
+	}
+
+	if h.secrets != nil {
+		if err := h.secrets.DeleteInstance(id); err != nil {
+			h.logger.Warn("Failed to delete stored secrets for instance %s: %v", id, err)
+		}
 	}
 
 	// Deregister scheduler job

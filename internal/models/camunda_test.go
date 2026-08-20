@@ -2,6 +2,7 @@ package models
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -444,5 +445,45 @@ func TestCamundaInstance_Validate_AllErrors(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestClearTransientFields(t *testing.T) {
+	esPassword := "es-pw"
+	s3SecretKey := "s3-key"
+	instance := &CamundaInstance{
+		ID:                          "camunda-a",
+		Name:                        "Camunda A",
+		ElasticsearchPassword:       &esPassword,
+		BackupIDS3SecretKey:         &s3SecretKey,
+		ElasticsearchPasswordEnvVar: "ELASTICSEARCH_PASSWORD_CAMUNDA_A",
+		BackupIDS3SecretKeyEnvVar:   "S3_SECRETKEY_CAMUNDA_A",
+		ElasticsearchPasswordSet:    true,
+		BackupIDS3SecretKeySet:      true,
+	}
+
+	instance.ClearTransientFields()
+
+	if instance.ElasticsearchPassword != nil || instance.BackupIDS3SecretKey != nil {
+		t.Error("expected credentials to be cleared")
+	}
+	if instance.ElasticsearchPasswordEnvVar != "" || instance.BackupIDS3SecretKeyEnvVar != "" {
+		t.Error("expected env var hints to be cleared")
+	}
+	if instance.ElasticsearchPasswordSet || instance.BackupIDS3SecretKeySet {
+		t.Error("expected set flags to be cleared")
+	}
+	if instance.ID != "camunda-a" || instance.Name != "Camunda A" {
+		t.Error("persistent fields must not be touched")
+	}
+
+	data, err := instance.ToJSON()
+	if err != nil {
+		t.Fatalf("ToJSON() error = %v", err)
+	}
+	for _, field := range []string{"elasticsearch_password", "s3_secret_key"} {
+		if strings.Contains(string(data), `"`+field+`"`) {
+			t.Errorf("serialized instance contains %q", field)
+		}
 	}
 }

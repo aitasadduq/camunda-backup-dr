@@ -58,9 +58,8 @@ func (m *Manager) CreateInstance(instance *models.CamundaInstance) error {
 		instance.LastBackupStatus = "NEVER_BACKED_UP"
 	}
 
-	// Clear computed env var hints so they are not persisted
-	instance.ElasticsearchPasswordEnvVar = ""
-	instance.BackupIDS3SecretKeyEnvVar = ""
+	// Clear credentials and computed hints so they are not persisted
+	instance.ClearTransientFields()
 
 	// Add instance to configuration
 	config.CamundaInstances = append(config.CamundaInstances, *instance)
@@ -138,9 +137,8 @@ func (m *Manager) UpdateInstance(id string, updates *models.CamundaInstance) err
 			updates.LastBackupAt = config.CamundaInstances[i].LastBackupAt
 			updates.LastBackupStatus = config.CamundaInstances[i].LastBackupStatus
 
-			// Clear computed env var hints so they are not persisted
-			updates.ElasticsearchPasswordEnvVar = ""
-			updates.BackupIDS3SecretKeyEnvVar = ""
+			// Clear credentials and computed hints so they are not persisted
+			updates.ClearTransientFields()
 
 			// Validate updated instance
 			if err := updates.Validate(); err != nil {

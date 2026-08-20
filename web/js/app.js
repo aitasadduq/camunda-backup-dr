@@ -559,6 +559,110 @@ function updateEnvVarHints(id) {
 }
 
 // ============================================================
+// Secret Fields (password inputs with show/hide)
+// ============================================================
+
+const EYE_ICON = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>';
+const EYE_OFF_ICON = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"/></svg>';
+
+/**
+ * Renders a password input with a show/hide toggle.
+ * The saved value is never sent to the browser — an empty field means
+ * "leave the stored credential unchanged".
+ *
+ * @param {Object} opts
+ * @param {string} opts.name - Form field name
+ * @param {string} opts.label - Visible label
+ * @param {boolean} opts.isSet - Whether a credential is already stored server-side
+ * @param {string} opts.checkType - Endpoint type to re-check on input ('elasticsearch' | 's3')
+ * @param {string} opts.urlField - Name of the sibling endpoint URL field
+ * @param {string} opts.statusId - Status dot element ID
+ */
+function secretFieldHtml({ name, label, isSet, checkType, urlField, statusId }) {
+    const recheck = `onSecretInput(this, '${name}'); const urlInput = this.closest('form').querySelector('[name=${urlField}]'); if (urlInput && urlInput.value) checkEndpointStatus(urlInput, '${checkType}', '${statusId}')`;
+    const note = isSet
+        ? `Saved on the server. Leave blank to keep it, or <button type="button" class="text-red-600 hover:underline" onclick="clearSavedSecret(this, '${escapeAttr(name)}')">remove it</button>.`
+        : 'Optional — leave blank to use the environment variable below.';
+    return `
+        <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1">${escapeHtml(label)}</label>
+            <div class="flex items-center gap-2">
+                <input type="password" name="${escapeAttr(name)}" value="" autocomplete="new-password"
+                    class="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="${isSet ? 'Saved — type to replace' : 'Enter value'}"
+                    oninput="${escapeAttr(recheck)}">
+                <button type="button" onclick="toggleSecretVisibility(this)" tabindex="-1"
+                    class="p-1 text-gray-400 hover:text-gray-600 transition-colors"
+                    title="Show value" aria-label="Show value">${EYE_ICON}</button>
+            </div>
+            <input type="hidden" name="${escapeAttr(name)}_cleared" value="">
+            <p class="mt-1 text-xs text-gray-500" data-secret-note="${escapeAttr(name)}"
+                data-secret-note-default="${escapeAttr(note)}">${note}</p>
+        </div>`;
+}
+
+/**
+ * Toggles a secret input between hidden and visible characters.
+ */
+function toggleSecretVisibility(button) {
+    const input = button.parentElement.querySelector('input');
+    if (!input) return;
+    const reveal = input.type === 'password';
+    input.type = reveal ? 'text' : 'password';
+    button.innerHTML = reveal ? EYE_OFF_ICON : EYE_ICON;
+    const title = reveal ? 'Hide value' : 'Show value';
+    button.title = title;
+    button.setAttribute('aria-label', title);
+}
+
+/**
+ * Cancels a pending removal once the user types a replacement value.
+ * A typed value always wins over the clear flag, so the note must not keep
+ * claiming the secret will be removed.
+ */
+function onSecretInput(input, name) {
+    if (!input.value) return;
+    const form = input.closest('form');
+    if (!form) return;
+    const cleared = form.querySelector(`[name="${name}_cleared"]`);
+    if (!cleared || cleared.value !== '1') return;
+    cleared.value = '';
+    const note = form.querySelector(`[data-secret-note="${name}"]`);
+    if (note) {
+        // Restore the original note so the "remove it" affordance stays available
+        note.innerHTML = note.dataset.secretNoteDefault || '';
+        note.className = 'mt-1 text-xs text-gray-500';
+    }
+}
+
+/**
+ * Marks a stored secret for removal on the next save.
+ */
+function clearSavedSecret(button, name) {
+    const form = button.closest('form');
+    if (!form) return;
+    form.querySelector(`[name="${name}"]`).value = '';
+    form.querySelector(`[name="${name}_cleared"]`).value = '1';
+    const note = form.querySelector(`[data-secret-note="${name}"]`);
+    if (note) {
+        note.textContent = 'Saved value will be removed when you save.';
+        note.className = 'mt-1 text-xs text-red-600';
+    }
+}
+
+/**
+ * Resolves what to send for a secret field:
+ * a non-empty value sets it, an explicit clear sends "", otherwise undefined
+ * (omitted from the payload) leaves the stored value untouched.
+ */
+function secretPayloadValue(fd, name) {
+    const value = fd.get(name);
+    if (value) return value;
+    if (fd.get(`${name}_cleared`) === '1') return '';
+    return undefined;
+}
+
+// ============================================================
 // Endpoint Connectivity Check
 // ============================================================
 const _endpointCheckTimers = {};
@@ -627,11 +731,14 @@ function checkEndpointStatus(inputEl, type, statusId) {
             if (type === 'elasticsearch') {
                 if (form) {
                     body.username = form.querySelector('[name="elasticsearch_username"]')?.value || '';
+                    // Only sent when typed; otherwise the server resolves the stored credential
+                    body.password = form.querySelector('[name="elasticsearch_password"]')?.value || '';
                 }
             }
             if (type === 's3') {
                 if (form) {
                     body.access_key = form.querySelector('[name="s3_accesskey"]')?.value || '';
+                    body.secret_key = form.querySelector('[name="s3_secret_key"]')?.value || '';
                 }
             }
 
@@ -771,7 +878,7 @@ async function openInstanceForm(existingInstance) {
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">ID <span class="text-red-500">*</span></label>
                             <input type="text" name="id" value="${escapeAttr(instance.id || '')}" required
-                                pattern="^[a-z][a-z-]*[a-z]$|^[a-z]$"
+                                pattern="^[a-z][a-z\\-]*[a-z]$|^[a-z]$"
                                 title="Only lowercase letters and hyphens allowed. Must start and end with a letter."
                                 class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                                 placeholder="my-camunda-instance"
@@ -876,6 +983,14 @@ async function openInstanceForm(existingInstance) {
                                 placeholder="elastic"
                                 oninput="const esInput = this.closest('form').querySelector('[name=elasticsearch_endpoint]'); if (esInput && esInput.value) checkEndpointStatus(esInput, 'elasticsearch', 'es-status')">
                         </div>
+                        ${secretFieldHtml({
+                            name: 'elasticsearch_password',
+                            label: 'Password',
+                            isSet: !!instance.elasticsearch_password_set,
+                            checkType: 'elasticsearch',
+                            urlField: 'elasticsearch_endpoint',
+                            statusId: 'es-status',
+                        })}
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-1">Snapshot Repository</label>
                             <input type="text" name="elasticsearch_snapshot_repository" value="${escapeAttr(instance.elasticsearch_snapshot_repository || '')}"
@@ -884,8 +999,8 @@ async function openInstanceForm(existingInstance) {
                             <p class="mt-1 text-xs text-gray-500">Leave blank to use the global default. Overridden by env var <code id="es-snapshot-repo-env-hint">ELASTICSEARCH_SNAPSHOT_REPOSITORY_${escapeHtml(normalizeForEnvVar(instance.id || '<ID>'))}</code>.</p>
                         </div>
                         <div id="es-env-hint" class="${instance.elasticsearch_password_env_var ? '' : 'hidden'} bg-blue-50 border border-blue-100 rounded-md p-3 env-var-hint">
-                            <p class="text-xs text-blue-800 mb-1 font-medium">Required Environment Variable</p>
-                            <p class="text-xs text-blue-600 mb-2">Set this variable on the server to provide the Elasticsearch password:</p>
+                            <p class="text-xs text-blue-800 mb-1 font-medium">Environment Variable Alternative</p>
+                            <p class="text-xs text-blue-600 mb-2">Instead of entering the password above, set this variable on the server. If set, it takes precedence:</p>
                             <div class="flex items-center gap-2">
                                 <code class="flex-1 bg-white border border-blue-200 rounded px-2 py-1 text-xs font-mono text-blue-900 truncate" title="${escapeAttr(instance.elasticsearch_password_env_var || '')}">
                                     ${escapeHtml(instance.elasticsearch_password_env_var || '')}
@@ -929,9 +1044,17 @@ async function openInstanceForm(existingInstance) {
                                 placeholder="AKIAIOSFODNN7EXAMPLE" required
                                 oninput="const s3Input = this.closest('form').querySelector('[name=s3_endpoint]'); if (s3Input && s3Input.value) checkEndpointStatus(s3Input, 's3', 's3-status')">
                         </div>
+                        ${secretFieldHtml({
+                            name: 's3_secret_key',
+                            label: 'Secret Key',
+                            isSet: !!instance.s3_secret_key_set,
+                            checkType: 's3',
+                            urlField: 's3_endpoint',
+                            statusId: 's3-status',
+                        })}
                         <div id="s3-env-hint" class="${instance.s3_secret_key_env_var ? '' : 'hidden'} bg-blue-50 border border-blue-100 rounded-md p-3 env-var-hint">
-                            <p class="text-xs text-blue-800 mb-1 font-medium">Required Environment Variable</p>
-                            <p class="text-xs text-blue-600 mb-2">Set this variable on the server to provide the S3 Secret Key:</p>
+                            <p class="text-xs text-blue-800 mb-1 font-medium">Environment Variable Alternative</p>
+                            <p class="text-xs text-blue-600 mb-2">Instead of entering the secret key above, set this variable on the server. If set, it takes precedence:</p>
                             <div class="flex items-center gap-2">
                                 <code class="flex-1 bg-white border border-blue-200 rounded px-2 py-1 text-xs font-mono text-blue-900 truncate" title="${escapeAttr(instance.s3_secret_key_env_var || '')}">
                                     ${escapeHtml(instance.s3_secret_key_env_var || '')}
@@ -1021,6 +1144,12 @@ async function saveInstance(event, editId) {
         exporting_endpoint: fd.get('exporting_endpoint') || '',
         soft_export_pause: fd.get('soft_export_pause') === 'on',
     };
+
+    // Secrets are omitted unless the user typed a new value or cleared the saved one
+    for (const field of ['elasticsearch_password', 's3_secret_key']) {
+        const value = secretPayloadValue(fd, field);
+        if (value !== undefined) payload[field] = value;
+    }
 
     try {
         if (editId) {
