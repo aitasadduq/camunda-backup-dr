@@ -1,5 +1,5 @@
 # ---- Build stage ----
-FROM golang:1.23-alpine AS builder
+FROM mirror.gcr.io/library/golang:1.23-alpine AS builder
 
 RUN apk add --no-cache git
 
@@ -14,7 +14,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /backup-controller ./cmd/server
 
 # ---- Runtime stage ----
-FROM alpine:3.20
+FROM mirror.gcr.io/library/alpine:3.20
 
 RUN apk add --no-cache ca-certificates tzdata && \
     adduser -D -u 1000 appuser

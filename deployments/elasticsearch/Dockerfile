@@ -1,4 +1,4 @@
-ARG ES_IMAGE=elasticsearch:9.2.4
+ARG ES_IMAGE=docker.elastic.co/elasticsearch/elasticsearch:9.2.4
 FROM ${ES_IMAGE}
 
 RUN elasticsearch-plugin install --batch repository-s3

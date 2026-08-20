@@ -191,11 +191,16 @@ for each instance:
 3. The global default (`DEFAULT_ELASTICSEARCH_PASSWORD` / `DEFAULT_S3_SECRETKEY`)
 
 UI-entered credentials are stored in `$DATA_DIR/secrets.json` with `0600` permissions,
-separate from `config.json`. They are never returned by the API — the API only reports
-whether a credential is set (`elasticsearch_password_set` / `s3_secret_key_set`), so a
-saved value cannot be read back through the UI. Because this file lives on the data
-volume in plaintext, the environment variables remain the recommended option wherever a
-secret manager is available.
+separate from `config.json`. Instance responses never contain the values — they only
+report whether a credential is set (`elasticsearch_password_set` / `s3_secret_key_set`).
+
+This is not a substitute for access control. `POST /api/check-endpoint` resolves the
+stored credential for an instance and sends it to the URL in the request, so anyone who
+can reach the API can have the controller forward a stored credential to a host they
+choose. The same has always been true of credentials supplied via environment variables.
+Treat network access to the controller as equivalent to access to every credential it
+holds. Because `secrets.json` also lives on the data volume in plaintext, the environment
+variables remain the recommended option wherever a secret manager is available.
 
 ### Development
 

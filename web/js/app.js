@@ -579,7 +579,10 @@ const EYE_OFF_ICON = '<svg class="w-4 h-4" fill="none" stroke="currentColor" vie
  * @param {string} opts.statusId - Status dot element ID
  */
 function secretFieldHtml({ name, label, isSet, checkType, urlField, statusId }) {
-    const recheck = `const urlInput = this.closest('form').querySelector('[name=${urlField}]'); if (urlInput && urlInput.value) checkEndpointStatus(urlInput, '${checkType}', '${statusId}')`;
+    const recheck = `onSecretInput(this, '${name}'); const urlInput = this.closest('form').querySelector('[name=${urlField}]'); if (urlInput && urlInput.value) checkEndpointStatus(urlInput, '${checkType}', '${statusId}')`;
+    const note = isSet
+        ? `Saved on the server. Leave blank to keep it, or <button type="button" class="text-red-600 hover:underline" onclick="clearSavedSecret(this, '${escapeAttr(name)}')">remove it</button>.`
+        : 'Optional — leave blank to use the environment variable below.';
     return `
         <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">${escapeHtml(label)}</label>
@@ -593,11 +596,8 @@ function secretFieldHtml({ name, label, isSet, checkType, urlField, statusId }) 
                     title="Show value" aria-label="Show value">${EYE_ICON}</button>
             </div>
             <input type="hidden" name="${escapeAttr(name)}_cleared" value="">
-            <p class="mt-1 text-xs text-gray-500" data-secret-note="${escapeAttr(name)}">
-                ${isSet
-                    ? `Saved on the server. Leave blank to keep it, or <button type="button" class="text-red-600 hover:underline" onclick="clearSavedSecret(this, '${escapeAttr(name)}')">remove it</button>.`
-                    : 'Optional — leave blank to use the environment variable below.'}
-            </p>
+            <p class="mt-1 text-xs text-gray-500" data-secret-note="${escapeAttr(name)}"
+                data-secret-note-default="${escapeAttr(note)}">${note}</p>
         </div>`;
 }
 
@@ -613,6 +613,26 @@ function toggleSecretVisibility(button) {
     const title = reveal ? 'Hide value' : 'Show value';
     button.title = title;
     button.setAttribute('aria-label', title);
+}
+
+/**
+ * Cancels a pending removal once the user types a replacement value.
+ * A typed value always wins over the clear flag, so the note must not keep
+ * claiming the secret will be removed.
+ */
+function onSecretInput(input, name) {
+    if (!input.value) return;
+    const form = input.closest('form');
+    if (!form) return;
+    const cleared = form.querySelector(`[name="${name}_cleared"]`);
+    if (!cleared || cleared.value !== '1') return;
+    cleared.value = '';
+    const note = form.querySelector(`[data-secret-note="${name}"]`);
+    if (note) {
+        // Restore the original note so the "remove it" affordance stays available
+        note.innerHTML = note.dataset.secretNoteDefault || '';
+        note.className = 'mt-1 text-xs text-gray-500';
+    }
 }
 
 /**

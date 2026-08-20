@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -426,5 +427,104 @@ func TestUpdateOfMissingInstanceDoesNotStoreSecrets(t *testing.T) {
 
 	if env.store.HasElasticsearchPassword("camunda-missing") {
 		t.Error("secrets must not be stored for an instance that does not exist")
+	}
+}
+
+// failingSecretStore fails every write so the handlers' error paths can be exercised.
+type failingSecretStore struct {
+	SecretStore
+	err error
+}
+
+func (f *failingSecretStore) SetElasticsearchPassword(string, string) error { return f.err }
+func (f *failingSecretStore) SetS3SecretKey(string, string) error           { return f.err }
+func (f *failingSecretStore) HasElasticsearchPassword(string) bool          { return false }
+func (f *failingSecretStore) HasS3SecretKey(string) bool                    { return false }
+func (f *failingSecretStore) DeleteInstance(string) error                   { return nil }
+
+func TestCreateReportsCredentialStorageFailure(t *testing.T) {
+	env := newSecretTestEnv(t)
+	env.handlers.SetSecretStore(&failingSecretStore{err: errors.New("disk full")})
+
+	payload := instancePayload("camunda-a", "Camunda A")
+	payload["elasticsearch_password"] = "es-pw-a"
+
+	w := env.createInstance(t, payload)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusInternalServerError, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "credentials were not saved") {
+		t.Errorf("response should say the credentials were not saved, got: %s", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "es-pw-a") {
+		t.Errorf("error response leaked the credential: %s", w.Body.String())
+	}
+
+	// The instance itself was still created — only the credential failed
+	if got := env.getInstance(t, "camunda-a").Name; got != "Camunda A" {
+		t.Errorf("instance should exist despite the credential failure, got name %q", got)
+	}
+}
+
+func TestUpdateReportsCredentialStorageFailure(t *testing.T) {
+	env := setupTwoInstances(t)
+	env.handlers.SetSecretStore(&failingSecretStore{err: errors.New("read-only file system")})
+
+	payload := instancePayload("camunda-a", "Camunda A")
+	payload["s3_secret_key"] = "rotated-key"
+
+	w := env.updateInstance(t, "camunda-a", payload)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusInternalServerError, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "credentials were not saved") {
+		t.Errorf("response should say the credentials were not saved, got: %s", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "rotated-key") {
+		t.Errorf("error response leaked the credential: %s", w.Body.String())
+	}
+}
+
+func TestUpdateWithoutSecretsSucceedsWhenStoreWouldFail(t *testing.T) {
+	env := setupTwoInstances(t)
+	env.handlers.SetSecretStore(&failingSecretStore{err: errors.New("disk full")})
+
+	// No credential fields submitted — the failing store is never written to
+	payload := instancePayload("camunda-a", "Camunda A Renamed")
+	if w := env.updateInstance(t, "camunda-a", payload); w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body.String())
+	}
+}
+
+func TestCreateDoesNotInheritSecretsFromDeletedInstance(t *testing.T) {
+	env := setupTwoInstances(t)
+
+	// Simulate a delete whose secret cleanup failed: remove the instance from
+	// config while leaving its stored credentials behind.
+	if err := env.handlers.camundaManager.DeleteInstance("camunda-a"); err != nil {
+		t.Fatalf("DeleteInstance() error = %v", err)
+	}
+	if !env.store.HasElasticsearchPassword("camunda-a") {
+		t.Fatal("precondition: stale credentials should still be present")
+	}
+
+	// Recreating the same ID must not inherit them
+	if w := env.createInstance(t, instancePayload("camunda-a", "Camunda A Again")); w.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	if env.store.HasElasticsearchPassword("camunda-a") || env.store.HasS3SecretKey("camunda-a") {
+		t.Error("recreated instance inherited credentials from the deleted instance")
+	}
+	if got := env.cfg.GetElasticsearchPassword("camunda-a"); got != "" {
+		t.Errorf("GetElasticsearchPassword = %q, want empty", got)
+	}
+	instance := env.getInstance(t, "camunda-a")
+	if instance.ElasticsearchPasswordSet || instance.BackupIDS3SecretKeySet {
+		t.Error("recreated instance should report no stored credentials")
+	}
+	// The other instance is untouched
+	if got := env.cfg.GetElasticsearchPassword("camunda-b"); got != "es-pw-b" {
+		t.Errorf("camunda-b password = %q, want it untouched", got)
 	}
 }
