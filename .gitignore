@@ -39,3 +39,6 @@ data/
 .github/agents/
 .DS_Store
 .gstack/
+
+# Build output (make build)
+build/
