@@ -460,24 +460,6 @@
     color: #64748b;
 }
 
-.reconcile-detail {
-    background: #f8fafc;
-    border-top: 1px solid #e2e8f0;
-    padding: 0.875rem 1rem;
-    font-size: 0.8125rem;
-}
-
-.reconcile-detail dt {
-    font-weight: 600;
-    color: #334155;
-    margin-top: 0.5rem;
-}
-
-.reconcile-detail dd {
-    color: #475569;
-    margin: 0.125rem 0 0 0;
-}
-
 .reconcile-remediation {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.75rem;
@@ -491,13 +473,6 @@
     word-break: break-word;
 }
 
-.reconcile-row-toggle {
-    cursor: pointer;
-}
-
-.reconcile-row-toggle:hover {
-    background: #f8fafc;
-}
 
 /* Marks a backup that has a history record but whose data the last scan found
    a problem with. Its real status still shows; this only says "open me". */

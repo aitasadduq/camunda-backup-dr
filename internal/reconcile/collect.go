@@ -40,6 +40,7 @@ type evidence struct {
 	snapshots        []elasticsearch.SnapshotInfo
 	logBackupIDs     map[string]bool
 	exporterPaused   bool
+	backupInFlight   bool
 
 	sources map[string]SourceStatus
 }
@@ -74,6 +75,7 @@ func (r *Reconciler) collect(ctx context.Context, instance *models.CamundaInstan
 		componentBackups: make(map[string]map[string]camunda.ComponentBackupRecord),
 		logBackupIDs:     make(map[string]bool),
 		sources:          make(map[string]SourceStatus),
+		backupInFlight:   r.isBackupRunning(),
 	}
 
 	var mu sync.Mutex
@@ -196,7 +198,7 @@ func backupIDFromLogFile(name string) string {
 		base = base[idx+1:]
 	}
 	base = strings.TrimSuffix(base, ".log")
-	if isBackupIDShaped(base) {
+	if camunda.IsBackupIDShaped(base) {
 		return base
 	}
 	return ""
@@ -214,17 +216,4 @@ func exportersURL(exportingEndpoint string) string {
 		return ""
 	}
 	return strings.TrimSuffix(trimmed, "/exporting") + "/exporters"
-}
-
-// isBackupIDShaped reports whether a string looks like a YYYYMMDDHHMMSS ID.
-func isBackupIDShaped(s string) bool {
-	if len(s) != 14 {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
 }

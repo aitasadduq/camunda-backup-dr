@@ -170,7 +170,7 @@ These look like orphans and must never be flagged. Each is enforced by a test.
 |---|---|
 | **Component disabled at backup time** | Judged against the backup's own component map, never current instance config. A component enabled later was legitimately never part of an older backup. |
 | **Component newly enabled** | Same reasoning, from the other direction. |
-| **Backup in flight** | A record still inside the polling window is skipped. |
+| **Backup in flight** | A record still inside the polling window is skipped, and `F4` is suppressed entirely while a backup is running, because a backup pauses exporting by design. |
 | **In-progress artifacts** | `IN_PROGRESS` inside the window is normal, not stuck. |
 | **Source unreachable** | **The load-bearing guard.** A refused connection, 401, timeout or 5xx means nothing can be concluded about absence. Every `B*` and `D*` finding depending on that source is withheld. |
 | **404 vs. empty** | Components answer `404` when they hold *no* backups. Decoded as an empty list, not an error. |
@@ -280,7 +280,8 @@ findings (a sweep ran and found nothing) — they are genuinely different answer
 - **After every backup**, on all terminal states. This is hooked to the orchestrator rather than to retention on purpose: retention runs only for `COMPLETED` and `FAILED`, and an `INCOMPLETE` backup is exactly the case that leaves artifacts behind with no metadata.
 
 Sweeps run asynchronously with their own timeout and can never delay or fail a
-backup.
+backup. Only one sweep runs per instance at a time: a post-backup sweep skips
+quietly if one is already running, and the endpoint answers `409`.
 
 ### Configuration
 

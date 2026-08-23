@@ -595,6 +595,10 @@ Returns the backup history for a Camunda instance, ordered by most recent first.
 
 #### `GET /api/camundas/{id}/backups/{backupId}` — Get Backup Details
 
+> **Reserved names.** `orphaned`, `incomplete`, `failed` and `reconcile` are
+> routed as their own sub-paths and cannot be addressed as backup IDs. Backup
+> IDs are `YYYYMMDDHHMMSS` timestamps, so this never collides in practice.
+
 Returns detailed information for a specific backup.
 
 **Response:** `200 OK`
@@ -723,6 +727,11 @@ the Camunda component APIs and the Elasticsearch snapshot repository.
   "camunda_instance_id": "prod-cluster",
   "started_at": "2024-01-10T02:05:00Z",
   "finished_at": "2024-01-10T02:05:04Z",
+  "snapshot_repository": "camunda-backup",
+  "component_endpoints": {
+    "zeebe": "https://zeebe.prod.example.com:9600/actuator/backups",
+    "operate": "https://operate.prod.example.com/actuator/backups"
+  },
   "sources_checked": {
     "controller_s3": { "name": "controller_s3", "reachable": true, "count": 14 },
     "zeebe":         { "name": "zeebe",         "reachable": true, "count": 30 },
@@ -734,6 +743,7 @@ the Camunda component APIs and the Elasticsearch snapshot repository.
   "backup_issues": [
     {
       "backup_id": "20240110020000",
+      "tracked": false,
       "backup_time": "2024-01-10T02:00:00Z",
       "primary_reason": "D2_SPLIT_RESTORE_PAIR",
       "severity": "critical",
@@ -745,6 +755,7 @@ the Camunda component APIs and the Elasticsearch snapshot repository.
           "severity": "critical",
           "present_in": ["zeebe"],
           "missing_in": ["elasticsearch"],
+          "snapshot_name": "20240110020000",
           "detail": "present in zeebe; missing from elasticsearch",
           "detected_at": "2024-01-10T02:05:04Z"
         }
@@ -766,6 +777,15 @@ the Camunda component APIs and the Elasticsearch snapshot repository.
   sweep is not a clean bill of health.
 - `skipped: true` means the source is not configured for this instance, which is
   not a failure.
+- `tracked` distinguishes the two kinds of problem backup. `false` means the
+  controller has no history record for it — a true orphan, which the UI renders
+  with status `ORPHANED`. `true` means a known backup that has developed a
+  problem; it keeps its real status. Clients that show orphans separately must
+  filter on this field.
+- `snapshot_repository` and `component_endpoints` carry the values this sweep
+  actually resolved, so a client can substitute them into the `{repository}` and
+  `{component_backup_endpoint}` placeholders in a reason's `remediation` text.
+  Endpoints are returned with any embedded credentials stripped.
 - `implied` lists reason codes suppressed because a more specific finding
   already explains them. They are kept as supporting evidence.
 - Findings are scoped: `instance_findings` describe the instance as a whole,
@@ -775,8 +795,11 @@ the Camunda component APIs and the Elasticsearch snapshot repository.
 | Error Code | Condition |
 |---|---|
 | 400 | Instance ID missing |
-| 404 | Instance not found, **or no sweep has run yet for this instance** |
+| 404 | Instance not found (`not_found`), or no sweep has run yet (`no_report`) |
 | 500 | Reconciler not configured, or the stored report could not be read |
+
+Both 404s are distinguished by their machine-readable `code`, so clients never
+have to string-match the message.
 
 > `404` ("never scanned") and `200` with no findings ("scanned, nothing wrong")
 > are different answers. Do not treat them as equivalent.
@@ -786,15 +809,21 @@ the Camunda component APIs and the Elasticsearch snapshot repository.
 #### `POST /api/camundas/{id}/backups/reconcile` — Run a Sweep
 
 Runs a reconciliation sweep immediately and returns the fresh report, in the
-same shape as the `GET` above. Capped at two minutes.
+same shape as the `GET` above. Only one sweep runs per instance at a time.
 
 This is **report-only** and never deletes anything.
+
+**Headers:** `X-Requested-With: XMLHttpRequest`
 
 | Error Code | Condition |
 |---|---|
 | 400 | Instance ID missing |
+| 403 | Missing `X-Requested-With` header |
 | 404 | Instance not found |
+| 409 | A sweep is already running for this instance (`sweep_in_progress`) |
 | 500 | Reconciler not configured, or the sweep failed |
+
+Capped by `RECONCILE_TIMEOUT_SECONDS` (default 120).
 
 ---
 

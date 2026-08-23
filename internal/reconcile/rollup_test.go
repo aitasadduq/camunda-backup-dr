@@ -234,3 +234,17 @@ func TestRollupMarksTrackedBackups(t *testing.T) {
 		}
 	}
 }
+
+// The UI builds DELETE commands from these, so they must survive rollup.
+func TestRollupCollectsSnapshotNames(t *testing.T) {
+	now := time.Now()
+	a := f(oldBackupID, ReasonUntrackedAppESSnapshot)
+	a.SnapshotName = "camunda_operate_" + oldBackupID + "_8.6.0_part_1_of_6"
+	b := f(oldBackupID, ReasonUntrackedAppESSnapshot)
+	b.SnapshotName = "camunda_operate_" + oldBackupID + "_8.6.0_part_2_of_6"
+
+	issue := findIssue(t, Rollup("prod", []Finding{a, b}, nil, nil, now, now), oldBackupID)
+	if len(issue.SnapshotNames) != 2 {
+		t.Fatalf("got %d snapshot names, want 2: %v", len(issue.SnapshotNames), issue.SnapshotNames)
+	}
+}

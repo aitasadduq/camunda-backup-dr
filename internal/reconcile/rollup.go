@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"sort"
 	"time"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/camunda"
@@ -69,12 +70,16 @@ func buildIssue(backupID string, group []Finding, implied []ReasonCode, tracked 
 		issue.BackupTime = &ts
 	}
 
-	var present, missing, unverified []string
+	var present, missing, unverified, snapshots []string
 	for _, f := range group {
 		present = append(present, f.PresentIn...)
 		missing = append(missing, f.MissingIn...)
 		unverified = append(unverified, f.Unverified...)
+		if f.SnapshotName != "" {
+			snapshots = append(snapshots, f.SnapshotName)
+		}
 	}
+	issue.SnapshotNames = dedupeStrings(snapshots)
 	issue.PresentIn = dedupeStrings(present)
 	issue.MissingIn = dedupeStrings(missing)
 	issue.Unverified = dedupeStrings(unverified)
@@ -219,20 +224,14 @@ func dedupeReasons(in []ReasonCode) []ReasonCode {
 }
 
 func sortReasonCodes(c []ReasonCode) {
-	for i := 1; i < len(c); i++ {
-		for j := i; j > 0 && rankOf(c[j]) < rankOf(c[j-1]); j-- {
-			c[j], c[j-1] = c[j-1], c[j]
-		}
-	}
+	sort.Slice(c, func(i, j int) bool { return rankOf(c[i]) < rankOf(c[j]) })
 }
 
-// sortIssues orders rows worst-first, newest-first within a severity.
+// sortIssues orders rows worst-first, newest-first within a severity. An
+// instance-wide problem yields one issue per backup, so this runs over the whole
+// history and an insertion sort would be quadratic in it.
 func sortIssues(issues []BackupIssue) {
-	for i := 1; i < len(issues); i++ {
-		for j := i; j > 0 && issueLess(issues[j], issues[j-1]); j-- {
-			issues[j], issues[j-1] = issues[j-1], issues[j]
-		}
-	}
+	sort.SliceStable(issues, func(i, j int) bool { return issueLess(issues[i], issues[j]) })
 }
 
 func issueLess(a, b BackupIssue) bool {

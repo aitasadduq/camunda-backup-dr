@@ -501,3 +501,68 @@ func TestUnemittedCodesAreKnown(t *testing.T) {
 		}
 	}
 }
+
+// A backup in flight pauses exporting by design. Reporting that as a stuck
+// exporter would fire a CRITICAL alarm on every mid-backup scan.
+func TestClassifyExporterPausedGuardedByInFlightBackup(t *testing.T) {
+	tests := []struct {
+		name        string
+		inFlight    bool
+		wantFinding bool
+	}{
+		{name: "paused with no backup running is a real problem", inFlight: false, wantFinding: true},
+		{name: "paused during a backup is expected", inFlight: true, wantFinding: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := newEvidence()
+			b.ev.exporterPaused = true
+			b.ev.backupInFlight = tt.inFlight
+
+			got := classify(b.build(), DefaultOptions())
+			if hasReason(got, ReasonExporterLeftPaused) != tt.wantFinding {
+				t.Errorf("ExporterLeftPaused reported = %v, want %v",
+					hasReason(got, ReasonExporterLeftPaused), tt.wantFinding)
+			}
+		})
+	}
+}
+
+// The remediation command needs the real snapshot name. Deriving it from the
+// backup ID is wrong as soon as a name prefix is configured.
+func TestFindingsCarryTheSnapshotName(t *testing.T) {
+	t.Run("B2 names the snapshot the prefix would have produced", func(t *testing.T) {
+		b := newEvidence().
+			record(oldBackupID, types.BackupStatusCompleted, types.ComponentElasticsearch)
+		b.ev.namePrefix = "prod"
+
+		for _, f := range classify(b.build(), DefaultOptions()) {
+			if f.Reason != ReasonDanglingESSnapshot {
+				continue
+			}
+			if f.SnapshotName != "prod-"+oldBackupID {
+				t.Errorf("SnapshotName = %q, want %q", f.SnapshotName, "prod-"+oldBackupID)
+			}
+			return
+		}
+		t.Fatal("expected a dangling-snapshot finding")
+	})
+
+	t.Run("A3 names each component snapshot", func(t *testing.T) {
+		part := "camunda_operate_" + oldBackupID + "_8.6.0_part_1_of_6"
+		got := classify(newEvidence().
+			snapshot(part, elasticsearch.SnapshotStateSuccess).
+			build(), DefaultOptions())
+
+		for _, f := range got {
+			if f.Reason == ReasonUntrackedAppESSnapshot {
+				if f.SnapshotName != part {
+					t.Errorf("SnapshotName = %q, want %q", f.SnapshotName, part)
+				}
+				return
+			}
+		}
+		t.Fatal("expected an untracked component-snapshot finding")
+	})
+}

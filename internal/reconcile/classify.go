@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -70,6 +71,10 @@ type evidenceIndex struct {
 	foreignSnapshots    []elasticsearch.SnapshotInfo
 	// allComponentIDs is every backup ID any component reported.
 	allComponentIDs map[string]bool
+	// snapshotNames is every snapshot name in the repository. Membership is
+	// checked once per snapshot per component per record, so a linear scan here
+	// turns the sweep quadratic on a large repository.
+	snapshotNames map[string]struct{}
 }
 
 func indexEvidence(ev *evidence) *evidenceIndex {
@@ -78,6 +83,7 @@ func indexEvidence(ev *evidence) *evidenceIndex {
 		controllerSnapshots: make(map[string]elasticsearch.SnapshotInfo),
 		componentSnapshots:  make(map[string][]elasticsearch.SnapshotInfo),
 		allComponentIDs:     make(map[string]bool),
+		snapshotNames:       make(map[string]struct{}, len(ev.snapshots)),
 	}
 
 	for _, rec := range ev.records {
@@ -85,6 +91,7 @@ func indexEvidence(ev *evidence) *evidenceIndex {
 	}
 
 	for _, snap := range ev.snapshots {
+		idx.snapshotNames[snap.Name] = struct{}{}
 		owner, backupID, _ := elasticsearch.ClassifySnapshot(snap.Name, ev.namePrefix)
 		snap.Owner = owner
 		snap.BackupID = backupID
@@ -287,7 +294,7 @@ func classifyComponents(ev *evidence, idx *evidenceIndex, record *models.BackupH
 		// B3: the component says the backup is fine, but the snapshots behind it
 		// are gone. Nothing else surfaces this until a restore is attempted.
 		if ev.reachable(SourceElasticsearch) {
-			if missing := missingSnapshots(reported, ev); len(missing) > 0 {
+			if missing := missingSnapshots(reported, idx); len(missing) > 0 {
 				out = append(out, Finding{
 					BackupID:  backupID,
 					Reason:    ReasonDanglingAppESSnapshot,
@@ -358,7 +365,7 @@ func classifyESComponent(ev *evidence, idx *evidenceIndex, record *models.Backup
 	// F2: the recorded snapshot name does not match what the current prefix
 	// would produce, which is config drift rather than data loss.
 	if !exists && info.SnapshotName != "" && info.SnapshotName != expectedSnapshotName(backupID, ev.namePrefix) {
-		if found := findSnapshotByName(ev.snapshots, info.SnapshotName); found {
+		if _, found := idx.snapshotNames[info.SnapshotName]; found {
 			return append(out, Finding{
 				BackupID:  backupID,
 				Reason:    ReasonNamePrefixDrift,
@@ -373,10 +380,11 @@ func classifyESComponent(ev *evidence, idx *evidenceIndex, record *models.Backup
 		if info.Status == types.ComponentStatusCompleted {
 			*missing = append(*missing, types.ComponentElasticsearch)
 			out = append(out, Finding{
-				BackupID:  backupID,
-				Reason:    ReasonDanglingESSnapshot,
-				MissingIn: []string{SourceElasticsearch},
-				Detail:    fmt.Sprintf("no snapshot for this backup in repository %q", ev.repository),
+				BackupID:     backupID,
+				Reason:       ReasonDanglingESSnapshot,
+				MissingIn:    []string{SourceElasticsearch},
+				SnapshotName: expectedSnapshotName(backupID, ev.namePrefix),
+				Detail:       fmt.Sprintf("no snapshot for this backup in repository %q", ev.repository),
 			})
 		}
 		return out
@@ -392,18 +400,20 @@ func classifyESComponent(ev *evidence, idx *evidenceIndex, record *models.Backup
 	case elasticsearch.SnapshotStateInProgress:
 		if isStale(backupID, ev, opts) {
 			out = append(out, Finding{
-				BackupID:  backupID,
-				Reason:    ReasonStaleInProgressES,
-				PresentIn: []string{SourceElasticsearch},
-				Detail:    "snapshot has been IN_PROGRESS past the polling window",
+				BackupID:     backupID,
+				Reason:       ReasonStaleInProgressES,
+				PresentIn:    []string{SourceElasticsearch},
+				SnapshotName: snap.Name,
+				Detail:       "snapshot has been IN_PROGRESS past the polling window",
 			})
 		}
 	case elasticsearch.SnapshotStatePartial, elasticsearch.SnapshotStateFailed:
 		out = append(out, Finding{
-			BackupID:  backupID,
-			Reason:    ReasonStateDivergenceES,
-			PresentIn: []string{SourceElasticsearch},
-			Detail:    fmt.Sprintf("snapshot state is %s with %d failed shards", snap.State, snap.FailedShards),
+			BackupID:     backupID,
+			Reason:       ReasonStateDivergenceES,
+			PresentIn:    []string{SourceElasticsearch},
+			SnapshotName: snap.Name,
+			Detail:       fmt.Sprintf("snapshot state is %s with %d failed shards", snap.State, snap.FailedShards),
 		})
 	}
 
@@ -439,10 +449,11 @@ func classifyUntracked(ev *evidence, idx *evidenceIndex, opts Options) []Finding
 			continue
 		}
 		out = append(out, Finding{
-			BackupID:  backupID,
-			Reason:    untrackedReason(ev, idx, backupID, ReasonUntrackedESSnapshot),
-			PresentIn: []string{SourceElasticsearch},
-			Detail:    fmt.Sprintf("snapshot %q has no backup record", snap.Name),
+			BackupID:     backupID,
+			Reason:       untrackedReason(ev, idx, backupID, ReasonUntrackedESSnapshot),
+			PresentIn:    []string{SourceElasticsearch},
+			SnapshotName: snap.Name,
+			Detail:       fmt.Sprintf("snapshot %q has no backup record", snap.Name),
 		})
 	}
 
@@ -454,12 +465,20 @@ func classifyUntracked(ev *evidence, idx *evidenceIndex, opts Options) []Finding
 		if idx.allComponentIDs[backupID] {
 			continue // the component still tracks it; that is A1, already recorded
 		}
-		out = append(out, Finding{
-			BackupID:  backupID,
-			Reason:    ReasonUntrackedAppESSnapshot,
-			PresentIn: []string{SourceElasticsearch},
-			Detail:    fmt.Sprintf("%d component snapshots remain with no owning backup", len(snaps)),
-		})
+		names := make([]string, 0, len(snaps))
+		for _, s := range snaps {
+			names = append(names, s.Name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			out = append(out, Finding{
+				BackupID:     backupID,
+				Reason:       ReasonUntrackedAppESSnapshot,
+				PresentIn:    []string{SourceElasticsearch},
+				SnapshotName: name,
+				Detail:       fmt.Sprintf("component snapshot %q has no owning backup", name),
+			})
+		}
 	}
 
 	// A4: snapshots belonging to something else entirely. Reported once as a
@@ -473,7 +492,7 @@ func classifyUntracked(ev *evidence, idx *evidenceIndex, opts Options) []Finding
 			Reason:    ReasonForeignSnapshot,
 			PresentIn: []string{SourceElasticsearch},
 			Detail: fmt.Sprintf("%d snapshots in %q match no known convention: %s",
-				len(names), ev.repository, summarize(names, 5)),
+				len(names), ev.repository, summarize(names, maxSummarizedItems)),
 		})
 	}
 
@@ -485,10 +504,11 @@ func classifyUntracked(ev *evidence, idx *evidenceIndex, opts Options) []Finding
 				stray = append(stray, backupID)
 			}
 		}
+		sort.Strings(stray)
 		if len(stray) > 0 {
 			out = append(out, Finding{
 				Reason: ReasonUntrackedLogFile,
-				Detail: fmt.Sprintf("%d log files have no backup record: %s", len(stray), summarize(stray, 5)),
+				Detail: fmt.Sprintf("%d log files have no backup record: %s", len(stray), summarize(stray, maxSummarizedItems)),
 			})
 		}
 	}
@@ -500,7 +520,7 @@ func classifyUntracked(ev *evidence, idx *evidenceIndex, opts Options) []Finding
 // backup. Residue is data the controller created and then lost track of while
 // deleting; the give-away is that only some of its parts remain.
 func untrackedReason(ev *evidence, idx *evidenceIndex, backupID string, fallback ReasonCode) ReasonCode {
-	if !isBackupIDShaped(backupID) {
+	if !camunda.IsBackupIDShaped(backupID) {
 		return fallback
 	}
 
@@ -559,8 +579,10 @@ func classifyInstance(ev *evidence, idx *evidenceIndex) []Finding {
 		}
 	}
 
-	// F4: exporting left paused by a backup that never resumed it.
-	if ev.exporterPaused {
+	// F4: exporting left paused by a backup that never resumed it. Guard G3:
+	// a backup in flight pauses exporting by design, so reporting that as a
+	// stuck exporter would be a CRITICAL false alarm on every mid-backup scan.
+	if ev.exporterPaused && !ev.backupInFlight {
 		out = append(out, Finding{
 			Reason: ReasonExporterLeftPaused,
 			Detail: "Zeebe exporting is paused although no backup is running",
@@ -575,23 +597,18 @@ func classifyInstance(ev *evidence, idx *evidenceIndex) []Finding {
 // deletions. Below this, per-backup findings are the honest description.
 const zeebeReboundThreshold = 3
 
-func missingSnapshots(rec camunda.ComponentBackupRecord, ev *evidence) []string {
+// maxSummarizedItems caps how many artifact names a finding's detail text lists
+// before collapsing the rest into a count.
+const maxSummarizedItems = 5
+
+func missingSnapshots(rec camunda.ComponentBackupRecord, idx *evidenceIndex) []string {
 	var missing []string
 	for _, name := range rec.SnapshotNames() {
-		if !findSnapshotByName(ev.snapshots, name) {
+		if _, ok := idx.snapshotNames[name]; !ok {
 			missing = append(missing, name)
 		}
 	}
 	return missing
-}
-
-func findSnapshotByName(snapshots []elasticsearch.SnapshotInfo, name string) bool {
-	for _, s := range snapshots {
-		if s.Name == name {
-			return true
-		}
-	}
-	return false
 }
 
 func expectedSnapshotName(backupID, namePrefix string) string {

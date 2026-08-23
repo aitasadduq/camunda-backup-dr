@@ -38,8 +38,13 @@ type Finding struct {
 	PresentIn  []string   `json:"present_in,omitempty"`
 	MissingIn  []string   `json:"missing_in,omitempty"`
 	Unverified []string   `json:"unverified,omitempty"`
-	Detail     string     `json:"detail,omitempty"`
-	DetectedAt time.Time  `json:"detected_at"`
+	// SnapshotName is the exact Elasticsearch snapshot this finding concerns,
+	// when it concerns one. It exists so clients can build a correct DELETE
+	// command instead of parsing it back out of Detail: a snapshot written with
+	// a configured name prefix is not addressable by its backup ID alone.
+	SnapshotName string    `json:"snapshot_name,omitempty"`
+	Detail       string    `json:"detail,omitempty"`
+	DetectedAt   time.Time `json:"detected_at"`
 }
 
 // BackupIssue rolls every finding for one backup ID into a single row. The UI
@@ -60,6 +65,9 @@ type BackupIssue struct {
 	PresentIn     []string     `json:"present_in,omitempty"`
 	MissingIn     []string     `json:"missing_in,omitempty"`
 	Unverified    []string     `json:"unverified,omitempty"`
+	// SnapshotNames are the exact snapshots this backup's findings name, for
+	// building remediation commands.
+	SnapshotNames []string `json:"snapshot_names,omitempty"`
 }
 
 // Report is one reconciliation sweep over one Camunda instance.

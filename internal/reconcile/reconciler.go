@@ -3,9 +3,12 @@ package reconcile
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/camunda"
@@ -31,6 +34,16 @@ type Reconciler struct {
 	cfg          *config.Config
 	logger       *utils.Logger
 	opts         Options
+
+	// backupRunning reports whether a backup is in flight. Without it the F4
+	// exporter check cannot tell "a backup failed to resume exporting" from
+	// "a backup is pausing exporting right now, as designed".
+	backupRunning func() bool
+
+	// sweepRunning serialises sweeps per reconciler. A sweep fans out to every
+	// component plus Elasticsearch and holds the whole record set in memory, so
+	// overlapping sweeps multiply both the load on the cluster and the memory.
+	sweepRunning atomic.Bool
 
 	// nowFunc is swappable so tests can drive the time-based guards.
 	nowFunc func() time.Time
@@ -71,6 +84,22 @@ func (r *Reconciler) SetOptions(opts Options) {
 	r.opts = opts
 }
 
+// SetBackupRunningFunc registers the check that tells the sweep whether a backup
+// is currently in flight. Without it the sweep assumes none is.
+func (r *Reconciler) SetBackupRunningFunc(fn func() bool) {
+	r.backupRunning = fn
+}
+
+// ErrSweepInProgress is returned when a sweep is already running for this
+// reconciler. Callers surface it as 409 rather than starting a second sweep.
+var ErrSweepInProgress = errors.New("reconciliation already in progress")
+
+// isBackupRunning reports whether a backup is in flight, defaulting to false
+// when no check has been registered.
+func (r *Reconciler) isBackupRunning() bool {
+	return r.backupRunning != nil && r.backupRunning()
+}
+
 func (r *Reconciler) now() time.Time {
 	if r.nowFunc != nil {
 		return r.nowFunc()
@@ -88,6 +117,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, instance *models.CamundaInst
 		return nil, fmt.Errorf("camunda instance is nil")
 	}
 
+	if !r.sweepRunning.CompareAndSwap(false, true) {
+		return nil, ErrSweepInProgress
+	}
+	defer r.sweepRunning.Store(false)
+
 	started := r.now()
 	r.logger.Info("[reconcile] Starting sweep for instance %s", instance.ID)
 
@@ -104,7 +138,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, instance *models.CamundaInst
 	report.ComponentEndpoints = make(map[string]string)
 	for name, endpoint := range componentEndpoints(instance) {
 		if endpoint != "" {
-			report.ComponentEndpoints[name] = endpoint
+			report.ComponentEndpoints[name] = stripUserinfo(endpoint)
 		}
 	}
 
@@ -143,6 +177,19 @@ func (r *Reconciler) store(report *Report) error {
 		return fmt.Errorf("failed to serialize reconcile report: %w", err)
 	}
 	return r.s3Storage.StoreReconcileReport(report.CamundaInstanceID, data)
+}
+
+// stripUserinfo removes any embedded credentials from a URL while keeping the
+// path, which the UI needs to build a remediation command. The report is written
+// to S3 and served over the API, so a "https://user:pass@host/actuator/backups"
+// endpoint would otherwise persist the password in both.
+func stripUserinfo(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	u.User = nil
+	return u.String()
 }
 
 // exporterPaused reports whether Zeebe's exporters are currently stopped.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
 	"os/signal"
@@ -119,6 +120,9 @@ func main() {
 	// Reconciler: cross-references controller metadata against the artifacts that
 	// actually exist. Report-only, so it is safe to run automatically.
 	reconciler := reconcile.NewReconciler(s3Storage, fileStorage, httpClient, cfg, logger)
+	// Lets the sweep tell a backup that is pausing exporting right now from one
+	// that failed to resume it.
+	reconciler.SetBackupRunningFunc(backupOrchestrator.IsBackupRunning)
 	reconciler.SetOptions(reconcile.Options{
 		GracePeriod: time.Duration(cfg.ReconcileGracePeriodMinutes) * time.Minute,
 		StaleAfter:  time.Duration(cfg.ReconcileStaleAfterMinutes) * time.Minute,
@@ -132,6 +136,10 @@ func main() {
 				time.Duration(cfg.ReconcileTimeoutSeconds)*time.Second)
 			defer cancel()
 			if _, err := reconciler.Reconcile(sweepCtx, instance); err != nil {
+				if errors.Is(err, reconcile.ErrSweepInProgress) {
+					logger.Info("Skipping post-backup reconciliation for %s: a sweep is already running", instance.ID)
+					return
+				}
 				logger.Error("Post-backup reconciliation failed for %s: %v", instance.ID, err)
 			}
 		})

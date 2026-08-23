@@ -1355,7 +1355,7 @@ async function loadBackups(instanceId, filter) {
 
         // A tracked backup with findings keeps its real status; the marker is how
         // the user learns it has a problem worth opening.
-        annotateBackupIssues(rows);
+        annotateBackupIssues(rows, instanceId);
         renderBackupsTable(instanceId, rows, { scanNote: (filter === 'all' || !filter) });
     } catch (err) {
         el.innerHTML = `<div class="empty-state"><p>Failed to load backups</p><p class="text-sm mt-1">${err.message}</p></div>`;
@@ -1363,7 +1363,7 @@ async function loadBackups(instanceId, filter) {
 }
 
 // One line on the All tab explaining where the ORPHANED rows came from.
-function renderScanNote(instanceId) {
+function renderScanNote() {
     if (!reconcileReport) {
         return `
             <div class="text-xs text-gray-500 mb-3">
@@ -1389,11 +1389,11 @@ function renderBackupsTable(instanceId, backups, opts = {}) {
 
     // Present on the Orphaned tab: scan time, per-source health and any
     // instance-wide findings.
-    let header = opts.report ? renderReconcileHeader(instanceId, opts.report) : '';
+    let header = opts.report ? renderReconcileHeader(opts.report) : '';
 
     // On the All tab the orphan rows come from a scan rather than from backup
     // history, so their freshness and completeness need saying somewhere.
-    if (opts.scanNote) header = renderScanNote(instanceId) + header;
+    if (opts.scanNote) header = renderScanNote() + header;
 
     if (backups.length === 0) {
         const report = opts.report;
@@ -1941,11 +1941,16 @@ async function getReasonCatalog() {
     if (reasonCatalog) return reasonCatalog;
     try {
         const entries = await api.get('api/reconcile/reasons');
-        reasonCatalog = {};
-        (entries || []).forEach(e => { reasonCatalog[e.code] = e; });
+        const loaded = {};
+        (entries || []).forEach(e => { loaded[e.code] = e; });
+        reasonCatalog = loaded;
     } catch (err) {
+        // Leave the cache null so the next call retries. Caching {} here would
+        // pin the catalogue empty for the page's lifetime after one transient
+        // failure, and every finding would render as a bare reason code with no
+        // label, impact or remediation.
         console.warn('Failed to load reason catalog:', err);
-        reasonCatalog = {};
+        return {};
     }
     return reasonCatalog;
 }
@@ -1963,13 +1968,8 @@ function concreteRemediation(text, issue) {
     }
     if (issue?.backup_id) {
         out = out.replaceAll('{backup_id}', issue.backup_id);
-        // The controller names its own snapshots after the backup ID; component
-        // snapshots are multi-part, so only substitute when the detail text
-        // pinned an exact name.
-        const named = (issue.reasons || [])
-            .map(f => (f.detail || '').match(/snapshot "([^"]+)"/))
-            .find(Boolean);
-        if (named) out = out.replaceAll('{snapshot_name}', named[1]);
+        const names = issue.snapshot_names || [];
+        if (names.length === 1) out = out.replaceAll('{snapshot_name}', names[0]);
     }
     const endpoints = report.component_endpoints || {};
     const component = (issue?.present_in || []).find(c => endpoints[c]);
@@ -1989,12 +1989,12 @@ function remediationCommands(issue) {
 
     (issue?.present_in || []).forEach(source => {
         if (source === 'elasticsearch') {
-            const named = (issue.reasons || [])
-                .map(f => (f.detail || '').match(/snapshot "([^"]+)"/))
-                .find(Boolean);
-            const name = named ? named[1] : issue.backup_id;
             const repo = report.snapshot_repository || '{repository}';
-            cmds.push(`DELETE /_snapshot/${repo}/${name}`);
+            // Names come from the finding itself. Deriving them from the backup
+            // ID would be wrong whenever a snapshot name prefix is configured.
+            (issue.snapshot_names || []).forEach(name => {
+                cmds.push(`DELETE /_snapshot/${repo}/${name}`);
+            });
         } else if (endpoints[source]) {
             cmds.push(`DELETE ${endpoints[source]}/${issue.backup_id}`);
         }
@@ -2097,7 +2097,8 @@ function orphanToBackupRow(issue) {
 
 // Attaches any reconciliation findings to backups that do have a history record,
 // so a COMPLETED backup whose data has actually gone is not shown as simply fine.
-function annotateBackupIssues(rows) {
+function annotateBackupIssues(rows, instanceId) {
+    if (reconcileReport?._instanceId !== instanceId) return;
     const issues = reconcileReport?.backup_issues || [];
     if (!issues.length) return;
     const byId = new Map(issues.filter(i => i.tracked).map(i => [i.backup_id, i]));
@@ -2135,7 +2136,7 @@ async function loadOrphanedBackups(instanceId) {
     }
 
     if (!report) {
-        renderReconcileNeverRun(instanceId);
+        renderReconcileNeverRun();
         return;
     }
 
@@ -2144,7 +2145,7 @@ async function loadOrphanedBackups(instanceId) {
 }
 
 // Never having scanned is not the same as having scanned and found nothing.
-function renderReconcileNeverRun(instanceId) {
+function renderReconcileNeverRun() {
     const el = document.getElementById('backups-table-container');
     if (!el) return;
     el.innerHTML = `
@@ -2157,7 +2158,7 @@ function renderReconcileNeverRun(instanceId) {
 
 // A scan that could not reach every source proves nothing about what it did not
 // check, so the header shows per-source state and says when a scan is partial.
-function renderReconcileHeader(instanceId, report) {
+function renderReconcileHeader(report) {
     if (!report) return '';
 
     const sources = Object.values(report.sources_checked || {}).sort((a, b) => a.name.localeCompare(b.name));

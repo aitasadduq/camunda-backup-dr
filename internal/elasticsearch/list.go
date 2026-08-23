@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -58,7 +59,9 @@ func (c *Client) ListSnapshots(ctx context.Context, repository string) ([]Snapsh
 		return nil, fmt.Errorf("http client is not configured")
 	}
 
-	urlPath := fmt.Sprintf("/_cat/snapshots/%s", repository)
+	// Escaped because config.GetElasticsearchSnapshotRepository can source this
+	// from an env var, which bypasses the instance-level name validation.
+	urlPath := fmt.Sprintf("/_cat/snapshots/%s", url.PathEscape(repository))
 	fullURL, err := c.buildURL(urlPath, map[string]string{
 		"format":             "json",
 		"h":                  "id,status,start_epoch,failed_shards",
@@ -126,25 +129,10 @@ func ClassifySnapshot(name, namePrefix string) (SnapshotOwner, string, string) {
 		candidate = strings.TrimPrefix(name, prefix)
 	}
 
-	if isBackupIDShaped(candidate) {
+	if camunda.IsBackupIDShaped(candidate) {
 		return OwnerController, candidate, ""
 	}
 	return OwnerForeign, "", ""
-}
-
-// isBackupIDShaped reports whether a string looks like a YYYYMMDDHHMMSS backup
-// ID. It is a shape check only; callers that need a real timestamp parse it with
-// camunda.ParseBackupIDTimestamp.
-func isBackupIDShaped(s string) bool {
-	if len(s) != 14 {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
 }
 
 // normalizeSnapshotState maps a _cat status onto the SnapshotState vocabulary.

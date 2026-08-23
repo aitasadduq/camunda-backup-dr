@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -18,9 +19,20 @@ type Reconciler interface {
 	LatestReport(camundaInstanceID string) (*reconcile.Report, error)
 }
 
-// reconcileTimeout caps an on-demand sweep. A sweep fans out to every component
-// API and to Elasticsearch, so it needs more headroom than an ordinary request.
-const reconcileTimeout = 2 * time.Minute
+// defaultReconcileTimeout caps an on-demand sweep when the config does not.
+// A sweep fans out to every component API and to Elasticsearch, so it needs more
+// headroom than an ordinary request.
+const defaultReconcileTimeout = 2 * time.Minute
+
+// reconcileTimeout honours RECONCILE_TIMEOUT_SECONDS, which the docs describe as
+// capping a sweep. Reading it here keeps the on-demand endpoint consistent with
+// the post-backup path rather than silently pinning the API to two minutes.
+func (h *Handlers) reconcileTimeout() time.Duration {
+	if h.cfg != nil && h.cfg.ReconcileTimeoutSeconds > 0 {
+		return time.Duration(h.cfg.ReconcileTimeoutSeconds) * time.Second
+	}
+	return defaultReconcileTimeout
+}
 
 // SetReconciler registers the reconciler used by the reconcile endpoints.
 func (h *Handlers) SetReconciler(r Reconciler) {
@@ -69,7 +81,9 @@ func (h *Handlers) GetReconcileReportHandler(w http.ResponseWriter, r *http.Requ
 	report, err := h.reconciler.LatestReport(instance.ID)
 	if err != nil {
 		if err == utils.ErrBackupNotFound {
-			writeError(w, http.StatusNotFound, "not_found", "No reconciliation report yet for this instance")
+			// Distinct code from the instance-not-found 404 above: a client must
+			// be able to tell "never scanned" from "no such instance".
+			writeError(w, http.StatusNotFound, "no_report", "No reconciliation report yet for this instance")
 			return
 		}
 		h.logger.Error("Failed to read reconcile report: %v", err)
@@ -87,11 +101,16 @@ func (h *Handlers) RunReconcileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), reconcileTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), h.reconcileTimeout())
 	defer cancel()
 
 	report, err := h.reconciler.Reconcile(ctx, instance)
 	if err != nil {
+		if errors.Is(err, reconcile.ErrSweepInProgress) {
+			writeError(w, http.StatusConflict, "sweep_in_progress",
+				"A reconciliation sweep is already running for this instance")
+			return
+		}
 		h.logger.Error("Reconciliation failed for %s: %v", instance.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "Reconciliation failed")
 		return
