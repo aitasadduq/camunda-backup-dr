@@ -49,6 +49,12 @@ func (r *Router) registerRoutes() {
 		http.MethodGet: r.handlers.GetDefaultsHandler,
 	}))
 
+	// Reason code catalogue for reconciliation findings. Static and instance
+	// independent, so the UI fetches it once and caches it.
+	r.mux.HandleFunc("/api/reconcile/reasons", r.methodHandler(map[string]http.HandlerFunc{
+		http.MethodGet: r.handlers.ReasonCatalogHandler,
+	}))
+
 	// Camunda instances - collection endpoints
 	r.mux.HandleFunc("/api/camundas", r.methodHandler(map[string]http.HandlerFunc{
 		http.MethodGet:  r.handlers.ListCamundaInstancesHandler,
@@ -158,6 +164,17 @@ func (r *Router) camundaResourceHandler() http.HandlerFunc {
 				return
 			}
 			r.handlers.TriggerBackupHandler(w, req)
+
+		// GET|POST /api/camundas/{id}/backups/reconcile
+		case strings.HasSuffix(path, "/backups/reconcile"):
+			switch req.Method {
+			case http.MethodGet:
+				r.handlers.GetReconcileReportHandler(w, req)
+			case http.MethodPost:
+				r.handlers.RunReconcileHandler(w, req)
+			default:
+				r.methodNotAllowed(w, req)
+			}
 
 		// GET /api/camundas/{id}/backups/orphaned
 		case strings.HasSuffix(path, "/backups/orphaned"): // Reserved sub-paths only respond to GET for listing

@@ -3184,3 +3184,21 @@ func TestExecuteElasticsearchBackup_InstanceRepositoryOverridesDefault(t *testin
 		t.Errorf("expected snapshot created against 'instance-repo', got %q", capturedRepo)
 	}
 }
+
+func (m *mockS3Storage) ListAllBackups(camundaInstanceID string) ([]*models.BackupHistory, error) {
+	m.mutex.RLock()
+	defer m.mutex.RUnlock()
+	var all []*models.BackupHistory
+	for _, h := range m.backupHistory[camundaInstanceID] {
+		all = append(all, h)
+	}
+	return all, nil
+}
+
+func (m *mockS3Storage) StoreReconcileReport(camundaInstanceID string, report []byte) error {
+	return nil
+}
+
+func (m *mockS3Storage) GetLatestReconcileReport(camundaInstanceID string) ([]byte, error) {
+	return nil, utils.ErrBackupNotFound
+}

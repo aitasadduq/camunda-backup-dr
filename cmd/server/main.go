@@ -13,6 +13,7 @@ import (
 	"github.com/aitasadduq/camunda-backup-dr/internal/config"
 	"github.com/aitasadduq/camunda-backup-dr/internal/models"
 	"github.com/aitasadduq/camunda-backup-dr/internal/orchestrator"
+	"github.com/aitasadduq/camunda-backup-dr/internal/reconcile"
 	"github.com/aitasadduq/camunda-backup-dr/internal/retention"
 	"github.com/aitasadduq/camunda-backup-dr/internal/scheduler"
 	"github.com/aitasadduq/camunda-backup-dr/internal/secrets"
@@ -115,6 +116,30 @@ func main() {
 	})
 	logger.Info("Retention manager initialized and wired to orchestrator")
 
+	// Reconciler: cross-references controller metadata against the artifacts that
+	// actually exist. Report-only, so it is safe to run automatically.
+	reconciler := reconcile.NewReconciler(s3Storage, fileStorage, httpClient, cfg, logger)
+	reconciler.SetOptions(reconcile.Options{
+		GracePeriod: time.Duration(cfg.ReconcileGracePeriodMinutes) * time.Minute,
+		StaleAfter:  time.Duration(cfg.ReconcileStaleAfterMinutes) * time.Minute,
+	})
+	if cfg.ReconcileEnabled {
+		// Hooked to the orchestrator rather than to ApplyRetention: retention runs
+		// only for COMPLETED and FAILED backups, and an INCOMPLETE backup is
+		// exactly the case where a sweep matters most.
+		backupOrchestrator.SetReconcileFunc(func(instance *models.CamundaInstance) {
+			sweepCtx, cancel := context.WithTimeout(context.Background(),
+				time.Duration(cfg.ReconcileTimeoutSeconds)*time.Second)
+			defer cancel()
+			if _, err := reconciler.Reconcile(sweepCtx, instance); err != nil {
+				logger.Error("Post-backup reconciliation failed for %s: %v", instance.ID, err)
+			}
+		})
+		logger.Info("Reconciler initialized and wired to orchestrator")
+	} else {
+		logger.Info("Reconciler disabled (RECONCILE_ENABLED=false); on-demand sweeps remain available")
+	}
+
 	// Persist last-backup time/status to the instance config after each backup
 	// so the UI reflects the most recent backup result.
 	backupOrchestrator.SetLastBackupFunc(func(instanceID string, backupTime time.Time, status string) {
@@ -177,6 +202,7 @@ func main() {
 		cfg,
 	)
 	server.SetSecretStore(secretStore)
+	server.SetReconciler(reconciler)
 
 	// Start HTTP server
 	if err := server.Start(); err != nil {
@@ -237,4 +263,3 @@ func setupGracefulShutdown(logger *utils.Logger, server *api.Server, sched *sche
 		os.Exit(0)
 	}()
 }
-

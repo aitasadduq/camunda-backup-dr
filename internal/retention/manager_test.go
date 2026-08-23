@@ -1105,3 +1105,23 @@ func TestDeleteESSnapshot_UsesInstanceRepository(t *testing.T) {
 		t.Errorf("expected ES snapshot deleted from 'instance-repo', got %q", deletedRepo)
 	}
 }
+
+func (m *mockS3Storage) ListAllBackups(camundaInstanceID string) ([]*models.BackupHistory, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var all []*models.BackupHistory
+	for _, group := range []map[string]map[string]*models.BackupHistory{m.backupHistory, m.orphaned, m.incomplete} {
+		for _, h := range group[camundaInstanceID] {
+			all = append(all, h)
+		}
+	}
+	return all, nil
+}
+
+func (m *mockS3Storage) StoreReconcileReport(camundaInstanceID string, report []byte) error {
+	return nil
+}
+
+func (m *mockS3Storage) GetLatestReconcileReport(camundaInstanceID string) ([]byte, error) {
+	return nil, utils.ErrBackupNotFound
+}

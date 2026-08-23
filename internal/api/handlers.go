@@ -85,6 +85,7 @@ type Handlers struct {
 	logger           *utils.Logger
 	cfg              *config.Config
 	secrets          SecretStore
+	reconciler       Reconciler
 }
 
 // SetSecretStore registers the store used to persist credentials entered in the UI.

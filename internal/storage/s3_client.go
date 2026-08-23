@@ -34,10 +34,12 @@ const (
 	MaxRetryDelay = 30 * time.Second
 
 	// S3 path constants
-	latestBackupIDFile = "latest-backup-id.txt"
-	historyDir         = "history"
-	incompleteDir      = "incomplete"
-	orphanedDir        = "orphaned"
+	latestBackupIDFile  = "latest-backup-id.txt"
+	historyDir          = "history"
+	incompleteDir       = "incomplete"
+	orphanedDir         = "orphaned"
+	reconcileDir        = "reconcile"
+	reconcileLatestFile = "latest.json"
 )
 
 // S3Config holds configuration for S3 storage
@@ -722,4 +724,69 @@ func isNoSuchKey(err error) bool {
 	}
 
 	return false
+}
+
+// StoreReconcileReport writes a reconciliation report for an instance. The
+// report is written twice: to a stable latest.json for the UI to read, and to a
+// dated key so past sweeps can be compared.
+func (c *S3Client) StoreReconcileReport(camundaInstanceID string, report []byte) error {
+	ctx := context.Background()
+	now := time.Now()
+
+	keys := []string{
+		c.buildKey(camundaInstanceID, reconcileDir, reconcileLatestFile),
+		c.buildKey(camundaInstanceID, reconcileDir, getDatePath(now), now.Format("150405")+".json"),
+	}
+
+	for _, key := range keys {
+		k := key
+		err := c.withRetry(ctx, "StoreReconcileReport", func() error {
+			_, putErr := c.client.PutObject(ctx, &s3.PutObjectInput{
+				Bucket:      aws.String(c.bucket),
+				Key:         aws.String(k),
+				Body:        bytes.NewReader(report),
+				ContentType: aws.String("application/json"),
+			})
+			return putErr
+		})
+		if err != nil {
+			return fmt.Errorf("failed to store reconcile report: %w", err)
+		}
+	}
+
+	c.logger.Debug("Stored reconcile report for %s", camundaInstanceID)
+	return nil
+}
+
+// GetLatestReconcileReport returns the most recent reconciliation report, or
+// utils.ErrBackupNotFound if no sweep has run for this instance yet.
+func (c *S3Client) GetLatestReconcileReport(camundaInstanceID string) ([]byte, error) {
+	ctx := context.Background()
+	key := c.buildKey(camundaInstanceID, reconcileDir, reconcileLatestFile)
+
+	var data []byte
+	err := c.withRetry(ctx, "GetLatestReconcileReport", func() error {
+		result, getErr := c.client.GetObject(ctx, &s3.GetObjectInput{
+			Bucket: aws.String(c.bucket),
+			Key:    aws.String(key),
+		})
+		if getErr != nil {
+			return getErr
+		}
+		defer result.Body.Close()
+
+		body, readErr := io.ReadAll(result.Body)
+		if readErr != nil {
+			return readErr
+		}
+		data = body
+		return nil
+	})
+	if err != nil {
+		if isNoSuchKey(err) {
+			return nil, utils.ErrBackupNotFound
+		}
+		return nil, fmt.Errorf("failed to get reconcile report: %w", err)
+	}
+	return data, nil
 }

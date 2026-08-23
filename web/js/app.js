@@ -1245,8 +1245,45 @@ function renderBackupsTabControls(instances) {
                     </button>
                 `).join('')}
             </div>
+            <button id="backups-refresh" onclick="refreshBackups()" type="button"
+                title="Refresh: reload backups and rescan for orphaned ones"
+                aria-label="Refresh backups"
+                class="backups-refresh-btn p-2 text-gray-400 hover:text-blue-600 rounded-md hover:bg-gray-100 transition-colors">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+            </button>
         </div>
     `;
+}
+
+// The refresh control on the Backups tab. It rescans as well as reloading,
+// because orphaned rows come from a scan rather than from backup history, so
+// re-fetching the history alone would leave them stale on every tab.
+async function refreshBackups() {
+    const instanceId = state.selectedInstanceId;
+    if (!instanceId) return;
+
+    const btn = document.getElementById('backups-refresh');
+    btn?.classList.add('is-spinning');
+    if (btn) btn.disabled = true;
+
+    try {
+        const report = await api.post(`api/camundas/${instanceId}/backups/reconcile`);
+        report._instanceId = instanceId;
+        reconcileReport = report;
+        await getReasonCatalog();
+    } catch (err) {
+        // A failed scan must not block the reload: the backup history is still
+        // worth showing, just without fresh orphan data.
+        showToast(err.message || 'Scan failed; showing backups without a fresh scan', 'error');
+    } finally {
+        btn?.classList.remove('is-spinning');
+        if (btn) btn.disabled = false;
+    }
+
+    await loadBackups(instanceId, state.backupFilter);
 }
 
 function renderBackupsEmptyState() {
@@ -1291,34 +1328,96 @@ async function loadBackups(instanceId, filter) {
         case 'completed': path = `api/camundas/${instanceId}/backups?status=COMPLETED`; break;
         case 'failed': path = `api/camundas/${instanceId}/backups/failed`; break;
         case 'incomplete': path = `api/camundas/${instanceId}/backups/incomplete`; break;
-        case 'orphaned': path = `api/camundas/${instanceId}/backups/orphaned`; break;
         default: path = `api/camundas/${instanceId}/backups`;
+    }
+
+    // Orphans have no history record, so they never come back from the backup
+    // endpoints. They are folded in from the reconciliation report instead.
+    if (filter === 'orphaned') {
+        await loadOrphanedBackups(instanceId);
+        return;
     }
 
     try {
         const backups = await api.get(path);
-        renderBackupsTable(instanceId, backups || []);
+        let rows = backups || [];
+
+        // "All" means all backups, orphans included.
+        if (filter === 'all' || !filter) {
+            const known = new Set(rows.map(b => b.backup_id));
+            // A report can be older than the backup list it is merged into, so a
+            // backup recorded since the last scan would otherwise appear twice -
+            // once real, once as a stale orphan. The live list always wins.
+            const orphans = (await loadOrphanRows(instanceId)).filter(o => !known.has(o.backup_id));
+            rows = rows.concat(orphans);
+            rows.sort((a, b) => new Date(b.start_time || 0) - new Date(a.start_time || 0));
+        }
+
+        // A tracked backup with findings keeps its real status; the marker is how
+        // the user learns it has a problem worth opening.
+        annotateBackupIssues(rows);
+        renderBackupsTable(instanceId, rows, { scanNote: (filter === 'all' || !filter) });
     } catch (err) {
         el.innerHTML = `<div class="empty-state"><p>Failed to load backups</p><p class="text-sm mt-1">${err.message}</p></div>`;
     }
 }
 
-function renderBackupsTable(instanceId, backups) {
+// One line on the All tab explaining where the ORPHANED rows came from.
+function renderScanNote(instanceId) {
+    if (!reconcileReport) {
+        return `
+            <div class="text-xs text-gray-500 mb-3">
+                Orphaned backups are not shown: no scan has run yet. Use the refresh button to scan.
+            </div>
+        `;
+    }
+    const unreachable = Object.values(reconcileReport.sources_checked || {})
+        .filter(s => !s.reachable && !s.skipped).map(s => s.name);
+    const warn = unreachable.length
+        ? ` Could not check ${escapeHtml(unreachable.join(', '))}, so some orphans may be missing.`
+        : '';
+    return `
+        <div class="text-xs text-gray-500 mb-3">
+            Orphaned backups from the scan of ${escapeHtml(formatTime(reconcileReport.finished_at))}.${warn}
+        </div>
+    `;
+}
+
+function renderBackupsTable(instanceId, backups, opts = {}) {
     const el = document.getElementById('backups-table-container');
     if (!el) return;
 
+    // Present on the Orphaned tab: scan time, per-source health and any
+    // instance-wide findings.
+    let header = opts.report ? renderReconcileHeader(instanceId, opts.report) : '';
+
+    // On the All tab the orphan rows come from a scan rather than from backup
+    // history, so their freshness and completeness need saying somewhere.
+    if (opts.scanNote) header = renderScanNote(instanceId) + header;
+
     if (backups.length === 0) {
-        el.innerHTML = `
+        const report = opts.report;
+        const partial = report && !Object.values(report.sources_checked || {})
+            .every(s => s.reachable || s.skipped);
+        const title = report
+            ? (partial ? 'No issues found in the sources that could be checked' : 'No orphaned backups found')
+            : 'No Backups Found';
+        const sub = report
+            ? (partial
+                ? 'Re-run the scan once every source is reachable to confirm.'
+                : 'Every backup in Zeebe, the Camunda components and Elasticsearch has a matching record.')
+            : 'No backups match the current filter.';
+        el.innerHTML = header + `
             <div class="empty-state">
                 <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4"/></svg>
-                <p class="text-lg font-medium text-gray-600">No Backups Found</p>
-                <p class="text-sm mt-1">No backups match the current filter.</p>
+                <p class="text-lg font-medium text-gray-600">${escapeHtml(title)}</p>
+                <p class="text-sm mt-1">${escapeHtml(sub)}</p>
             </div>
         `;
         return;
     }
 
-    el.innerHTML = `
+    el.innerHTML = header + `
         <div class="overflow-x-auto">
             <table class="data-table">
                 <thead>
@@ -1337,24 +1436,30 @@ function renderBackupsTable(instanceId, backups) {
                     ${backups.map(b => `
                         <tr>
                             <td class="font-mono text-xs font-medium text-gray-900">${escapeHtml(b.backup_id)}</td>
-                            <td class="text-xs text-gray-500">${formatTime(b.start_time)}</td>
+                            <td class="text-xs text-gray-500">${b.start_time ? formatTime(b.start_time) : '—'}</td>
                             <td class="hidden sm:table-cell text-xs text-gray-500">${b.end_time ? formatTime(b.end_time) : '—'}</td>
                             <td class="hidden md:table-cell text-xs text-gray-500">${b.duration_seconds != null ? formatDuration(b.duration_seconds) : '—'}</td>
-                            <td><span class="badge badge-${b.status.toLowerCase()}">${b.status}</span></td>
-                            <td class="hidden lg:table-cell"><span class="badge badge-${b.trigger_type.toLowerCase()}">${b.trigger_type}</span></td>
+                            <td>
+                                <span class="badge badge-${b.status.toLowerCase()}">${b.status}</span>
+                                ${b._issue ? `<span class="issue-marker severity-${escapeHtml(b._issue.severity)}" title="${escapeHtml(reasonInfo(b._issue.primary_reason).label)}">!</span>` : ''}
+                            </td>
+                            <td class="hidden lg:table-cell">${b.trigger_type ? `<span class="badge badge-${b.trigger_type.toLowerCase()}">${b.trigger_type}</span>` : '<span class="text-xs text-gray-400">—</span>'}</td>
                             <td class="hidden md:table-cell text-xs text-gray-500">
                                 ${b.backup_stats ? `<span class="text-green-600">${b.backup_stats.successful_components}</span>/<span class="text-red-600">${b.backup_stats.failed_components}</span>/<span>${b.backup_stats.total_components}</span>` : '—'}
                             </td>
                             <td>
                                 <div class="flex items-center gap-1">
-                                    <button onclick="showBackupDetail('${escapeForInlineHandler(instanceId)}', '${escapeForInlineHandler(b.backup_id)}')" title="View Details"
+                                    <button onclick="${b.status === 'ORPHANED'
+                                            ? `showOrphanedBackupDetail('${escapeForInlineHandler(instanceId)}', '${escapeForInlineHandler(b.backup_id)}')`
+                                            : `showBackupDetail('${escapeForInlineHandler(instanceId)}', '${escapeForInlineHandler(b.backup_id)}')`}" title="View Details"
                                         class="p-1 text-gray-400 hover:text-blue-600 transition-colors">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
                                     </button>
+                                    ${b.status === 'ORPHANED' ? '' : `
                                     <button onclick="viewBackupLogs('${escapeForInlineHandler(instanceId)}', '${escapeForInlineHandler(b.backup_id)}')" title="View Logs"
                                         class="p-1 text-gray-400 hover:text-green-600 transition-colors">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-                                    </button>
+                                    </button>`}
                                     ${['FAILED', 'INCOMPLETE', 'COMPLETED'].includes(b.status) ? `
                                     <button onclick="confirmDeleteBackup('${escapeForInlineHandler(instanceId)}', '${escapeForInlineHandler(b.backup_id)}')" title="Delete"
                                         class="p-1 text-gray-400 hover:text-red-600 transition-colors">
@@ -1399,6 +1504,8 @@ async function showBackupDetail(instanceId, backupId) {
                     </div>
 
                     ${backup.error_message ? `<div class="bg-red-50 border border-red-200 rounded-md p-3 text-sm text-red-700">${escapeHtml(backup.error_message)}</div>` : ''}
+
+                    ${renderTrackedBackupFindings(backupId)}
 
                     <!-- Components -->
                     <div>
@@ -1821,3 +1928,391 @@ function formatDuration(seconds) {
     const h = Math.floor(m / 60);
     return `${h}h ${m % 60}m`;
 }
+
+// ============================================================
+// Reconciliation (orphaned backup detection)
+// ============================================================
+
+// Cached once. The catalogue is static, so reports carry only reason codes and
+// the human text is looked up here.
+let reasonCatalog = null;
+
+async function getReasonCatalog() {
+    if (reasonCatalog) return reasonCatalog;
+    try {
+        const entries = await api.get('api/reconcile/reasons');
+        reasonCatalog = {};
+        (entries || []).forEach(e => { reasonCatalog[e.code] = e; });
+    } catch (err) {
+        console.warn('Failed to load reason catalog:', err);
+        reasonCatalog = {};
+    }
+    return reasonCatalog;
+}
+
+// Turns a catalogue remediation into something runnable by substituting the
+// values this scan actually observed. A "What to do" box full of {placeholders}
+// is not advice, it is homework.
+function concreteRemediation(text, issue) {
+    if (!text) return text;
+    const report = reconcileReport || {};
+
+    let out = text;
+    if (report.snapshot_repository) {
+        out = out.replaceAll('{repository}', report.snapshot_repository);
+    }
+    if (issue?.backup_id) {
+        out = out.replaceAll('{backup_id}', issue.backup_id);
+        // The controller names its own snapshots after the backup ID; component
+        // snapshots are multi-part, so only substitute when the detail text
+        // pinned an exact name.
+        const named = (issue.reasons || [])
+            .map(f => (f.detail || '').match(/snapshot "([^"]+)"/))
+            .find(Boolean);
+        if (named) out = out.replaceAll('{snapshot_name}', named[1]);
+    }
+    const endpoints = report.component_endpoints || {};
+    const component = (issue?.present_in || []).find(c => endpoints[c]);
+    if (component) {
+        out = out.replaceAll('{component_backup_endpoint}', endpoints[component]);
+    }
+    return out;
+}
+
+// The exact commands that would remove this backup's surviving artifacts, one
+// per source it was actually found in. Derived from the scan rather than from
+// catalogue prose, so it stays correct for findings that span several sources.
+function remediationCommands(issue) {
+    const report = reconcileReport || {};
+    const endpoints = report.component_endpoints || {};
+    const cmds = [];
+
+    (issue?.present_in || []).forEach(source => {
+        if (source === 'elasticsearch') {
+            const named = (issue.reasons || [])
+                .map(f => (f.detail || '').match(/snapshot "([^"]+)"/))
+                .find(Boolean);
+            const name = named ? named[1] : issue.backup_id;
+            const repo = report.snapshot_repository || '{repository}';
+            cmds.push(`DELETE /_snapshot/${repo}/${name}`);
+        } else if (endpoints[source]) {
+            cmds.push(`DELETE ${endpoints[source]}/${issue.backup_id}`);
+        }
+    });
+    return cmds;
+}
+
+// Several findings can share a reason code, differing only in which source they
+// were observed on. Rendering them as separate cards repeats the same title and
+// advice, so they are grouped into one card with the details listed under it.
+function groupFindingsByReason(reasons) {
+    const groups = new Map();
+    (reasons || []).forEach(f => {
+        if (!groups.has(f.reason)) groups.set(f.reason, { reason: f.reason, severity: f.severity, details: [] });
+        if (f.detail) groups.get(f.reason).details.push(f.detail);
+    });
+    return [...groups.values()];
+}
+
+// showCommands is only ever true for orphans. A tracked backup has a Delete
+// action that goes through the retention manager and its never-delete-the-most-
+// recent-backup guard; offering raw DELETE calls alongside it would invite the
+// user to route around that check.
+function renderFindingCards(issue, { showCommands = false } = {}) {
+    const groups = groupFindingsByReason(issue.reasons);
+    const cmds = showCommands ? remediationCommands(issue) : [];
+
+    return groups.map(g => {
+        const info = reasonInfo(g.reason);
+        const details = g.details.length === 1
+            ? `<p class="text-xs text-gray-600">${escapeHtml(g.details[0])}</p>`
+            : `<ul class="finding-details">${g.details.map(d => `<li>${escapeHtml(d)}</li>`).join('')}</ul>`;
+
+        return `
+            <div class="border border-gray-200 rounded-md p-3 bg-white">
+                <div class="flex items-center justify-between mb-1 gap-2 flex-wrap">
+                    <span class="text-sm font-medium">${escapeHtml(info.label)}</span>
+                    <span class="severity-badge severity-${escapeHtml(g.severity)}">${escapeHtml(g.severity.replace('_', ' '))}</span>
+                </div>
+                <div class="reason-code mb-1">${escapeHtml(g.reason)}</div>
+                ${details}
+                ${info.impact ? `<p class="text-xs text-gray-500 mt-1"><em>Impact:</em> ${escapeHtml(info.impact)}</p>` : ''}
+                ${info.remediation ? `<p class="text-xs text-gray-500 mt-1"><em>What to do:</em> ${escapeHtml(concreteRemediation(info.remediation, issue))}</p>` : ''}
+            </div>
+        `;
+    }).join('') + (cmds.length ? `
+        <div class="border border-gray-200 rounded-md p-3 bg-white">
+            <div class="text-sm font-medium mb-1">Commands to remove it</div>
+            <p class="text-xs text-gray-500 mb-1">The controller will not run these. Confirm the backup is not needed first.</p>
+            ${cmds.map(c => `<code class="reconcile-remediation">${escapeHtml(c)}</code>`).join('')}
+        </div>
+    ` : '');
+}
+
+function reasonInfo(code) {
+    return (reasonCatalog && reasonCatalog[code]) || {
+        code, label: code, explanation: '', impact: '', remediation: '',
+    };
+}
+
+// The latest report, cached so the All tab and the detail modal can read orphan
+// findings without re-fetching for every row.
+let reconcileReport = null;
+
+async function fetchReconcileReport(instanceId, { force = false } = {}) {
+    if (reconcileReport && reconcileReport._instanceId === instanceId && !force) {
+        return reconcileReport;
+    }
+    await getReasonCatalog();
+    try {
+        const report = await api.get(`api/camundas/${instanceId}/backups/reconcile`);
+        report._instanceId = instanceId;
+        reconcileReport = report;
+        return report;
+    } catch (err) {
+        if (err.status === 404) {
+            reconcileReport = null;   // no sweep has run yet
+            return null;
+        }
+        throw err;
+    }
+}
+
+// Orphans have no history record, so a backup-shaped row is synthesised from the
+// finding. Only the backup ID and its timestamp are real; everything the history
+// record would have supplied is genuinely unknown and left null for the table to
+// render as an em dash.
+function orphanToBackupRow(issue) {
+    return {
+        backup_id: issue.backup_id,
+        start_time: issue.backup_time || null,
+        end_time: null,
+        duration_seconds: null,
+        status: 'ORPHANED',
+        trigger_type: null,
+        backup_stats: null,
+        _orphan: issue,
+    };
+}
+
+// Attaches any reconciliation findings to backups that do have a history record,
+// so a COMPLETED backup whose data has actually gone is not shown as simply fine.
+function annotateBackupIssues(rows) {
+    const issues = reconcileReport?.backup_issues || [];
+    if (!issues.length) return;
+    const byId = new Map(issues.filter(i => i.tracked).map(i => [i.backup_id, i]));
+    rows.forEach(r => {
+        if (r.status !== 'ORPHANED' && byId.has(r.backup_id)) {
+            r._issue = byId.get(r.backup_id);
+        }
+    });
+}
+
+async function loadOrphanRows(instanceId) {
+    try {
+        const report = await fetchReconcileReport(instanceId);
+        if (!report) return [];
+        return (report.backup_issues || [])
+            .filter(i => !i.tracked)
+            .map(orphanToBackupRow);
+    } catch (err) {
+        console.warn('Failed to load orphaned backups:', err);
+        return [];
+    }
+}
+
+async function loadOrphanedBackups(instanceId) {
+    const el = document.getElementById('backups-table-container');
+    if (!el) return;
+    el.innerHTML = '<div class="flex justify-center py-8"><div class="spinner"></div></div>';
+
+    let report;
+    try {
+        report = await fetchReconcileReport(instanceId, { force: true });
+    } catch (err) {
+        el.innerHTML = `<div class="empty-state"><p>Failed to load orphaned backups</p><p class="text-sm mt-1">${escapeHtml(err.message || '')}</p></div>`;
+        return;
+    }
+
+    if (!report) {
+        renderReconcileNeverRun(instanceId);
+        return;
+    }
+
+    const rows = (report.backup_issues || []).filter(i => !i.tracked).map(orphanToBackupRow);
+    renderBackupsTable(instanceId, rows, { report });
+}
+
+// Never having scanned is not the same as having scanned and found nothing.
+function renderReconcileNeverRun(instanceId) {
+    const el = document.getElementById('backups-table-container');
+    if (!el) return;
+    el.innerHTML = `
+        <div class="empty-state">
+            <p class="text-lg font-medium text-gray-600">No scan has run yet</p>
+            <p class="text-sm mt-1">Use the refresh button above to compare this instance's backup records against the data that actually exists in Zeebe, the Camunda components and Elasticsearch.</p>
+        </div>
+    `;
+}
+
+// A scan that could not reach every source proves nothing about what it did not
+// check, so the header shows per-source state and says when a scan is partial.
+function renderReconcileHeader(instanceId, report) {
+    if (!report) return '';
+
+    const sources = Object.values(report.sources_checked || {}).sort((a, b) => a.name.localeCompare(b.name));
+    const unreachable = sources.filter(s => !s.reachable && !s.skipped).map(s => s.name);
+
+    const chips = sources.map(s => {
+        let cls = 'source-chip-ok', mark = '\u2713', title = `${s.count} found`;
+        if (s.skipped) {
+            cls = 'source-chip-skipped'; mark = '\u2013'; title = 'Not configured for this instance';
+        } else if (!s.reachable) {
+            cls = 'source-chip-failed'; mark = '\u2717'; title = s.error || 'Could not be checked';
+        }
+        return `<span class="source-chip ${cls}" title="${escapeHtml(title)}">${mark} ${escapeHtml(s.name)}</span>`;
+    }).join(' ');
+
+    const instanceBanners = (report.instance_findings || []).map(f => {
+        const info = reasonInfo(f.reason);
+        const cls = f.severity === 'critical' ? 'reconcile-banner' : 'reconcile-banner reconcile-banner-warn';
+        return `
+            <div class="${cls}">
+                <div class="flex items-center gap-2 flex-wrap">
+                    <span class="severity-badge severity-${escapeHtml(f.severity)}">${escapeHtml(f.severity.replace('_', ' '))}</span>
+                    <strong class="text-sm">${escapeHtml(info.label)}</strong>
+                    <span class="reason-code">${escapeHtml(f.reason)}</span>
+                </div>
+                <p class="text-sm mt-1 text-gray-700">${escapeHtml(f.detail || info.explanation)}</p>
+                <p class="text-xs mt-1 text-gray-600">${escapeHtml(concreteRemediation(info.remediation, null))}</p>
+            </div>
+        `;
+    }).join('');
+
+    const partial = unreachable.length ? `
+        <div class="reconcile-partial">
+            <strong>This scan is incomplete.</strong>
+            Could not check: ${escapeHtml(unreachable.join(', '))}.
+            Anything stored only there is neither confirmed present nor reported missing.
+        </div>
+    ` : '';
+
+    const repoNote = (report.repository_findings || []).length ? `
+        <details class="mt-2 mb-3">
+            <summary class="text-sm text-gray-600 cursor-pointer">Other artifacts (${report.repository_findings.length})</summary>
+            <div class="mt-2 space-y-2">
+                ${report.repository_findings.map(f => {
+                    const info = reasonInfo(f.reason);
+                    return `
+                        <div class="text-sm text-gray-700 pl-3 border-l-2 border-gray-200">
+                            <strong>${escapeHtml(info.label)}</strong>
+                            <span class="reason-code">${escapeHtml(f.reason)}</span>
+                            <p class="text-xs text-gray-600 mt-0.5">${escapeHtml(f.detail || info.explanation)}</p>
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        </details>
+    ` : '';
+
+    return `
+        <div class="mb-4">
+            <div class="text-sm text-gray-600 mb-2">Last scanned ${escapeHtml(formatTime(report.finished_at))}</div>
+            <div class="flex flex-wrap gap-1 mb-3">${chips}</div>
+            ${partial}
+            ${instanceBanners}
+            ${repoNote}
+        </div>
+    `;
+}
+
+// Findings for a backup that does have a history record. Shown inside the normal
+// detail modal, because the record's own status says nothing about whether its
+// data still exists.
+function renderTrackedBackupFindings(backupId) {
+    const issue = (reconcileReport?.backup_issues || []).find(i => i.backup_id === backupId && i.tracked);
+    if (!issue) return '';
+
+    const findings = renderFindingCards(issue);
+
+    return `
+        <div>
+            <h3 class="text-sm font-semibold text-gray-700 mb-2">
+                Issues found by the last scan
+            </h3>
+            <div class="space-y-2">${findings}</div>
+        </div>
+    `;
+}
+
+// Details for an orphan cannot come from the backup history endpoint - there is
+// no record to fetch. They come from the cached report instead, rendered in the
+// same modal shell as a normal backup.
+function showOrphanedBackupDetail(instanceId, backupId) {
+    const issue = (reconcileReport?.backup_issues || []).find(i => i.backup_id === backupId);
+    if (!issue) {
+        showToast('Run a scan to load details for this backup', 'error');
+        return;
+    }
+
+    const findings = renderFindingCards(issue, { showCommands: true });
+
+    const sourceList = (names, cls, mark) =>
+        (names || []).map(n => `<span class="source-chip ${cls}">${mark} ${escapeHtml(n)}</span>`).join(' ');
+
+    const html = `
+        <div class="bg-white rounded-xl shadow-xl w-full max-w-3xl">
+            <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+                <div>
+                    <h2 class="text-lg font-semibold text-gray-900">Orphaned Backup Details</h2>
+                    <p class="text-sm text-gray-500 font-mono">${escapeHtml(backupId)}</p>
+                </div>
+                <button onclick="closeModal()" class="text-gray-400 hover:text-gray-600">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+            <div class="px-6 py-4 space-y-4 max-h-[70vh] overflow-y-auto">
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div><span class="text-xs text-gray-500 block">Status</span><span class="badge badge-orphaned">ORPHANED</span></div>
+                    <div><span class="text-xs text-gray-500 block">Trigger</span><span class="text-sm text-gray-400">—</span></div>
+                    <div><span class="text-xs text-gray-500 block">Start</span><span class="text-sm">${issue.backup_time ? escapeHtml(formatTime(issue.backup_time)) : '—'}</span></div>
+                    <div><span class="text-xs text-gray-500 block">Duration</span><span class="text-sm text-gray-400">—</span></div>
+                </div>
+
+                <div class="bg-yellow-50 border border-yellow-200 rounded-md p-3 text-sm text-gray-700">
+                    The controller has no history record for this backup, so its trigger,
+                    duration and component results are unknown. The start time is derived
+                    from the backup ID.
+                </div>
+
+                <div>
+                    <h3 class="text-sm font-semibold text-gray-700 mb-2">Where it exists</h3>
+                    <div class="flex flex-wrap gap-1">
+                        ${sourceList(issue.present_in, 'source-chip-ok', '\u2713') || '<span class="text-sm text-gray-400">—</span>'}
+                        ${sourceList(issue.missing_in, 'source-chip-failed', '\u2717')}
+                        ${sourceList(issue.unverified, 'source-chip-skipped', '?')}
+                    </div>
+                </div>
+
+                <div>
+                    <h3 class="text-sm font-semibold text-gray-700 mb-2">Findings</h3>
+                    <div class="space-y-2">${findings}</div>
+                </div>
+
+                ${(issue.implied || []).length ? `
+                <div>
+                    <h3 class="text-sm font-semibold text-gray-700 mb-2">Also consistent with</h3>
+                    <p class="reason-code">${issue.implied.map(c => escapeHtml(c)).join(', ')}</p>
+                    <p class="text-xs text-gray-500 mt-1">Explained by the findings above, so not reported separately.</p>
+                </div>` : ''}
+            </div>
+            <div class="px-6 py-4 border-t border-gray-200 flex justify-end">
+                <button onclick="closeModal()" class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700">
+                    Close
+                </button>
+            </div>
+        </div>
+    `;
+    showModal(html);
+}
+

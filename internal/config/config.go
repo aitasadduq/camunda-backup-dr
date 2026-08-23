@@ -43,6 +43,12 @@ type Config struct {
 	// Default Elasticsearch Password (falls back when no instance-specific var is set)
 	DefaultElasticsearchPassword string
 
+	// Reconciliation (orphaned backup detection)
+	ReconcileEnabled            bool
+	ReconcileTimeoutSeconds     int
+	ReconcileGracePeriodMinutes int
+	ReconcileStaleAfterMinutes  int
+
 	// Alert Configuration
 	AlertWebhookURL          string
 	AlertEnableBackupFailed  bool
@@ -113,6 +119,14 @@ func Load() (*Config, error) {
 
 		// Default Elasticsearch Password
 		DefaultElasticsearchPassword: getEnv("DEFAULT_ELASTICSEARCH_PASSWORD", ""),
+
+		// Reconciliation. The grace period must comfortably exceed a backup's
+		// polling window, or a sweep fired right after a backup would report
+		// artifacts that are still being written.
+		ReconcileEnabled:            getEnv("RECONCILE_ENABLED", "true") == "true",
+		ReconcileTimeoutSeconds:     getEnvAsInt("RECONCILE_TIMEOUT_SECONDS", 120),
+		ReconcileGracePeriodMinutes: getEnvAsInt("RECONCILE_GRACE_PERIOD_MINUTES", 15),
+		ReconcileStaleAfterMinutes:  getEnvAsInt("RECONCILE_STALE_AFTER_MINUTES", 30),
 
 		// Alert Configuration
 		AlertWebhookURL:           getEnv("ALERT_WEBHOOK_URL", ""),

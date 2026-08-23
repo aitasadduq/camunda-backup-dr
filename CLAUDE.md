@@ -21,7 +21,8 @@ Camunda Backup & Disaster Recovery Controller — a Go service that manages mult
 - `internal/camunda/` — Camunda instance management and HTTP client with retry/backoff
 - `internal/storage/` — file storage (config/logs) and S3 storage (backup data) behind interfaces
 - `internal/elasticsearch/` — ES snapshot creation and status checking
-- `internal/retention/` — keep-last-N policy, orphaned/incomplete backup handling
+- `internal/retention/` — keep-last-N policy, incomplete backup handling, manual deletion
+- `internal/reconcile/` — orphaned backup detection: cross-references controller metadata against Zeebe, the component APIs and the ES snapshot repository; report-only
 - `internal/utils/` — structured logging, `AppError` type, circuit breaker, alerting
 - `internal/models/` — `CamundaInstance`, `BackupExecution`, `BackupHistory`
 - `internal/config/` — env-var-driven configuration with defaults and validation
@@ -61,6 +62,9 @@ After every change, run in this order:
 - S3 is the authoritative source of backup existence and restore eligibility; file storage only holds config and logs
 - Tests use table-driven patterns, mock interfaces, `httptest.Server` for external services, and `testEnv` struct with deferred cleanup
 - Build tags: `//go:build integration` for ES/S3 tests, `//go:build e2e` for end-to-end tests
+- Orphan detection is report-only and never deletes; every conclusion drawn from an artifact being *absent* must be gated on that source having been reachable (see `internal/reconcile/classify.go`)
+- Reason codes in `internal/reconcile/reasons.go` are a public API contract — their string values must stay stable, and every code needs a catalogue entry with remediation text
+- For the orphan taxonomy and its false-positive guards, see `docs/orphaned-backups.md`
 - For architecture details, see `planning/architecture-ait-updated.md`
 - For implementation status, see `planning/checklist.md`
 
@@ -71,6 +75,7 @@ After every change, run in this order:
 - Don't bypass the `AppError` system for HTTP error responses — use `ToHTTPError()` to convert errors to consistent JSON responses
 - Don't add an external database — all state is file-based (config/logs on PVC) or in S3 (backup data/history)
 - Don't skip middleware ordering — it must be: recovery → logging → CORS → CSRF → content-type
+- Don't let the reconciler delete anything, and don't report a backup as missing from a source that could not be enumerated — an unreachable component is not evidence of absence
 
 ## gstack
 Use the `/browse` skill from gstack for all web browsing. Never use `mcp__claude-in-chrome__*` tools.
