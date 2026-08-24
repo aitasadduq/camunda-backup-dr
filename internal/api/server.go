@@ -28,6 +28,11 @@ func (s *Server) SetSecretStore(store SecretStore) {
 	s.handlers.SetSecretStore(store)
 }
 
+// SetReconciler registers the reconciler backing the reconcile endpoints.
+func (s *Server) SetReconciler(r Reconciler) {
+	s.handlers.SetReconciler(r)
+}
+
 // NewServer creates a new HTTP server
 func NewServer(
 	port int,

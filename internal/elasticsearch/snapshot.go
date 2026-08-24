@@ -24,6 +24,7 @@ type SnapshotClient interface {
 	CreateSnapshot(ctx context.Context, repository, snapshot string) error
 	GetSnapshotStatus(ctx context.Context, repository, snapshot string) (SnapshotState, error)
 	DeleteSnapshot(ctx context.Context, repository, snapshot string) error
+	ListSnapshots(ctx context.Context, repository string) ([]SnapshotInfo, error)
 }
 
 // CreateSnapshot creates an Elasticsearch snapshot in the specified repository.

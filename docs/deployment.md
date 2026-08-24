@@ -187,6 +187,19 @@ Once running:
 | `ALERT_WEBHOOK_URL` | string | _(empty, disabled)_ | Webhook URL for alert notifications (e.g. Slack incoming webhook) |
 | `BACKUP_STUCK_TIMEOUT_MINUTES` | int | `120` | Minutes before a running backup is considered stuck. `0` disables detection. |
 
+### Reconciliation Settings
+
+Orphaned backup detection. See [Orphaned Backup Detection](orphaned-backups.md).
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `RECONCILE_ENABLED` | bool | `true` | Run a sweep after each backup. On-demand sweeps stay available when disabled. |
+| `RECONCILE_TIMEOUT_SECONDS` | int | `120` | Maximum duration of a single sweep |
+| `RECONCILE_GRACE_PERIOD_MINUTES` | int | `15` | Backups younger than this are excluded. Must exceed the backup polling window, or a sweep will report artifacts that are still being written. |
+| `RECONCILE_STALE_AFTER_MINUTES` | int | `30` | How long an artifact may stay in progress before it is reported as stuck |
+
+Sweeps are read-only: they never delete a backup or an artifact.
+
 ### Endpoint Security Settings
 
 | Variable | Type | Default | Description |

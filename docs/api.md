@@ -595,6 +595,10 @@ Returns the backup history for a Camunda instance, ordered by most recent first.
 
 #### `GET /api/camundas/{id}/backups/{backupId}` — Get Backup Details
 
+> **Reserved names.** `orphaned`, `incomplete`, `failed` and `reconcile` are
+> routed as their own sub-paths and cannot be addressed as backup IDs. Backup
+> IDs are `YYYYMMDDHHMMSS` timestamps, so this never collides in practice.
+
 Returns detailed information for a specific backup.
 
 **Response:** `200 OK`
@@ -662,7 +666,14 @@ Permanently deletes a specific backup and its associated artifacts. The most rec
 
 #### `GET /api/camundas/{id}/backups/orphaned` — List Orphaned Backups
 
-Returns backups that exist in storage but are no longer tracked in the backup history (e.g., leftover artifacts from interrupted operations).
+Returns backup history records filed under the `orphaned/` prefix in the
+controller's bucket.
+
+> **Looking for orphaned backup detection?** That is
+> `GET /api/camundas/{id}/backups/reconcile`, documented below. This endpoint
+> only lists records already in `orphaned/`; it does not compare the
+> controller's metadata against the artifacts that actually exist. See
+> [Orphaned Backup Detection](orphaned-backups.md).
 
 **Response:** `200 OK`
 
@@ -700,6 +711,145 @@ Returns an empty array `[]` if no orphaned backups exist.
 | 400 | Instance ID missing |
 | 404 | Instance not found |
 | 500 | Internal server error |
+
+---
+
+#### `GET /api/camundas/{id}/backups/reconcile` — Latest Reconciliation Report
+
+Returns the most recent reconciliation sweep: a cross-reference of the
+controller's backup records against the artifacts that actually exist in Zeebe,
+the Camunda component APIs and the Elasticsearch snapshot repository.
+
+**Response:** `200 OK`
+
+```json
+{
+  "camunda_instance_id": "prod-cluster",
+  "started_at": "2024-01-10T02:05:00Z",
+  "finished_at": "2024-01-10T02:05:04Z",
+  "snapshot_repository": "camunda-backup",
+  "component_endpoints": {
+    "zeebe": "https://zeebe.prod.example.com:9600/actuator/backups",
+    "operate": "https://operate.prod.example.com/actuator/backups"
+  },
+  "sources_checked": {
+    "controller_s3": { "name": "controller_s3", "reachable": true, "count": 14 },
+    "zeebe":         { "name": "zeebe",         "reachable": true, "count": 30 },
+    "operate":       { "name": "operate",       "reachable": false, "error": "connection refused", "count": 0 },
+    "tasklist":      { "name": "tasklist",      "reachable": false, "skipped": true, "count": 0 },
+    "elasticsearch": { "name": "elasticsearch", "reachable": true, "count": 115 }
+  },
+  "instance_findings": [],
+  "backup_issues": [
+    {
+      "backup_id": "20240110020000",
+      "tracked": false,
+      "backup_time": "2024-01-10T02:00:00Z",
+      "primary_reason": "D2_SPLIT_RESTORE_PAIR",
+      "severity": "critical",
+      "reasons": [
+        {
+          "backup_id": "20240110020000",
+          "scope": "backup",
+          "reason": "D2_SPLIT_RESTORE_PAIR",
+          "severity": "critical",
+          "present_in": ["zeebe"],
+          "missing_in": ["elasticsearch"],
+          "snapshot_name": "20240110020000",
+          "detail": "present in zeebe; missing from elasticsearch",
+          "detected_at": "2024-01-10T02:05:04Z"
+        }
+      ],
+      "implied": ["D1_PARTIAL_SET", "B2_DANGLING_ES_SNAPSHOT"],
+      "present_in": ["zeebe"],
+      "missing_in": ["elasticsearch"]
+    }
+  ],
+  "repository_findings": []
+}
+```
+
+**Reading the response:**
+
+- `sources_checked` is not decoration. A source with `reachable: false` and
+  `skipped: false` means the sweep could not look there, so **no conclusion was
+  drawn from anything missing in it**. A short findings list from a partial
+  sweep is not a clean bill of health.
+- `skipped: true` means the source is not configured for this instance, which is
+  not a failure.
+- `tracked` distinguishes the two kinds of problem backup. `false` means the
+  controller has no history record for it — a true orphan, which the UI renders
+  with status `ORPHANED`. `true` means a known backup that has developed a
+  problem; it keeps its real status. Clients that show orphans separately must
+  filter on this field.
+- `snapshot_repository` and `component_endpoints` carry the values this sweep
+  actually resolved, so a client can substitute them into the `{repository}` and
+  `{component_backup_endpoint}` placeholders in a reason's `remediation` text.
+  Endpoints are returned with any embedded credentials stripped.
+- `implied` lists reason codes suppressed because a more specific finding
+  already explains them. They are kept as supporting evidence.
+- Findings are scoped: `instance_findings` describe the instance as a whole,
+  `repository_findings` cover artifacts belonging to no known backup, and
+  `backup_issues` are the per-backup rows.
+
+| Error Code | Condition |
+|---|---|
+| 400 | Instance ID missing |
+| 404 | Instance not found (`not_found`), or no sweep has run yet (`no_report`) |
+| 500 | Reconciler not configured, or the stored report could not be read |
+
+Both 404s are distinguished by their machine-readable `code`, so clients never
+have to string-match the message.
+
+> `404` ("never scanned") and `200` with no findings ("scanned, nothing wrong")
+> are different answers. Do not treat them as equivalent.
+
+---
+
+#### `POST /api/camundas/{id}/backups/reconcile` — Run a Sweep
+
+Runs a reconciliation sweep immediately and returns the fresh report, in the
+same shape as the `GET` above. Only one sweep runs per instance at a time.
+
+This is **report-only** and never deletes anything.
+
+**Headers:** `X-Requested-With: XMLHttpRequest`
+
+| Error Code | Condition |
+|---|---|
+| 400 | Instance ID missing |
+| 403 | Missing `X-Requested-With` header |
+| 404 | Instance not found |
+| 409 | A sweep is already running for this instance (`sweep_in_progress`) |
+| 500 | Reconciler not configured, or the sweep failed |
+
+Capped by `RECONCILE_TIMEOUT_SECONDS` (default 120).
+
+---
+
+#### `GET /api/reconcile/reasons` — Reason Code Catalogue
+
+Returns the description of every reason code. Static and instance independent,
+so clients fetch it once and cache it; reports carry only the codes.
+
+**Response:** `200 OK`
+
+```json
+[
+  {
+    "code": "D2_SPLIT_RESTORE_PAIR",
+    "scope": "backup",
+    "severity": "critical",
+    "label": "Zeebe and Elasticsearch halves are split",
+    "explanation": "Only one half of the Zeebe plus Elasticsearch pair survives for this backup ID.",
+    "impact": "A Camunda restore requires both halves at the same backup ID. This backup is unrestorable, and the surviving half may look healthy on its own.",
+    "remediation": "Take a fresh backup immediately, then remove the orphaned half."
+  }
+]
+```
+
+Reason codes are a stable contract and safe to match on from scripts. The full
+taxonomy is documented in [Orphaned Backup Detection](orphaned-backups.md).
 
 ---
 
@@ -1036,7 +1186,10 @@ Generic — unreachable:
 | `GET` | `/api/camundas/{id}/backups/{backupId}` | Get backup details |
 | `GET` | `/api/camundas/{id}/backups/{backupId}/logs` | Get backup logs |
 | `DELETE` | `/api/camundas/{id}/backups/{backupId}` | Delete backup |
-| `GET` | `/api/camundas/{id}/backups/orphaned` | List orphaned backups |
+| `GET` | `/api/camundas/{id}/backups/orphaned` | List records under the `orphaned/` prefix |
+| `GET` | `/api/camundas/{id}/backups/reconcile` | Latest reconciliation report |
+| `POST` | `/api/camundas/{id}/backups/reconcile` | Run a reconciliation sweep now |
+| `GET` | `/api/reconcile/reasons` | Reason code catalogue |
 | `GET` | `/api/camundas/{id}/backups/incomplete` | List incomplete backups |
 | `GET` | `/api/camundas/{id}/backups/failed` | List failed backups |
 | `POST` | `/api/check-endpoint` | Check endpoint connectivity |

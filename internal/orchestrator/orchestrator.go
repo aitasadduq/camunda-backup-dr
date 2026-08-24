@@ -30,6 +30,10 @@ type RetentionFunc func(instance *models.CamundaInstance)
 // to persist the instance's last-backup time and status (e.g. for the UI).
 type LastBackupFunc func(instanceID string, backupTime time.Time, status string)
 
+// ReconcileFunc is a callback invoked after a backup reaches any terminal state
+// to check the controller's metadata against the artifacts that really exist.
+type ReconcileFunc func(instance *models.CamundaInstance)
+
 // Orchestrator manages the backup workflow for Camunda instances
 type Orchestrator struct {
 	fileStorage     storage.FileStorage
@@ -43,6 +47,7 @@ type Orchestrator struct {
 	maxPollAttempts int
 	retentionFunc   RetentionFunc
 	lastBackupFunc  LastBackupFunc
+	reconcileFunc   ReconcileFunc
 	alerter         *utils.Alerter
 }
 
@@ -75,6 +80,11 @@ func (o *Orchestrator) SetRetentionFunc(fn RetentionFunc) {
 // SetLastBackupFunc sets the callback invoked to persist last-backup metadata.
 func (o *Orchestrator) SetLastBackupFunc(fn LastBackupFunc) {
 	o.lastBackupFunc = fn
+}
+
+// SetReconcileFunc sets the callback invoked after every terminal backup state.
+func (o *Orchestrator) SetReconcileFunc(fn ReconcileFunc) {
+	o.reconcileFunc = fn
 }
 
 // SetAlerter sets the alerter used for critical failure notifications.
@@ -235,6 +245,22 @@ func (o *Orchestrator) ExecuteBackup(ctx context.Context, req BackupRequest) (*m
 			}()
 			retentionFunc(instance)
 			o.writeLog(instance.ID, backupID, "Retention policy applied successfully")
+		}()
+	}
+
+	// Reconcile after every terminal state, INCOMPLETE included. Retention skips
+	// incomplete backups, but those are precisely the runs that leave component
+	// artifacts behind with no metadata describing them.
+	if o.reconcileFunc != nil {
+		reconcileFunc := o.reconcileFunc
+		instance := req.CamundaInstance
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					o.logger.Error("Panic during reconciliation for instance %s: %v", instance.ID, r)
+				}
+			}()
+			reconcileFunc(instance)
 		}()
 	}
 
@@ -925,6 +951,20 @@ func (o *Orchestrator) createBackupHistory(req BackupRequest, execution *models.
 				info.DurationSeconds = int(timing.EndTime.Sub(timing.StartTime).Seconds())
 			}
 		}
+
+		// Record where the snapshot was actually written. Recomputing this from
+		// current config later cannot distinguish a re-pointed repository from a
+		// genuinely missing snapshot, which is the difference between a config
+		// change and reported data loss.
+		if component == types.ComponentElasticsearch && o.cfg != nil {
+			info.SnapshotRepository = o.cfg.GetElasticsearchSnapshotRepository(
+				req.CamundaInstance.ID, req.CamundaInstance.ElasticsearchSnapshotRepository)
+			info.SnapshotName = execution.BackupID
+			if prefix := o.cfg.GetElasticsearchSnapshotNamePrefix(req.CamundaInstance.ID); prefix != "" {
+				info.SnapshotName = fmt.Sprintf("%s-%s", prefix, execution.BackupID)
+			}
+		}
+
 		history.Components[component] = info
 	}
 

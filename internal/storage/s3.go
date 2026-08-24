@@ -18,20 +18,21 @@ import (
 // Note: This is a mock implementation. In production, this should use AWS SDK
 type S3StorageImpl struct {
 	// S3 configuration
-	endpoint        string
-	accessKey       string
-	secretKey       string
-	bucket          string
-	prefix          string
-	
+	endpoint  string
+	accessKey string
+	secretKey string
+	bucket    string
+	prefix    string
+
 	// In-memory storage for mock implementation
-	backupHistory   map[string]map[string]*models.BackupHistory // camundaInstanceID -> backupID -> history
-	latestBackupID  map[string]string // camundaInstanceID -> latest backup ID
-	orphanedBackups map[string]map[string]*models.BackupHistory
+	backupHistory     map[string]map[string]*models.BackupHistory // camundaInstanceID -> backupID -> history
+	latestBackupID    map[string]string                           // camundaInstanceID -> latest backup ID
+	reconcileReports  map[string][]byte                           // camundaInstanceID -> latest reconcile report
+	orphanedBackups   map[string]map[string]*models.BackupHistory
 	incompleteBackups map[string]map[string]*models.BackupHistory
-	
-	logger          *utils.Logger
-	mutex           sync.RWMutex
+
+	logger *utils.Logger
+	mutex  sync.RWMutex
 }
 
 // NewS3Storage creates a new S3 storage instance
@@ -48,7 +49,7 @@ func NewS3Storage(endpoint, accessKey, secretKey, bucket, prefix string, logger 
 	if bucket == "" {
 		return nil, fmt.Errorf("S3 bucket is required")
 	}
-	
+
 	return &S3StorageImpl{
 		endpoint:          endpoint,
 		accessKey:         accessKey,
@@ -57,6 +58,7 @@ func NewS3Storage(endpoint, accessKey, secretKey, bucket, prefix string, logger 
 		prefix:            prefix,
 		backupHistory:     make(map[string]map[string]*models.BackupHistory),
 		latestBackupID:    make(map[string]string),
+		reconcileReports:  make(map[string][]byte),
 		orphanedBackups:   make(map[string]map[string]*models.BackupHistory),
 		incompleteBackups: make(map[string]map[string]*models.BackupHistory),
 		logger:            logger,
@@ -67,10 +69,10 @@ func NewS3Storage(endpoint, accessKey, secretKey, bucket, prefix string, logger 
 func (s3 *S3StorageImpl) StoreLatestBackupID(camundaInstanceID, backupID string) error {
 	s3.mutex.Lock()
 	defer s3.mutex.Unlock()
-	
+
 	s3.latestBackupID[camundaInstanceID] = backupID
 	s3.logger.Debug("Stored latest backup ID for %s: %s", camundaInstanceID, backupID)
-	
+
 	return nil
 }
 
@@ -78,12 +80,12 @@ func (s3 *S3StorageImpl) StoreLatestBackupID(camundaInstanceID, backupID string)
 func (s3 *S3StorageImpl) GetLatestBackupID(camundaInstanceID string) (string, error) {
 	s3.mutex.RLock()
 	defer s3.mutex.RUnlock()
-	
+
 	backupID, exists := s3.latestBackupID[camundaInstanceID]
 	if !exists {
 		return "", utils.ErrBackupNotFound
 	}
-	
+
 	return backupID, nil
 }
 
@@ -91,12 +93,12 @@ func (s3 *S3StorageImpl) GetLatestBackupID(camundaInstanceID string) (string, er
 func (s3 *S3StorageImpl) StoreBackupHistory(history *models.BackupHistory) error {
 	s3.mutex.Lock()
 	defer s3.mutex.Unlock()
-	
+
 	// Initialize instance history map if not exists
 	if _, exists := s3.backupHistory[history.CamundaInstanceID]; !exists {
 		s3.backupHistory[history.CamundaInstanceID] = make(map[string]*models.BackupHistory)
 	}
-	
+
 	// Determine storage path based on status
 	var storageMap map[string]map[string]*models.BackupHistory
 	switch history.Status {
@@ -110,12 +112,12 @@ func (s3 *S3StorageImpl) StoreBackupHistory(history *models.BackupHistory) error
 	default:
 		storageMap = s3.backupHistory
 	}
-	
+
 	// Store backup history
 	storageMap[history.CamundaInstanceID][history.BackupID] = history
-	s3.logger.Debug("Stored backup history for %s: %s (status: %s)", 
+	s3.logger.Debug("Stored backup history for %s: %s (status: %s)",
 		history.CamundaInstanceID, history.BackupID, history.Status)
-	
+
 	return nil
 }
 
@@ -123,28 +125,28 @@ func (s3 *S3StorageImpl) StoreBackupHistory(history *models.BackupHistory) error
 func (s3 *S3StorageImpl) GetBackupHistory(camundaInstanceID, backupID string) (*models.BackupHistory, error) {
 	s3.mutex.RLock()
 	defer s3.mutex.RUnlock()
-	
+
 	// Check in main history
 	if instanceHistory, exists := s3.backupHistory[camundaInstanceID]; exists {
 		if history, exists := instanceHistory[backupID]; exists {
 			return history, nil
 		}
 	}
-	
+
 	// Check in incomplete backups
 	if instanceHistory, exists := s3.incompleteBackups[camundaInstanceID]; exists {
 		if history, exists := instanceHistory[backupID]; exists {
 			return history, nil
 		}
 	}
-	
+
 	// Check in orphaned backups
 	if instanceHistory, exists := s3.orphanedBackups[camundaInstanceID]; exists {
 		if history, exists := instanceHistory[backupID]; exists {
 			return history, nil
 		}
 	}
-	
+
 	return nil, utils.ErrBackupNotFound
 }
 
@@ -152,9 +154,9 @@ func (s3 *S3StorageImpl) GetBackupHistory(camundaInstanceID, backupID string) (*
 func (s3 *S3StorageImpl) ListBackupHistory(camundaInstanceID string, status types.BackupStatus) ([]*models.BackupHistory, error) {
 	s3.mutex.RLock()
 	defer s3.mutex.RUnlock()
-	
+
 	var backups []*models.BackupHistory
-	
+
 	// Determine which map to search
 	var searchMaps []map[string]map[string]*models.BackupHistory
 	switch status {
@@ -163,7 +165,7 @@ func (s3 *S3StorageImpl) ListBackupHistory(camundaInstanceID string, status type
 	default:
 		searchMaps = []map[string]map[string]*models.BackupHistory{s3.backupHistory}
 	}
-	
+
 	// Collect backups from relevant maps
 	for _, searchMap := range searchMaps {
 		if instanceHistory, exists := searchMap[camundaInstanceID]; exists {
@@ -174,12 +176,12 @@ func (s3 *S3StorageImpl) ListBackupHistory(camundaInstanceID string, status type
 			}
 		}
 	}
-	
+
 	// Sort by start time (newest first)
 	sort.Slice(backups, func(i, j int) bool {
 		return backups[i].StartTime.After(backups[j].StartTime)
 	})
-	
+
 	return backups, nil
 }
 
@@ -187,11 +189,11 @@ func (s3 *S3StorageImpl) ListBackupHistory(camundaInstanceID string, status type
 func (s3 *S3StorageImpl) UpdateBackupStatus(camundaInstanceID, backupID string, status types.BackupStatus) error {
 	s3.mutex.Lock()
 	defer s3.mutex.Unlock()
-	
+
 	// Find and update backup history
 	var history *models.BackupHistory
 	var found bool
-	
+
 	// Check in main history
 	if instanceHistory, exists := s3.backupHistory[camundaInstanceID]; exists {
 		if h, exists := instanceHistory[backupID]; exists {
@@ -199,7 +201,7 @@ func (s3 *S3StorageImpl) UpdateBackupStatus(camundaInstanceID, backupID string, 
 			found = true
 		}
 	}
-	
+
 	// Check in incomplete backups
 	if !found {
 		if instanceHistory, exists := s3.incompleteBackups[camundaInstanceID]; exists {
@@ -211,18 +213,18 @@ func (s3 *S3StorageImpl) UpdateBackupStatus(camundaInstanceID, backupID string, 
 			}
 		}
 	}
-	
+
 	if !found {
 		return utils.ErrBackupNotFound
 	}
-	
+
 	// Update status
 	history.Status = status
 	now := time.Now()
 	history.EndTime = &now
 	duration := int(now.Sub(history.StartTime).Seconds())
 	history.DurationSeconds = &duration
-	
+
 	// Store back in appropriate map based on new status
 	switch status {
 	case types.BackupStatusIncomplete:
@@ -236,9 +238,9 @@ func (s3 *S3StorageImpl) UpdateBackupStatus(camundaInstanceID, backupID string, 
 		}
 		s3.backupHistory[camundaInstanceID][backupID] = history
 	}
-	
+
 	s3.logger.Debug("Updated backup status for %s: %s -> %s", camundaInstanceID, backupID, status)
-	
+
 	return nil
 }
 
@@ -246,7 +248,7 @@ func (s3 *S3StorageImpl) UpdateBackupStatus(camundaInstanceID, backupID string, 
 func (s3 *S3StorageImpl) DeleteBackupHistory(camundaInstanceID, backupID string) error {
 	s3.mutex.Lock()
 	defer s3.mutex.Unlock()
-	
+
 	// Try to delete from main history
 	if instanceHistory, exists := s3.backupHistory[camundaInstanceID]; exists {
 		if _, exists := instanceHistory[backupID]; exists {
@@ -255,7 +257,7 @@ func (s3 *S3StorageImpl) DeleteBackupHistory(camundaInstanceID, backupID string)
 			return nil
 		}
 	}
-	
+
 	// Try to delete from incomplete backups
 	if instanceHistory, exists := s3.incompleteBackups[camundaInstanceID]; exists {
 		if _, exists := instanceHistory[backupID]; exists {
@@ -264,7 +266,7 @@ func (s3 *S3StorageImpl) DeleteBackupHistory(camundaInstanceID, backupID string)
 			return nil
 		}
 	}
-	
+
 	// Try to delete from orphaned backups
 	if instanceHistory, exists := s3.orphanedBackups[camundaInstanceID]; exists {
 		if _, exists := instanceHistory[backupID]; exists {
@@ -273,7 +275,7 @@ func (s3 *S3StorageImpl) DeleteBackupHistory(camundaInstanceID, backupID string)
 			return nil
 		}
 	}
-	
+
 	return utils.ErrBackupNotFound
 }
 
@@ -281,11 +283,11 @@ func (s3 *S3StorageImpl) DeleteBackupHistory(camundaInstanceID, backupID string)
 func (s3 *S3StorageImpl) MoveToOrphaned(camundaInstanceID, backupID string) error {
 	s3.mutex.Lock()
 	defer s3.mutex.Unlock()
-	
+
 	// Find backup in main history
 	var history *models.BackupHistory
 	var found bool
-	
+
 	if instanceHistory, exists := s3.backupHistory[camundaInstanceID]; exists {
 		if h, exists := instanceHistory[backupID]; exists {
 			history = h
@@ -293,20 +295,20 @@ func (s3 *S3StorageImpl) MoveToOrphaned(camundaInstanceID, backupID string) erro
 			delete(instanceHistory, backupID)
 		}
 	}
-	
+
 	if !found {
 		return utils.ErrBackupNotFound
 	}
-	
+
 	// Initialize orphaned backups map if not exists
 	if _, exists := s3.orphanedBackups[camundaInstanceID]; !exists {
 		s3.orphanedBackups[camundaInstanceID] = make(map[string]*models.BackupHistory)
 	}
-	
+
 	// Move to orphaned
 	s3.orphanedBackups[camundaInstanceID][backupID] = history
 	s3.logger.Debug("Moved backup to orphaned for %s: %s", camundaInstanceID, backupID)
-	
+
 	return nil
 }
 
@@ -314,11 +316,11 @@ func (s3 *S3StorageImpl) MoveToOrphaned(camundaInstanceID, backupID string) erro
 func (s3 *S3StorageImpl) MoveToIncomplete(camundaInstanceID, backupID string) error {
 	s3.mutex.Lock()
 	defer s3.mutex.Unlock()
-	
+
 	// Find backup in main history
 	var history *models.BackupHistory
 	var found bool
-	
+
 	if instanceHistory, exists := s3.backupHistory[camundaInstanceID]; exists {
 		if h, exists := instanceHistory[backupID]; exists {
 			history = h
@@ -326,21 +328,21 @@ func (s3 *S3StorageImpl) MoveToIncomplete(camundaInstanceID, backupID string) er
 			delete(instanceHistory, backupID)
 		}
 	}
-	
+
 	if !found {
 		return utils.ErrBackupNotFound
 	}
-	
+
 	// Initialize incomplete backups map if not exists
 	if _, exists := s3.incompleteBackups[camundaInstanceID]; !exists {
 		s3.incompleteBackups[camundaInstanceID] = make(map[string]*models.BackupHistory)
 	}
-	
+
 	// Move to incomplete
 	history.Status = types.BackupStatusIncomplete
 	s3.incompleteBackups[camundaInstanceID][backupID] = history
 	s3.logger.Debug("Moved backup to incomplete for %s: %s", camundaInstanceID, backupID)
-	
+
 	return nil
 }
 
@@ -348,20 +350,20 @@ func (s3 *S3StorageImpl) MoveToIncomplete(camundaInstanceID, backupID string) er
 func (s3 *S3StorageImpl) ListOrphanedBackups(camundaInstanceID string) ([]*models.BackupHistory, error) {
 	s3.mutex.RLock()
 	defer s3.mutex.RUnlock()
-	
+
 	var backups []*models.BackupHistory
-	
+
 	if instanceHistory, exists := s3.orphanedBackups[camundaInstanceID]; exists {
 		for _, history := range instanceHistory {
 			backups = append(backups, history)
 		}
 	}
-	
+
 	// Sort by start time (newest first)
 	sort.Slice(backups, func(i, j int) bool {
 		return backups[i].StartTime.After(backups[j].StartTime)
 	})
-	
+
 	return backups, nil
 }
 
@@ -369,20 +371,20 @@ func (s3 *S3StorageImpl) ListOrphanedBackups(camundaInstanceID string) ([]*model
 func (s3 *S3StorageImpl) ListIncompleteBackups(camundaInstanceID string) ([]*models.BackupHistory, error) {
 	s3.mutex.RLock()
 	defer s3.mutex.RUnlock()
-	
+
 	var backups []*models.BackupHistory
-	
+
 	if instanceHistory, exists := s3.incompleteBackups[camundaInstanceID]; exists {
 		for _, history := range instanceHistory {
 			backups = append(backups, history)
 		}
 	}
-	
+
 	// Sort by start time (newest first)
 	sort.Slice(backups, func(i, j int) bool {
 		return backups[i].StartTime.After(backups[j].StartTime)
 	})
-	
+
 	return backups, nil
 }
 
@@ -392,7 +394,7 @@ func (s3 *S3StorageImpl) ListIncompleteBackups(camundaInstanceID string) ([]*mod
 func (s3 *S3StorageImpl) getS3Key(camundaInstanceID, backupID string, status types.BackupStatus) string {
 	// Format: {prefix}/{camundaInstanceID}/{status}/{YYYY}/{MM}/{DD}/{backupID}.json
 	date := time.Now().Format("2006/01/02")
-	
+
 	var statusPath string
 	switch status {
 	case types.BackupStatusIncomplete:
@@ -402,7 +404,7 @@ func (s3 *S3StorageImpl) getS3Key(camundaInstanceID, backupID string, status typ
 	default:
 		statusPath = "history"
 	}
-	
+
 	return filepath.Join(s3.prefix, camundaInstanceID, statusPath, date, backupID+".json")
 }
 
@@ -427,8 +429,55 @@ func (s3 *S3StorageImpl) parseBackupIDFromKey(key string) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	
+
 	// Remove .json extension
 	filename := parts[len(parts)-1]
 	return strings.TrimSuffix(filename, ".json")
+}
+
+// ListAllBackups lists backups from every directory, keeping duplicates so the
+// reconciler can spot a backup recorded in more than one place.
+func (s3 *S3StorageImpl) ListAllBackups(camundaInstanceID string) ([]*models.BackupHistory, error) {
+	s3.mutex.RLock()
+	defer s3.mutex.RUnlock()
+
+	var all []*models.BackupHistory
+	for _, m := range []map[string]map[string]*models.BackupHistory{
+		s3.backupHistory, s3.incompleteBackups, s3.orphanedBackups,
+	} {
+		for _, history := range m[camundaInstanceID] {
+			all = append(all, history)
+		}
+	}
+
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].StartTime.After(all[j].StartTime)
+	})
+	return all, nil
+}
+
+// StoreReconcileReport stores the latest reconciliation report in memory.
+func (s3 *S3StorageImpl) StoreReconcileReport(camundaInstanceID string, report []byte) error {
+	s3.mutex.Lock()
+	defer s3.mutex.Unlock()
+
+	if s3.reconcileReports == nil {
+		s3.reconcileReports = make(map[string][]byte)
+	}
+	stored := make([]byte, len(report))
+	copy(stored, report)
+	s3.reconcileReports[camundaInstanceID] = stored
+	return nil
+}
+
+// GetLatestReconcileReport returns the stored reconciliation report.
+func (s3 *S3StorageImpl) GetLatestReconcileReport(camundaInstanceID string) ([]byte, error) {
+	s3.mutex.RLock()
+	defer s3.mutex.RUnlock()
+
+	report, exists := s3.reconcileReports[camundaInstanceID]
+	if !exists {
+		return nil, utils.ErrBackupNotFound
+	}
+	return report, nil
 }

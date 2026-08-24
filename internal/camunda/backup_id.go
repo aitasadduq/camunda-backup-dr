@@ -23,6 +23,21 @@ func ParseBackupIDTimestamp(backupID string) (time.Time, error) {
 	return time.Parse("20060102150405", backupID)
 }
 
+// IsBackupIDShaped reports whether a string has the YYYYMMDDHHMMSS shape. It is
+// a cheap shape check for classifying arbitrary artifact names; callers that
+// need a real timestamp use ParseBackupIDTimestamp.
+func IsBackupIDShaped(s string) bool {
+	if len(s) != 14 {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // ValidateBackupID validates that a backup ID has the correct format
 func ValidateBackupID(backupID string) error {
 	_, err := ParseBackupIDTimestamp(backupID)

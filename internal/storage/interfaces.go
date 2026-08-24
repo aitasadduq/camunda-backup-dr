@@ -42,4 +42,17 @@ type S3Storage interface {
 	MoveToIncomplete(camundaInstanceID, backupID string) error
 	ListOrphanedBackups(camundaInstanceID string) ([]*models.BackupHistory, error)
 	ListIncompleteBackups(camundaInstanceID string) ([]*models.BackupHistory, error)
+
+	// Reconciliation operations
+	//
+	// ListAllBackups spans history/, incomplete/ and orphaned/ and deliberately
+	// keeps duplicates: a backup ID appearing more than once is exactly how the
+	// reconciler detects a record filed in two directories at once.
+	ListAllBackups(camundaInstanceID string) ([]*models.BackupHistory, error)
+
+	// Reconcile reports are passed as raw bytes rather than a typed struct
+	// because internal/reconcile depends on this package, so the dependency
+	// cannot run the other way.
+	StoreReconcileReport(camundaInstanceID string, report []byte) error
+	GetLatestReconcileReport(camundaInstanceID string) ([]byte, error)
 }
