@@ -52,7 +52,7 @@ const api = {
             const data = contentType.includes('application/json') ? await res.json() : null;
             if (!res.ok) {
                 const msg = data?.message || `Request failed (${res.status})`;
-                throw { status: res.status, message: msg };
+                throw { status: res.status, errorType: data?.error, message: msg };
             }
             return data;
         } catch (err) {
@@ -1588,12 +1588,40 @@ async function viewBackupLogs(instanceId, backupId) {
 }
 
 async function confirmDeleteBackup(instanceId, backupId) {
-    const confirmed = await showConfirm(`Delete backup ${backupId}? This action cannot be undone.`);
+    const confirmed = await showConfirm(
+        `Delete backup ${backupId}? This removes the snapshot from Elasticsearch and every Camunda component as well. This action cannot be undone.`
+    );
     if (!confirmed) return;
 
     try {
         await api.del(`api/camundas/${instanceId}/backups/${backupId}`);
-        showToast('Backup deleted', 'success');
+        showToast('Backup deleted everywhere', 'success');
+        loadBackups(instanceId, state.backupFilter);
+        return;
+    } catch (err) {
+        // The backup was left in place because some of its data could not be
+        // deleted. Offer to drop the controller's record anyway — the leftovers
+        // then show up as orphans in the reconcile report.
+        if (err.errorType !== 'artifacts_remain') {
+            showToast(err.message || 'Failed to delete backup', 'error');
+            return;
+        }
+        await forceDeleteBackup(instanceId, backupId, err.message);
+    }
+}
+
+async function forceDeleteBackup(instanceId, backupId, reason) {
+    const confirmed = await showConfirm(
+        `${reason}. Backup ${backupId} was left in place so you can retry. Remove it from the controller anyway? The data left behind will be reported as orphaned.`
+    );
+    if (!confirmed) {
+        showToast('Backup not deleted — its data is still in place', 'warning');
+        return;
+    }
+
+    try {
+        await api.del(`api/camundas/${instanceId}/backups/${backupId}?force=true`);
+        showToast('Backup record removed; leftover data reported as orphaned', 'warning');
         loadBackups(instanceId, state.backupFilter);
     } catch (err) {
         showToast(err.message || 'Failed to delete backup', 'error');

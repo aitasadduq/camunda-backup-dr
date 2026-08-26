@@ -642,7 +642,30 @@ Returns the raw log file contents for a specific backup execution.
 
 #### `DELETE /api/camundas/{id}/backups/{backupId}` — Delete Backup
 
-Permanently deletes a specific backup and its associated artifacts. The most recent successful backup cannot be deleted (safety guard).
+Permanently deletes a specific backup from every system that holds it:
+
+1. the Elasticsearch snapshot,
+2. each Camunda component's backup (Zeebe, Operate, Tasklist, Optimize),
+3. the controller's own metadata record in S3,
+4. the backup's log file.
+
+The most recent successful backup cannot be deleted (safety guard).
+
+A component that answers `404` counts as already deleted. Components the record
+marks as skipped or disabled are left alone; components missing from the record
+entirely are still purged, because an interrupted backup can leave artifacts it
+never recorded.
+
+The metadata record is deleted **last, and only once every artifact is gone**.
+If an artifact cannot be deleted the whole delete is refused with `409
+artifacts_remain` and the backup stays visible so the operation can be retried —
+deleting the record first would strand the artifacts as orphans.
+
+**Query parameters:**
+
+| Parameter | Description |
+|---|---|
+| `force` | `true` deletes the controller's record even when artifacts survive. The leftovers are then reported by [orphan detection](orphaned-backups.md). |
 
 **Headers:** `X-Requested-With: XMLHttpRequest`
 
@@ -650,7 +673,7 @@ Permanently deletes a specific backup and its associated artifacts. The most rec
 
 ```json
 {
-  "message": "Backup deleted successfully",
+  "message": "Backup and all of its artifacts deleted",
   "data": null
 }
 ```
@@ -660,6 +683,7 @@ Permanently deletes a specific backup and its associated artifacts. The most rec
 | 400 | Instance ID or Backup ID missing |
 | 404 | Instance or backup not found |
 | 409 | Cannot delete the most recent backup (safety refusal) |
+| 409 | `artifacts_remain` — one or more artifacts could not be deleted; nothing was removed from the controller. Retry, or repeat with `?force=true` |
 | 500 | Internal server error |
 
 ---

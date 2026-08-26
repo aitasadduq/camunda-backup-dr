@@ -53,4 +53,13 @@ var (
 
 	// ErrRetryExhausted is returned when all retry attempts are exhausted
 	ErrRetryExhausted = errors.New("all retry attempts exhausted")
+
+	// ErrBackupArtifactsRemain is returned when a backup's metadata record was
+	// left in place because its component artifacts could not all be deleted.
+	// Removing the record anyway would strand those artifacts as orphans.
+	ErrBackupArtifactsRemain = errors.New("backup artifacts could not be deleted")
+
+	// ErrInstanceProviderNotConfigured is returned when a deletion needs the
+	// instance's component endpoints but no instance provider is wired.
+	ErrInstanceProviderNotConfigured = errors.New("instance provider not configured")
 )
