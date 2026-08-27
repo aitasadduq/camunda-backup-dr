@@ -642,7 +642,34 @@ Returns the raw log file contents for a specific backup execution.
 
 #### `DELETE /api/camundas/{id}/backups/{backupId}` — Delete Backup
 
-Permanently deletes a specific backup and its associated artifacts. The most recent successful backup cannot be deleted (safety guard).
+Permanently deletes a specific backup from every system that holds it:
+
+1. the Elasticsearch snapshot,
+2. each Camunda component's backup (Zeebe, Operate, Tasklist, Optimize),
+3. the controller's own metadata record in S3,
+4. the backup's log file.
+
+The most recent successful backup cannot be deleted, and neither can a backup
+that is still `RUNNING` — deleting one races the orchestrator still writing it.
+Neither guard is overridable by `force`.
+
+A component that answers `404` counts as already deleted. The backup record's
+component map decides what gets purged: the orchestrator seeds it with every
+component enabled at backup time, so components absent from the map were
+disabled then and are left alone, as are components the record marks skipped.
+A record listing no components at all cannot be identified and is refused
+(use `force` to drop it anyway).
+
+The metadata record is deleted **last, and only once every artifact is gone**.
+If an artifact cannot be deleted the whole delete is refused with `409
+artifacts_remain` and the backup stays visible so the operation can be retried —
+deleting the record first would strand the artifacts as orphans.
+
+**Query parameters:**
+
+| Parameter | Description |
+|---|---|
+| `force` | `true` deletes the controller's record even when artifacts survive. The leftovers are then reported by [orphan detection](orphaned-backups.md). |
 
 **Headers:** `X-Requested-With: XMLHttpRequest`
 
@@ -650,7 +677,7 @@ Permanently deletes a specific backup and its associated artifacts. The most rec
 
 ```json
 {
-  "message": "Backup deleted successfully",
+  "message": "Backup and all of its artifacts deleted",
   "data": null
 }
 ```
@@ -659,7 +686,8 @@ Permanently deletes a specific backup and its associated artifacts. The most rec
 |---|---|
 | 400 | Instance ID or Backup ID missing |
 | 404 | Instance or backup not found |
-| 409 | Cannot delete the most recent backup (safety refusal) |
+| 409 | Cannot delete the most recent backup, or the backup is still RUNNING (safety refusal) |
+| 409 | `artifacts_remain` — one or more artifacts could not be deleted; nothing was removed from the controller. Retry, or repeat with `?force=true` |
 | 500 | Internal server error |
 
 ---

@@ -2,6 +2,7 @@ package retention
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -16,6 +17,13 @@ import (
 	"github.com/aitasadduq/camunda-backup-dr/pkg/types"
 )
 
+// InstanceProvider resolves a Camunda instance by ID. Deleting a backup needs
+// the instance's component endpoints, which live in the instance config rather
+// than in the backup record.
+type InstanceProvider interface {
+	GetInstance(id string) (*models.CamundaInstance, error)
+}
+
 type Manager struct {
 	s3Storage   storage.S3Storage
 	fileStorage storage.FileStorage
@@ -23,6 +31,7 @@ type Manager struct {
 	cfg         *config.Config
 	logger      *utils.Logger
 	alerter     *utils.Alerter
+	instances   InstanceProvider
 }
 
 func NewManager(s3Storage storage.S3Storage, fileStorage storage.FileStorage, httpClient *camunda.HTTPClient, cfg *config.Config, logger *utils.Logger) *Manager {
@@ -33,6 +42,12 @@ func NewManager(s3Storage storage.S3Storage, fileStorage storage.FileStorage, ht
 		cfg:         cfg,
 		logger:      logger,
 	}
+}
+
+// SetInstanceProvider sets the lookup used to resolve component endpoints when
+// deleting a backup by ID.
+func (m *Manager) SetInstanceProvider(p InstanceProvider) {
+	m.instances = p
 }
 
 // SetAlerter sets the alerter for cleanup failure notifications.
@@ -59,7 +74,7 @@ func (m *Manager) ApplyRetention(instance *models.CamundaInstance) *RetentionRes
 
 	m.pruneByStatus(instance, types.BackupStatusCompleted, instance.SuccessRetention, &result.DeletedSuccessful, result)
 	m.pruneFailedBackups(instance, result)
-	m.cleanupIncompleteBackups(instance.ID, result)
+	m.cleanupIncompleteBackups(instance, result)
 
 	totalKeep := instance.SuccessRetention + instance.FailureRetention
 	if totalKeep <= 0 {
@@ -99,7 +114,10 @@ func (m *Manager) pruneByStatus(instance *models.CamundaInstance, status types.B
 
 	toDelete := backups[keep:]
 	for _, backup := range toDelete {
-		m.deleteBackupData(instance, backup, result)
+		if !m.deleteBackupData(instance, backup, result) {
+			m.logger.Warn("[retention] Keeping %s backup %s: some artifacts could not be deleted; retrying next cycle", status, backup.BackupID)
+			continue
+		}
 
 		if err := m.s3Storage.DeleteBackupHistory(instance.ID, backup.BackupID); err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("failed to delete %s backup history %s: %v", status, backup.BackupID, err))
@@ -165,7 +183,10 @@ func (m *Manager) pruneFailedBackups(instance *models.CamundaInstance, result *R
 			continue
 		}
 
-		m.deleteBackupData(instance, backup, result)
+		if !m.deleteBackupData(instance, backup, result) {
+			m.logger.Warn("[retention] Keeping failed backup %s: some artifacts could not be deleted; retrying next cycle", backup.BackupID)
+			continue
+		}
 
 		if err := m.s3Storage.DeleteBackupHistory(instance.ID, backup.BackupID); err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("failed to delete FAILED backup history %s: %v", backup.BackupID, err))
@@ -181,35 +202,76 @@ func (m *Manager) pruneFailedBackups(instance *models.CamundaInstance, result *R
 	}
 }
 
-// deleteBackupData deletes the actual component data for a backup by calling
-// the relevant endpoints (Zeebe, Operate, Tasklist, Optimize, Elasticsearch).
-func (m *Manager) deleteBackupData(instance *models.CamundaInstance, backup *models.BackupHistory, result *RetentionResult) {
-	ctx := context.Background()
+// deleteBackupData deletes the component artifacts for a backup and records any
+// failures on the retention result. It reports whether every artifact is gone,
+// so callers can hold the metadata record back when one survives.
+func (m *Manager) deleteBackupData(instance *models.CamundaInstance, backup *models.BackupHistory, result *RetentionResult) bool {
+	errs := m.purgeBackupArtifacts(context.Background(), instance, backup)
+	result.Errors = append(result.Errors, errs...)
+	return len(errs) == 0
+}
 
-	for componentName, compInfo := range backup.Components {
-		if !compInfo.Enabled || compInfo.Status == types.ComponentStatusSkipped {
+// purgeBackupArtifacts deletes everything a backup left outside the controller's
+// own metadata: the Elasticsearch snapshot and each Camunda component's backup.
+// It returns one message per failure; an empty slice means every artifact is
+// gone (or was never there).
+//
+// The record's component map is the authority on what this backup could have
+// written. The orchestrator seeds that map with every enabled component before
+// any of them runs (see orchestrator.createBackupHistory), so a component that
+// is absent was disabled at backup time and has no artifact to delete. Purging
+// absent components instead would send DELETEs to components this backup never
+// touched.
+//
+// A record with no components at all is a corrupt or pre-dating record: we
+// cannot tell what it wrote, so we refuse rather than delete the metadata and
+// strand whatever is out there.
+func (m *Manager) purgeBackupArtifacts(ctx context.Context, instance *models.CamundaInstance, backup *models.BackupHistory) []string {
+	if len(backup.Components) == 0 {
+		return []string{fmt.Sprintf(
+			"backup %s records no components, so its artifacts cannot be identified; delete them by hand or use force",
+			backup.BackupID)}
+	}
+
+	var errs []string
+
+	for _, componentName := range types.ValidComponents {
+		compInfo, recorded := backup.Components[componentName]
+		if !recorded || !compInfo.Enabled || compInfo.Status == types.ComponentStatusSkipped {
 			continue
 		}
 
+		var err error
 		switch componentName {
 		case types.ComponentElasticsearch:
-			m.deleteESSnapshot(ctx, instance, backup, compInfo, result)
+			err = m.deleteESSnapshot(ctx, instance, backup, compInfo)
 		case types.ComponentZeebe:
-			m.deleteComponentBackup(ctx, instance.ZeebeBackupEndpoint, instance.ID, backup.BackupID, "Zeebe", result)
+			err = m.deleteComponentBackup(ctx, instance.ZeebeBackupEndpoint, backup.BackupID, "Zeebe")
 		case types.ComponentOperate:
-			m.deleteComponentBackup(ctx, instance.OperateBackupEndpoint, instance.ID, backup.BackupID, "Operate", result)
+			err = m.deleteComponentBackup(ctx, instance.OperateBackupEndpoint, backup.BackupID, "Operate")
 		case types.ComponentTasklist:
-			m.deleteComponentBackup(ctx, instance.TasklistBackupEndpoint, instance.ID, backup.BackupID, "Tasklist", result)
+			err = m.deleteComponentBackup(ctx, instance.TasklistBackupEndpoint, backup.BackupID, "Tasklist")
 		case types.ComponentOptimize:
-			m.deleteComponentBackup(ctx, instance.OptimizeBackupEndpoint, instance.ID, backup.BackupID, "Optimize", result)
+			err = m.deleteComponentBackup(ctx, instance.OptimizeBackupEndpoint, backup.BackupID, "Optimize")
+		}
+
+		if err == nil {
+			continue
+		}
+
+		errs = append(errs, err.Error())
+		if m.alerter != nil {
+			m.alerter.AlertCleanupFailed(instance.ID, backup.BackupID, err.Error())
 		}
 	}
+
+	return errs
 }
 
 // deleteESSnapshot deletes an Elasticsearch snapshot for a backup.
-func (m *Manager) deleteESSnapshot(ctx context.Context, instance *models.CamundaInstance, backup *models.BackupHistory, compInfo models.ComponentBackupInfo, result *RetentionResult) {
+func (m *Manager) deleteESSnapshot(ctx context.Context, instance *models.CamundaInstance, backup *models.BackupHistory, compInfo models.ComponentBackupInfo) error {
 	if instance.ElasticsearchEndpoint == "" || m.cfg == nil {
-		return
+		return nil
 	}
 
 	repository := compInfo.SnapshotRepository
@@ -228,7 +290,7 @@ func (m *Manager) deleteESSnapshot(ctx context.Context, instance *models.Camunda
 	}
 
 	if repository == "" || snapshotName == "" {
-		return
+		return nil
 	}
 
 	password := m.cfg.GetElasticsearchPassword(instance.ID)
@@ -241,52 +303,48 @@ func (m *Manager) deleteESSnapshot(ctx context.Context, instance *models.Camunda
 	)
 
 	if err := esClient.DeleteSnapshot(ctx, repository, snapshotName); err != nil {
-		errMsg := fmt.Sprintf("failed to delete ES snapshot %s/%s for backup %s: %v", repository, snapshotName, backup.BackupID, err)
-		result.Errors = append(result.Errors, errMsg)
-		if m.alerter != nil {
-			m.alerter.AlertCleanupFailed(instance.ID, backup.BackupID, errMsg)
+		if errors.Is(err, elasticsearch.ErrSnapshotMissing) {
+			m.logger.Debug("[retention] ES snapshot %s/%s not found (already deleted or never created)", repository, snapshotName)
+			return nil
 		}
-	} else {
-		m.logger.Info("[retention] Deleted ES snapshot %s/%s for backup %s", repository, snapshotName, backup.BackupID)
+		return fmt.Errorf("failed to delete ES snapshot %s/%s for backup %s: %w", repository, snapshotName, backup.BackupID, err)
 	}
+
+	m.logger.Info("[retention] Deleted ES snapshot %s/%s for backup %s", repository, snapshotName, backup.BackupID)
+	return nil
 }
 
 // deleteComponentBackup deletes a Camunda component backup via its REST API (DELETE endpoint/{backupId}).
-func (m *Manager) deleteComponentBackup(ctx context.Context, endpoint, instanceID, backupID, componentName string, result *RetentionResult) {
+func (m *Manager) deleteComponentBackup(ctx context.Context, endpoint, backupID, componentName string) error {
 	if endpoint == "" || m.httpClient == nil {
-		return
+		return nil
 	}
 
 	deleteURL := strings.TrimRight(endpoint, "/") + "/" + backupID
 	resp, err := m.httpClient.Delete(ctx, deleteURL, nil)
 	if err != nil {
-		errMsg := fmt.Sprintf("failed to delete %s backup %s: %v", componentName, backupID, err)
-		result.Errors = append(result.Errors, errMsg)
-		if m.alerter != nil {
-			m.alerter.AlertCleanupFailed(instanceID, backupID, errMsg)
-		}
-		return
+		return fmt.Errorf("failed to delete %s backup %s: %w", componentName, backupID, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
 		m.logger.Debug("[retention] %s backup %s not found (already deleted or never created)", componentName, backupID)
-		return
+		return nil
 	}
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		m.logger.Info("[retention] Deleted %s backup %s for instance %s", componentName, backupID, instanceID)
-	} else {
-		errMsg := fmt.Sprintf("%s backup deletion returned status %d for backup %s", componentName, resp.StatusCode, backupID)
-		result.Errors = append(result.Errors, errMsg)
-		if m.alerter != nil {
-			m.alerter.AlertCleanupFailed(instanceID, backupID, errMsg)
-		}
+		m.logger.Info("[retention] Deleted %s backup %s", componentName, backupID)
+		return nil
 	}
+
+	return fmt.Errorf("%s backup deletion returned status %d for backup %s", componentName, resp.StatusCode, backupID)
 }
 
-// cleanupIncompleteBackups removes INCOMPLETE backups when a newer COMPLETED backup exists.
-func (m *Manager) cleanupIncompleteBackups(camundaInstanceID string, result *RetentionResult) {
+// cleanupIncompleteBackups removes INCOMPLETE backups, and the partial artifacts
+// they left behind, when a newer COMPLETED backup exists.
+func (m *Manager) cleanupIncompleteBackups(instance *models.CamundaInstance, result *RetentionResult) {
+	camundaInstanceID := instance.ID
+
 	incomplete, err := m.s3Storage.ListIncompleteBackups(camundaInstanceID)
 	if err != nil {
 		result.Errors = append(result.Errors, fmt.Sprintf("failed to list incomplete backups: %v", err))
@@ -317,6 +375,11 @@ func (m *Manager) cleanupIncompleteBackups(camundaInstanceID string, result *Ret
 
 	for _, backup := range incomplete {
 		if backup.StartTime.Before(newestCompleted.StartTime) {
+			if !m.deleteBackupData(instance, backup, result) {
+				m.logger.Warn("[retention] Keeping incomplete backup %s: some artifacts could not be deleted; retrying next cycle", backup.BackupID)
+				continue
+			}
+
 			if err := m.s3Storage.DeleteBackupHistory(camundaInstanceID, backup.BackupID); err != nil {
 				result.Errors = append(result.Errors, fmt.Sprintf("failed to delete incomplete backup %s: %v", backup.BackupID, err))
 				continue
@@ -357,9 +420,19 @@ func (m *Manager) ListFailedBackups(camundaInstanceID string) ([]*models.BackupH
 	return m.s3Storage.ListBackupHistory(camundaInstanceID, types.BackupStatusFailed)
 }
 
-// DeleteBackup manually deletes a specific backup by ID.
-// It refuses to delete the most recent COMPLETED backup as a safety measure.
-func (m *Manager) DeleteBackup(camundaInstanceID, backupID string) error {
+// DeleteBackup manually deletes a specific backup by ID, removing it from every
+// place it exists: the Elasticsearch snapshot repository, each Camunda
+// component, the controller's own S3 metadata record, and the local log file.
+//
+// It refuses to delete the most recent COMPLETED backup, and any backup that is
+// still RUNNING, as safety measures.
+//
+// The metadata record is deleted last and only once every artifact is gone.
+// If an artifact cannot be deleted the record is kept, so the backup stays
+// visible and the deletion can be retried, rather than the artifacts being
+// stranded as orphans. Pass force to delete the record anyway; the surviving
+// artifacts are then reported by the reconciler as orphans.
+func (m *Manager) DeleteBackup(camundaInstanceID, backupID string, force bool) error {
 	completed, err := m.s3Storage.ListBackupHistory(camundaInstanceID, types.BackupStatusCompleted)
 	if err != nil {
 		return fmt.Errorf("failed to verify backup safety: %w", err)
@@ -377,38 +450,56 @@ func (m *Manager) DeleteBackup(camundaInstanceID, backupID string) error {
 		}
 	}
 
+	// GetBackupHistory spans history/, incomplete/ and orphaned/, so this also
+	// covers backups that are not in the main history.
+	backup, err := m.s3Storage.GetBackupHistory(camundaInstanceID, backupID)
+	if err != nil {
+		return err
+	}
+
+	// Deleting a backup the orchestrator is still writing races it: we would
+	// remove artifacts it is about to finish creating, and it would rewrite the
+	// record we just deleted. force does not apply — this is never safe.
+	if backup.Status == types.BackupStatusRunning {
+		return fmt.Errorf("%w (%s)", utils.ErrCannotDeleteRunningBackup, backupID)
+	}
+
+	instance, err := m.resolveInstance(camundaInstanceID)
+	if err != nil {
+		return err
+	}
+
+	if errs := m.purgeBackupArtifacts(context.Background(), instance, backup); len(errs) > 0 {
+		if !force {
+			return fmt.Errorf("%w for %s: %s", utils.ErrBackupArtifactsRemain, backupID, strings.Join(errs, "; "))
+		}
+		m.logger.Warn("[retention] Force-deleting backup %s with %d artifact(s) left behind: %s",
+			backupID, len(errs), strings.Join(errs, "; "))
+	}
+
 	if err := m.s3Storage.DeleteBackupHistory(camundaInstanceID, backupID); err != nil {
-		m.logger.Debug("[retention] Backup %s not in main history, checking orphaned/incomplete", backupID)
-	} else {
-		m.logger.Info("[retention] Deleted backup %s from history", backupID)
-		return nil
+		return fmt.Errorf("failed to delete backup record %s: %w", backupID, err)
 	}
 
-	orphaned, err := m.s3Storage.ListOrphanedBackups(camundaInstanceID)
-	if err == nil {
-		for _, o := range orphaned {
-			if o.BackupID == backupID {
-				if delErr := m.s3Storage.DeleteBackupHistory(camundaInstanceID, backupID); delErr != nil {
-					return fmt.Errorf("failed to delete orphaned backup %s: %w", backupID, delErr)
-				}
-				m.logger.Info("[retention] Deleted orphaned backup %s", backupID)
-				return nil
-			}
-		}
+	if err := m.fileStorage.DeleteLogFile(camundaInstanceID, backupID); err != nil {
+		m.logger.Debug("[retention] Could not delete log file for %s: %v", backupID, err)
 	}
 
-	incomplete, err := m.s3Storage.ListIncompleteBackups(camundaInstanceID)
-	if err == nil {
-		for _, inc := range incomplete {
-			if inc.BackupID == backupID {
-				if delErr := m.s3Storage.DeleteBackupHistory(camundaInstanceID, backupID); delErr != nil {
-					return fmt.Errorf("failed to delete incomplete backup %s: %w", backupID, delErr)
-				}
-				m.logger.Info("[retention] Deleted incomplete backup %s", backupID)
-				return nil
-			}
-		}
-	}
+	m.logger.Info("[retention] Deleted backup %s and all of its artifacts", backupID)
+	return nil
+}
 
-	return utils.ErrBackupNotFound
+// resolveInstance looks up the instance whose endpoints the artifacts live behind.
+func (m *Manager) resolveInstance(camundaInstanceID string) (*models.CamundaInstance, error) {
+	if m.instances == nil {
+		return nil, utils.ErrInstanceProviderNotConfigured
+	}
+	instance, err := m.instances.GetInstance(camundaInstanceID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to look up instance %s: %w", camundaInstanceID, err)
+	}
+	if instance == nil {
+		return nil, fmt.Errorf("failed to look up instance %s: %w", camundaInstanceID, utils.ErrCamundaInstanceNotFound)
+	}
+	return instance, nil
 }

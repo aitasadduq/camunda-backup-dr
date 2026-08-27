@@ -115,6 +115,7 @@ func main() {
 	backupOrchestrator.SetRetentionFunc(func(instance *models.CamundaInstance) {
 		retentionManager.ApplyRetention(instance)
 	})
+	retentionManager.SetInstanceProvider(camundaManager)
 	logger.Info("Retention manager initialized and wired to orchestrator")
 
 	// Reconciler: cross-references controller metadata against the artifacts that

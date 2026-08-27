@@ -201,14 +201,16 @@ func (m *mockScheduler) UpdateJob(instanceID, schedule string, enabled bool) err
 
 // mockRetentionManager implements RetentionManager for testing
 type mockRetentionManager struct {
-	orphaned   []*models.BackupHistory
-	incomplete []*models.BackupHistory
-	failed     []*models.BackupHistory
-	deleteErr  error
-	listErr    error
+	orphaned    []*models.BackupHistory
+	incomplete  []*models.BackupHistory
+	failed      []*models.BackupHistory
+	deleteErr   error
+	listErr     error
+	deleteForce bool
 }
 
-func (m *mockRetentionManager) DeleteBackup(camundaInstanceID, backupID string) error {
+func (m *mockRetentionManager) DeleteBackup(camundaInstanceID, backupID string, force bool) error {
+	m.deleteForce = force
 	return m.deleteErr
 }
 
@@ -700,6 +702,50 @@ func TestDeleteBackupHandler_SafetyRefusal(t *testing.T) {
 
 	if w.Code != http.StatusConflict {
 		t.Errorf("expected status %d, got %d: %s", http.StatusConflict, w.Code, w.Body.String())
+	}
+}
+
+func TestDeleteBackupHandler_ArtifactsRemain(t *testing.T) {
+	handlers, cm, _, _, _, ret, _ := newTestHandlers()
+
+	cm.instances = []models.CamundaInstance{
+		{ID: "test-1", Name: "Test Instance 1"},
+	}
+	ret.deleteErr = fmt.Errorf("%w for backup-1: Zeebe backup deletion returned status 500", utils.ErrBackupArtifactsRemain)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/camundas/test-1/backups/backup-1", nil)
+	w := httptest.NewRecorder()
+
+	handlers.DeleteBackupHandler(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Errorf("expected status %d, got %d: %s", http.StatusConflict, w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "artifacts_remain") {
+		t.Errorf("expected an artifacts_remain error code, got: %s", w.Body.String())
+	}
+	if ret.deleteForce {
+		t.Error("expected force to default to false")
+	}
+}
+
+func TestDeleteBackupHandler_ForceQueryParam(t *testing.T) {
+	handlers, cm, _, _, _, ret, _ := newTestHandlers()
+
+	cm.instances = []models.CamundaInstance{
+		{ID: "test-1", Name: "Test Instance 1"},
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/camundas/test-1/backups/backup-1?force=true", nil)
+	w := httptest.NewRecorder()
+
+	handlers.DeleteBackupHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
+	}
+	if !ret.deleteForce {
+		t.Error("expected force=true to reach the retention manager")
 	}
 }
 

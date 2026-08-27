@@ -54,7 +54,7 @@ type SchedulerInterface interface {
 
 // RetentionManager defines the interface for retention operations
 type RetentionManager interface {
-	DeleteBackup(camundaInstanceID, backupID string) error
+	DeleteBackup(camundaInstanceID, backupID string, force bool) error
 	ListOrphanedBackups(camundaInstanceID string) ([]*models.BackupHistory, error)
 	ListIncompleteBackups(camundaInstanceID string) ([]*models.BackupHistory, error)
 	ListFailedBackups(camundaInstanceID string) ([]*models.BackupHistory, error)
@@ -787,13 +787,21 @@ func (h *Handlers) DeleteBackupHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.retentionManager.DeleteBackup(instanceID, backupID); err != nil {
-		if err == utils.ErrBackupNotFound {
+	// force=true deletes the controller's record even when some artifacts could
+	// not be removed. Without it, a partial deletion leaves the backup in place.
+	force := r.URL.Query().Get("force") == "true"
+
+	if err := h.retentionManager.DeleteBackup(instanceID, backupID, force); err != nil {
+		if errors.Is(err, utils.ErrBackupNotFound) {
 			writeError(w, http.StatusNotFound, "not_found", "Backup not found")
 			return
 		}
-		if errors.Is(err, utils.ErrCannotDeleteMostRecentBackup) {
+		if errors.Is(err, utils.ErrCannotDeleteMostRecentBackup) || errors.Is(err, utils.ErrCannotDeleteRunningBackup) {
 			writeError(w, http.StatusConflict, "safety_refusal", err.Error())
+			return
+		}
+		if errors.Is(err, utils.ErrBackupArtifactsRemain) {
+			writeError(w, http.StatusConflict, "artifacts_remain", err.Error())
 			return
 		}
 		h.logger.Error("Failed to delete backup: %v", err)
@@ -801,7 +809,7 @@ func (h *Handlers) DeleteBackupHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeSuccess(w, http.StatusOK, "Backup deleted successfully", nil)
+	writeSuccess(w, http.StatusOK, "Backup and all of its artifacts deleted", nil)
 }
 
 // ListOrphanedBackupsHandler handles listing orphaned backups for a Camunda instance

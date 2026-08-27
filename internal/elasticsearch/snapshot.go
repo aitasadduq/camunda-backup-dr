@@ -3,6 +3,7 @@ package elasticsearch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -139,6 +140,10 @@ func (c *Client) GetSnapshotStatus(ctx context.Context, repository, snapshot str
 	}
 }
 
+// ErrSnapshotMissing is returned by DeleteSnapshot when the repository has no
+// such snapshot. For cleanup callers this is a success, not a failure.
+var ErrSnapshotMissing = errors.New("snapshot not found")
+
 // DeleteSnapshot deletes an Elasticsearch snapshot.
 func (c *Client) DeleteSnapshot(ctx context.Context, repository, snapshot string) error {
 	if repository == "" {
@@ -164,6 +169,10 @@ func (c *Client) DeleteSnapshot(ctx context.Context, repository, snapshot string
 		return fmt.Errorf("failed to delete snapshot: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return ErrSnapshotMissing
+	}
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
 		body, _ := io.ReadAll(resp.Body)

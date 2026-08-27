@@ -45,6 +45,13 @@ type componentServer struct {
 	pollResponses []string
 	pollIndex     int
 	mu            sync.Mutex
+
+	// deletes records the path of every DELETE the server received, so tests
+	// can assert that a backup's artifacts were actually removed.
+	deletes []string
+
+	// deleteStatus is the status returned to DELETE requests.
+	deleteStatus int
 }
 
 // newComponentServer creates a mock Camunda component (Zeebe, Operate, etc.)
@@ -53,6 +60,7 @@ func newComponentServer(triggerStatus int, pollResponses []string) *componentSer
 	cs := &componentServer{
 		triggerStatus: triggerStatus,
 		pollResponses: pollResponses,
+		deleteStatus:  http.StatusNoContent,
 	}
 
 	cs.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -61,6 +69,8 @@ func newComponentServer(triggerStatus int, pollResponses []string) *componentSer
 			// Trigger backup
 			w.WriteHeader(cs.triggerStatus)
 			w.Write([]byte(`{"message":"accepted"}`))
+		case http.MethodDelete:
+			w.WriteHeader(cs.recordDelete(r.URL.Path))
 		case http.MethodGet:
 			// Poll status
 			cs.mu.Lock()
@@ -81,8 +91,43 @@ func newComponentServer(triggerStatus int, pollResponses []string) *componentSer
 	return cs
 }
 
-func (cs *componentServer) URL() string  { return cs.server.URL }
-func (cs *componentServer) Close()       { cs.server.Close() }
+func (cs *componentServer) URL() string { return cs.server.URL }
+func (cs *componentServer) Close()      { cs.server.Close() }
+
+// recordDelete logs a DELETE request and returns the status to respond with.
+func (cs *componentServer) recordDelete(path string) int {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	cs.deletes = append(cs.deletes, path)
+	return cs.deleteStatus
+}
+
+// deletedPaths returns the paths of every DELETE the server has received.
+func (cs *componentServer) deletedPaths() []string {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	out := make([]string, len(cs.deletes))
+	copy(out, cs.deletes)
+	return out
+}
+
+// sawDeleteOf reports whether the server received a DELETE whose path ends in
+// the given backup ID.
+func (cs *componentServer) sawDeleteOf(backupID string) bool {
+	for _, p := range cs.deletedPaths() {
+		if strings.HasSuffix(p, "/"+backupID) {
+			return true
+		}
+	}
+	return false
+}
+
+// setDeleteStatus makes subsequent DELETEs respond with the given status.
+func (cs *componentServer) setDeleteStatus(code int) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	cs.deleteStatus = code
+}
 
 // newESServer creates a mock Elasticsearch server that responds to snapshot
 // create (PUT) and status (GET) requests.
@@ -90,6 +135,7 @@ func newESServer(createStatus int, snapshotStates []string) *componentServer {
 	cs := &componentServer{
 		triggerStatus: createStatus,
 		pollResponses: snapshotStates, // reuse field for ES states
+		deleteStatus:  http.StatusOK,
 	}
 
 	cs.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -98,6 +144,10 @@ func newESServer(createStatus int, snapshotStates []string) *componentServer {
 			// Create snapshot
 			w.WriteHeader(cs.triggerStatus)
 			w.Write([]byte(`{"accepted":true}`))
+		case http.MethodDelete:
+			// Delete snapshot
+			w.WriteHeader(cs.recordDelete(r.URL.Path))
+			w.Write([]byte(`{"acknowledged":true}`))
 		case http.MethodGet:
 			// Get snapshot status
 			cs.mu.Lock()
@@ -220,11 +270,12 @@ func setupTestEnv(t *testing.T, opts ...envOption) *testEnv {
 		maxAttempts,
 	)
 
-	retentionMgr := retention.NewManager(s3Storage, fileStorage, logger)
+	retentionMgr := retention.NewManager(s3Storage, fileStorage, httpClient, cfg, logger)
+	retentionMgr.SetInstanceProvider(camundaManager)
 
 	// Wire retention to orchestrator
-	orch.SetRetentionFunc(func(camundaInstanceID string, retentionCount int) {
-		retentionMgr.ApplyRetention(camundaInstanceID, retentionCount)
+	orch.SetRetentionFunc(func(instance *models.CamundaInstance) {
+		retentionMgr.ApplyRetention(instance)
 	})
 
 	// Create scheduler with very fast tick for tests
@@ -441,6 +492,60 @@ func (env *testEnv) pollBackupHistoryAll(instanceID string, timeout time.Duratio
 
 	env.t.Fatalf("pollBackupHistoryAll: no terminal backup found within %v", timeout)
 	return nil
+}
+
+// runBackup triggers a manual backup, waits for it to complete, and returns the
+// new backup's ID. The mock servers' poll queues are rewound first so each
+// backup sees the same responses.
+func (env *testEnv) runBackup(instanceID string, servers []*componentServer) string {
+	env.t.Helper()
+
+	for _, cs := range servers {
+		cs.mu.Lock()
+		cs.pollIndex = 0
+		cs.mu.Unlock()
+	}
+
+	before := make(map[string]bool)
+	for _, h := range env.allBackups(instanceID) {
+		before[h.BackupID] = true
+	}
+
+	resp := env.apiRequest(http.MethodPost, fmt.Sprintf("/api/camundas/%s/backup", instanceID), nil)
+	if resp.StatusCode != http.StatusAccepted {
+		env.t.Fatalf("runBackup: expected 202, got %d: %s", resp.StatusCode, readBody(env.t, resp))
+	}
+	resp.Body.Close()
+
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, h := range env.allBackups(instanceID) {
+			if before[h.BackupID] || h.Status != types.BackupStatusCompleted {
+				continue
+			}
+			// Wait for the orchestrator to release the lock so the next
+			// backup can be triggered right away.
+			for time.Now().Before(deadline) && env.orchestratorImpl.IsBackupRunning() {
+				time.Sleep(50 * time.Millisecond)
+			}
+			return h.BackupID
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	env.t.Fatalf("runBackup: no new completed backup for %s within 30s", instanceID)
+	return ""
+}
+
+// allBackups returns every recorded backup for an instance, across the history,
+// incomplete and orphaned directories.
+func (env *testEnv) allBackups(instanceID string) []*models.BackupHistory {
+	env.t.Helper()
+	all, err := env.s3Storage.ListAllBackups(instanceID)
+	if err != nil {
+		env.t.Fatalf("ListAllBackups: %v", err)
+	}
+	return all
 }
 
 // ===========================================================================
@@ -790,25 +895,201 @@ func TestE2E_RetentionAfterBackup(t *testing.T) {
 		t.Errorf("expected at most 2 completed backups after retention, got %d", len(completed))
 	}
 
-	// Verify: orphaned backups exist (excess were moved to orphaned)
+	// Verify: the pruned backups had their Zeebe artifacts deleted too, not
+	// just their metadata records.
+	kept := make(map[string]bool, len(completed))
+	for _, c := range completed {
+		kept[c.BackupID] = true
+	}
+	deleted := zeebe.deletedPaths()
+	if len(deleted) == 0 {
+		t.Fatal("expected retention to delete the pruned backups' Zeebe artifacts, got none")
+	}
+	for _, path := range deleted {
+		id := path[strings.LastIndex(path, "/")+1:]
+		if kept[id] {
+			t.Errorf("retention deleted the Zeebe artifact of retained backup %s", id)
+		}
+	}
+
+	// Nothing should have been left behind in the orphaned or incomplete dirs.
 	orphaned, err := env.s3Storage.ListOrphanedBackups(instanceID)
 	if err != nil {
 		t.Fatalf("ListOrphanedBackups: %v", err)
 	}
-	if len(orphaned) == 0 {
-		t.Error("expected some orphaned backups after retention, got 0")
+	if len(orphaned) != 0 {
+		t.Errorf("expected no orphaned backups after retention, got %d", len(orphaned))
+	}
+}
+
+// ===========================================================================
+// Test 4b: Deleting a backup removes it from every system
+// ===========================================================================
+
+// TestE2E_DeleteBackupRemovesEverything runs two real backups through the full
+// stack, then deletes the older one through the API and asserts the delete
+// reached every component, Elasticsearch, the controller's own record, and the
+// log file.
+func TestE2E_DeleteBackupRemovesEverything(t *testing.T) {
+	env := setupTestEnv(t, withPollInterval(100*time.Millisecond), withMaxPollAttempts(20))
+	defer env.cleanup()
+	defer env.server.Close()
+
+	zeebe := newComponentServer(http.StatusOK, []string{`{"state":"COMPLETED"}`})
+	operate := newComponentServer(http.StatusOK, []string{`{"state":"COMPLETED"}`})
+	tasklist := newComponentServer(http.StatusOK, []string{`{"state":"COMPLETED"}`})
+	es := newESServer(http.StatusOK, []string{"SUCCESS"})
+	env.mockServers = append(env.mockServers, zeebe, operate, tasklist, es)
+
+	instanceID := "delete-cluster"
+	env.createTestInstance(instanceID, map[string]string{
+		"zeebe":         zeebe.URL(),
+		"operate":       operate.URL(),
+		"tasklist":      tasklist.URL(),
+		"elasticsearch": es.URL(),
+	})
+
+	// Two backups: the newest completed backup can never be deleted, so we
+	// need a second one to delete.
+	first := env.runBackup(instanceID, []*componentServer{zeebe, operate, tasklist, es})
+	time.Sleep(1100 * time.Millisecond) // backup IDs are timestamp-based
+	second := env.runBackup(instanceID, []*componentServer{zeebe, operate, tasklist, es})
+
+	if first == second {
+		t.Fatalf("expected two distinct backups, both were %s", first)
 	}
 
-	// Verify via API as well
-	resp = env.apiRequest(http.MethodGet, fmt.Sprintf("/api/camundas/%s/backups/orphaned", instanceID), nil)
+	// The log file exists before the delete.
+	if _, err := env.fileStorage.ReadLogFile(instanceID, first); err != nil {
+		t.Fatalf("expected a log file for %s before deletion: %v", first, err)
+	}
+
+	// Deleting the most recent completed backup must be refused.
+	resp := env.apiRequest(http.MethodDelete, fmt.Sprintf("/api/camundas/%s/backups/%s", instanceID, second), nil)
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("expected 409 deleting the most recent backup, got %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+	resp.Body.Close()
+
+	// Delete the older backup.
+	resp = env.apiRequest(http.MethodDelete, fmt.Sprintf("/api/camundas/%s/backups/%s", instanceID, first), nil)
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
+		t.Fatalf("expected 200 deleting backup %s, got %d: %s", first, resp.StatusCode, readBody(t, resp))
 	}
-	var orphanedAPI []*models.BackupHistory
-	readJSON(t, resp, &orphanedAPI)
-	if len(orphanedAPI) == 0 {
-		t.Error("expected orphaned backups via API, got 0")
+	resp.Body.Close()
+
+	// Every component saw a DELETE for that backup ID.
+	for name, cs := range map[string]*componentServer{"zeebe": zeebe, "operate": operate, "tasklist": tasklist} {
+		if !cs.sawDeleteOf(first) {
+			t.Errorf("%s never received a DELETE for backup %s (saw %v)", name, first, cs.deletedPaths())
+		}
+		if cs.sawDeleteOf(second) {
+			t.Errorf("%s received a DELETE for backup %s, which was not deleted", name, second)
+		}
 	}
+
+	// Elasticsearch saw a snapshot deletion for that backup.
+	esDeletes := es.deletedPaths()
+	if len(esDeletes) != 1 || !strings.Contains(esDeletes[0], first) {
+		t.Errorf("expected one ES snapshot deletion mentioning %s, got %v", first, esDeletes)
+	}
+
+	// The controller's own record is gone from every directory.
+	all, err := env.s3Storage.ListAllBackups(instanceID)
+	if err != nil {
+		t.Fatalf("ListAllBackups: %v", err)
+	}
+	for _, h := range all {
+		if h.BackupID == first {
+			t.Errorf("backup %s is still recorded with status %s", first, h.Status)
+		}
+	}
+	if len(all) != 1 || all[0].BackupID != second {
+		t.Errorf("expected only %s to remain, got %v", second, backupIDs(all))
+	}
+
+	// The API no longer serves it, and the log file is gone.
+	resp = env.apiRequest(http.MethodGet, fmt.Sprintf("/api/camundas/%s/backups/%s", instanceID, first), nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 fetching the deleted backup, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	if _, err := env.fileStorage.ReadLogFile(instanceID, first); err == nil {
+		t.Errorf("expected the log file for %s to be deleted", first)
+	}
+
+	// Deleting it again reports not found.
+	resp = env.apiRequest(http.MethodDelete, fmt.Sprintf("/api/camundas/%s/backups/%s", instanceID, first), nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("expected 404 on a second delete, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+// TestE2E_DeleteBackupKeepsRecordWhenArtifactSurvives checks the guard against
+// silently orphaning data: if a component refuses the delete, the backup stays
+// visible so the operator can retry, and force=true is the way through.
+func TestE2E_DeleteBackupKeepsRecordWhenArtifactSurvives(t *testing.T) {
+	env := setupTestEnv(t, withPollInterval(100*time.Millisecond), withMaxPollAttempts(20))
+	defer env.cleanup()
+	defer env.server.Close()
+
+	zeebe := newComponentServer(http.StatusOK, []string{`{"state":"COMPLETED"}`})
+	operate := newComponentServer(http.StatusOK, []string{`{"state":"COMPLETED"}`})
+	env.mockServers = append(env.mockServers, zeebe, operate)
+
+	instanceID := "stubborn-cluster"
+	env.createTestInstance(instanceID, map[string]string{
+		"zeebe":   zeebe.URL(),
+		"operate": operate.URL(),
+	})
+
+	first := env.runBackup(instanceID, []*componentServer{zeebe, operate})
+	time.Sleep(1100 * time.Millisecond)
+	env.runBackup(instanceID, []*componentServer{zeebe, operate})
+
+	// Operate cannot delete its backup.
+	operate.setDeleteStatus(http.StatusInternalServerError)
+
+	resp := env.apiRequest(http.MethodDelete, fmt.Sprintf("/api/camundas/%s/backups/%s", instanceID, first), nil)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 when an artifact survives, got %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+	body := readBody(t, resp)
+	if !strings.Contains(body, "artifacts_remain") {
+		t.Errorf("expected an artifacts_remain error, got: %s", body)
+	}
+
+	// The record is still there, so the operator can retry.
+	if _, err := env.s3Storage.GetBackupHistory(instanceID, first); err != nil {
+		t.Errorf("expected backup %s to still be recorded after a failed delete: %v", first, err)
+	}
+
+	// force=true removes the record anyway.
+	resp = env.apiRequest(http.MethodDelete, fmt.Sprintf("/api/camundas/%s/backups/%s?force=true", instanceID, first), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for a forced delete, got %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+	resp.Body.Close()
+
+	if _, err := env.s3Storage.GetBackupHistory(instanceID, first); err == nil {
+		t.Errorf("expected backup %s to be gone after a forced delete", first)
+	}
+
+	// Once Operate recovers, the surviving artifact is reported as an orphan
+	// rather than being silently forgotten.
+	if !zeebe.sawDeleteOf(first) {
+		t.Errorf("expected Zeebe's artifact to have been deleted, saw %v", zeebe.deletedPaths())
+	}
+}
+
+func backupIDs(backups []*models.BackupHistory) []string {
+	ids := make([]string, 0, len(backups))
+	for _, b := range backups {
+		ids = append(ids, b.BackupID)
+	}
+	return ids
 }
 
 // ===========================================================================

@@ -298,12 +298,19 @@ quietly if one is already running, and the endpoint answers `409`.
 
 Detection never deletes. Removing a backup stays deliberate.
 
-For a backup that **has** a history record, use the existing endpoint, which
-still refuses to delete the most recent successful backup:
+For a backup that **has** a history record, use the existing endpoint. It
+deletes the backup from every system that holds it — the ES snapshot, each
+component's backup, the controller's record and the log file — and still
+refuses to delete the most recent successful backup:
 
 ```bash
 curl -X DELETE http://localhost:8080/api/camundas/{id}/backups/{backupId}
 ```
+
+If any artifact cannot be deleted the endpoint answers `409 artifacts_remain`
+and removes nothing, so the backup does not become an orphan of the kind this
+report exists to find. Add `?force=true` to drop the controller's record anyway
+once you accept that the leftovers will show up here.
 
 **Known gap.** That endpoint resolves backups through `BackupHistory`, so it
 cannot act on `A1`–`A4` — artifacts that by definition have no record. For

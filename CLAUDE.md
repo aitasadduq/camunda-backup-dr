@@ -60,6 +60,8 @@ After every change, run in this order:
 - Credentials can also be entered in the UI; they go to `internal/secrets` (`$DATA_DIR/secrets.json`, 0600), never to `config.json`. Resolution order is instance env var > UI-stored secret > global default, wired via `config.SetSecretProvider`
 - `web/css/tailwind.css` is a pre-built, purged bundle and there is no Node toolchain here — new markup must reuse utility classes already present in that file, or add rules to the hand-written `web/css/styles.css`
 - S3 is the authoritative source of backup existence and restore eligibility; file storage only holds config and logs
+- Deleting a backup means deleting it everywhere — ES snapshot, every component backup, the controller's S3 record, the log file. The record goes last and only if every artifact is gone, so a partial failure never silently creates an orphan. This holds on BOTH paths: manual deletion (`retention.Manager.DeleteBackup`, which returns `ErrBackupArtifactsRemain`) and unattended retention (`pruneByStatus`, `pruneFailedBackups`, `cleanupIncompleteBackups`, which keep the record and retry next cycle)
+- The backup record's `Components` map is the authority on what a backup wrote. The orchestrator seeds it with every *enabled* component before any of them runs, so a component absent from the map was disabled at backup time and owns no artifact — never purge absent components. A record with no components at all is unidentifiable and is refused rather than deleted
 - Tests use table-driven patterns, mock interfaces, `httptest.Server` for external services, and `testEnv` struct with deferred cleanup
 - Build tags: `//go:build integration` for ES/S3 tests, `//go:build e2e` for end-to-end tests
 - Orphan detection is report-only and never deletes; every conclusion drawn from an artifact being *absent* must be gated on that source having been reachable (see `internal/reconcile/classify.go`)
@@ -72,6 +74,9 @@ After every change, run in this order:
 - Don't store credentials in config JSON or logs — use environment variables, or the `internal/secrets` store for UI-entered values
 - Don't allow concurrent backups (scheduled or manual) — the scheduler and orchestrator enforce this via `atomic.Bool`
 - Don't delete the most recent successful backup during retention cleanup — retention manager has safety guards for this
+- Don't delete a backup's metadata record before its artifacts; that is exactly how orphans are created. A component answering 404 counts as deleted, an unreachable one does not
+- Don't delete a backup that is still RUNNING — it races the orchestrator, which would rewrite the record and finish creating artifacts after their deletion. `force` does not override this
+- Don't infer a component's participation from the instance's current config; read it from the backup record. Config can change after a backup is taken
 - Don't bypass the `AppError` system for HTTP error responses — use `ToHTTPError()` to convert errors to consistent JSON responses
 - Don't add an external database — all state is file-based (config/logs on PVC) or in S3 (backup data/history)
 - Don't skip middleware ordering — it must be: recovery → logging → CORS → CSRF → content-type
