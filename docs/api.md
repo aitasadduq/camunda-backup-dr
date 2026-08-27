@@ -649,12 +649,16 @@ Permanently deletes a specific backup from every system that holds it:
 3. the controller's own metadata record in S3,
 4. the backup's log file.
 
-The most recent successful backup cannot be deleted (safety guard).
+The most recent successful backup cannot be deleted, and neither can a backup
+that is still `RUNNING` — deleting one races the orchestrator still writing it.
+Neither guard is overridable by `force`.
 
-A component that answers `404` counts as already deleted. Components the record
-marks as skipped or disabled are left alone; components missing from the record
-entirely are still purged, because an interrupted backup can leave artifacts it
-never recorded.
+A component that answers `404` counts as already deleted. The backup record's
+component map decides what gets purged: the orchestrator seeds it with every
+component enabled at backup time, so components absent from the map were
+disabled then and are left alone, as are components the record marks skipped.
+A record listing no components at all cannot be identified and is refused
+(use `force` to drop it anyway).
 
 The metadata record is deleted **last, and only once every artifact is gone**.
 If an artifact cannot be deleted the whole delete is refused with `409
@@ -682,7 +686,7 @@ deleting the record first would strand the artifacts as orphans.
 |---|---|
 | 400 | Instance ID or Backup ID missing |
 | 404 | Instance or backup not found |
-| 409 | Cannot delete the most recent backup (safety refusal) |
+| 409 | Cannot delete the most recent backup, or the backup is still RUNNING (safety refusal) |
 | 409 | `artifacts_remain` — one or more artifacts could not be deleted; nothing was removed from the controller. Retry, or repeat with `?force=true` |
 | 500 | Internal server error |
 

@@ -114,7 +114,10 @@ func (m *Manager) pruneByStatus(instance *models.CamundaInstance, status types.B
 
 	toDelete := backups[keep:]
 	for _, backup := range toDelete {
-		m.deleteBackupData(instance, backup, result)
+		if !m.deleteBackupData(instance, backup, result) {
+			m.logger.Warn("[retention] Keeping %s backup %s: some artifacts could not be deleted; retrying next cycle", status, backup.BackupID)
+			continue
+		}
 
 		if err := m.s3Storage.DeleteBackupHistory(instance.ID, backup.BackupID); err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("failed to delete %s backup history %s: %v", status, backup.BackupID, err))
@@ -180,7 +183,10 @@ func (m *Manager) pruneFailedBackups(instance *models.CamundaInstance, result *R
 			continue
 		}
 
-		m.deleteBackupData(instance, backup, result)
+		if !m.deleteBackupData(instance, backup, result) {
+			m.logger.Warn("[retention] Keeping failed backup %s: some artifacts could not be deleted; retrying next cycle", backup.BackupID)
+			continue
+		}
 
 		if err := m.s3Storage.DeleteBackupHistory(instance.ID, backup.BackupID); err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("failed to delete FAILED backup history %s: %v", backup.BackupID, err))
@@ -197,9 +203,12 @@ func (m *Manager) pruneFailedBackups(instance *models.CamundaInstance, result *R
 }
 
 // deleteBackupData deletes the component artifacts for a backup and records any
-// failures on the retention result.
-func (m *Manager) deleteBackupData(instance *models.CamundaInstance, backup *models.BackupHistory, result *RetentionResult) {
-	result.Errors = append(result.Errors, m.purgeBackupArtifacts(context.Background(), instance, backup)...)
+// failures on the retention result. It reports whether every artifact is gone,
+// so callers can hold the metadata record back when one survives.
+func (m *Manager) deleteBackupData(instance *models.CamundaInstance, backup *models.BackupHistory, result *RetentionResult) bool {
+	errs := m.purgeBackupArtifacts(context.Background(), instance, backup)
+	result.Errors = append(result.Errors, errs...)
+	return len(errs) == 0
 }
 
 // purgeBackupArtifacts deletes everything a backup left outside the controller's
@@ -207,15 +216,28 @@ func (m *Manager) deleteBackupData(instance *models.CamundaInstance, backup *mod
 // It returns one message per failure; an empty slice means every artifact is
 // gone (or was never there).
 //
-// A component is purged unless the backup record positively says it was skipped
-// or disabled. Components missing from the record are still purged, because an
-// interrupted backup can leave artifacts it never got to record.
+// The record's component map is the authority on what this backup could have
+// written. The orchestrator seeds that map with every enabled component before
+// any of them runs (see orchestrator.createBackupHistory), so a component that
+// is absent was disabled at backup time and has no artifact to delete. Purging
+// absent components instead would send DELETEs to components this backup never
+// touched.
+//
+// A record with no components at all is a corrupt or pre-dating record: we
+// cannot tell what it wrote, so we refuse rather than delete the metadata and
+// strand whatever is out there.
 func (m *Manager) purgeBackupArtifacts(ctx context.Context, instance *models.CamundaInstance, backup *models.BackupHistory) []string {
+	if len(backup.Components) == 0 {
+		return []string{fmt.Sprintf(
+			"backup %s records no components, so its artifacts cannot be identified; delete them by hand or use force",
+			backup.BackupID)}
+	}
+
 	var errs []string
 
 	for _, componentName := range types.ValidComponents {
 		compInfo, recorded := backup.Components[componentName]
-		if recorded && (!compInfo.Enabled || compInfo.Status == types.ComponentStatusSkipped) {
+		if !recorded || !compInfo.Enabled || compInfo.Status == types.ComponentStatusSkipped {
 			continue
 		}
 
@@ -353,7 +375,10 @@ func (m *Manager) cleanupIncompleteBackups(instance *models.CamundaInstance, res
 
 	for _, backup := range incomplete {
 		if backup.StartTime.Before(newestCompleted.StartTime) {
-			m.deleteBackupData(instance, backup, result)
+			if !m.deleteBackupData(instance, backup, result) {
+				m.logger.Warn("[retention] Keeping incomplete backup %s: some artifacts could not be deleted; retrying next cycle", backup.BackupID)
+				continue
+			}
 
 			if err := m.s3Storage.DeleteBackupHistory(camundaInstanceID, backup.BackupID); err != nil {
 				result.Errors = append(result.Errors, fmt.Sprintf("failed to delete incomplete backup %s: %v", backup.BackupID, err))
@@ -399,7 +424,8 @@ func (m *Manager) ListFailedBackups(camundaInstanceID string) ([]*models.BackupH
 // place it exists: the Elasticsearch snapshot repository, each Camunda
 // component, the controller's own S3 metadata record, and the local log file.
 //
-// It refuses to delete the most recent COMPLETED backup as a safety measure.
+// It refuses to delete the most recent COMPLETED backup, and any backup that is
+// still RUNNING, as safety measures.
 //
 // The metadata record is deleted last and only once every artifact is gone.
 // If an artifact cannot be deleted the record is kept, so the backup stays
@@ -429,6 +455,13 @@ func (m *Manager) DeleteBackup(camundaInstanceID, backupID string, force bool) e
 	backup, err := m.s3Storage.GetBackupHistory(camundaInstanceID, backupID)
 	if err != nil {
 		return err
+	}
+
+	// Deleting a backup the orchestrator is still writing races it: we would
+	// remove artifacts it is about to finish creating, and it would rewrite the
+	// record we just deleted. force does not apply — this is never safe.
+	if backup.Status == types.BackupStatusRunning {
+		return fmt.Errorf("%w (%s)", utils.ErrCannotDeleteRunningBackup, backupID)
 	}
 
 	instance, err := m.resolveInstance(camundaInstanceID)

@@ -796,7 +796,7 @@ func (h *Handlers) DeleteBackupHandler(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "not_found", "Backup not found")
 			return
 		}
-		if errors.Is(err, utils.ErrCannotDeleteMostRecentBackup) {
+		if errors.Is(err, utils.ErrCannotDeleteMostRecentBackup) || errors.Is(err, utils.ErrCannotDeleteRunningBackup) {
 			writeError(w, http.StatusConflict, "safety_refusal", err.Error())
 			return
 		}

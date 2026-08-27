@@ -54,6 +54,10 @@ var (
 	// ErrRetryExhausted is returned when all retry attempts are exhausted
 	ErrRetryExhausted = errors.New("all retry attempts exhausted")
 
+	// ErrCannotDeleteRunningBackup is returned when attempting to delete a backup
+	// that the orchestrator is still producing.
+	ErrCannotDeleteRunningBackup = errors.New("cannot delete a backup that is still running")
+
 	// ErrBackupArtifactsRemain is returned when a backup's metadata record was
 	// left in place because its component artifacts could not all be deleted.
 	// Removing the record anyway would strand those artifacts as orphans.

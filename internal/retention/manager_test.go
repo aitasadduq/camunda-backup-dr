@@ -200,6 +200,15 @@ func (m *mockS3Storage) ListIncompleteBackups(camundaInstanceID string) ([]*mode
 	return result, nil
 }
 
+// defaultComponents mirrors what orchestrator.createBackupHistory writes: an
+// entry for every component enabled on the instance, and nothing for the rest.
+// Fixtures that omit this produce records the orchestrator would never create.
+func defaultComponents() map[string]models.ComponentBackupInfo {
+	return map[string]models.ComponentBackupInfo{
+		types.ComponentZeebe: {Enabled: true, Status: types.ComponentStatusCompleted},
+	}
+}
+
 func (m *mockS3Storage) addBackup(instanceID, backupID string, status types.BackupStatus, startTime time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -211,6 +220,7 @@ func (m *mockS3Storage) addBackup(instanceID, backupID string, status types.Back
 		BackupID:          backupID,
 		Status:            status,
 		StartTime:         startTime,
+		Components:        defaultComponents(),
 	}
 }
 
@@ -225,6 +235,7 @@ func (m *mockS3Storage) addIncomplete(instanceID, backupID string, startTime tim
 		BackupID:          backupID,
 		Status:            types.BackupStatusIncomplete,
 		StartTime:         startTime,
+		Components:        defaultComponents(),
 	}
 }
 
@@ -239,6 +250,7 @@ func (m *mockS3Storage) addOrphaned(instanceID, backupID string, startTime time.
 		BackupID:          backupID,
 		Status:            types.BackupStatusCompleted,
 		StartTime:         startTime,
+		Components:        defaultComponents(),
 	}
 }
 
@@ -943,6 +955,20 @@ func newArtifactTestManager(t *testing.T) (*Manager, *mockS3Storage, *mockFileSt
 	return mgr, s3, fs, servers
 }
 
+// artifactInstance points every component and Elasticsearch at the recording server.
+func artifactInstance(id string, servers *artifactServers) *models.CamundaInstance {
+	return &models.CamundaInstance{
+		ID:                     id,
+		SuccessRetention:       5,
+		FailureRetention:       5,
+		ZeebeBackupEndpoint:    servers.server.URL + "/zeebe/backups",
+		OperateBackupEndpoint:  servers.server.URL + "/operate/backups",
+		TasklistBackupEndpoint: servers.server.URL + "/tasklist/backups",
+		OptimizeBackupEndpoint: servers.server.URL + "/optimize/backups",
+		ElasticsearchEndpoint:  servers.server.URL,
+	}
+}
+
 func allComponentsCompleted() map[string]models.ComponentBackupInfo {
 	return map[string]models.ComponentBackupInfo{
 		types.ComponentZeebe:    {Enabled: true, Status: types.ComponentStatusCompleted},
@@ -1007,12 +1033,11 @@ func TestDeleteBackup_SkipsSkippedComponents(t *testing.T) {
 	s3.addBackup("inst-1", "b-old", types.BackupStatusCompleted, now.Add(-2*time.Hour))
 	s3.addBackup("inst-1", "b-new", types.BackupStatusCompleted, now)
 	s3.mu.Lock()
+	// Runtime-skipped components stay in the map with SKIPPED status.
 	s3.backupHistory["inst-1"]["b-old"].Components = map[string]models.ComponentBackupInfo{
-		types.ComponentZeebe:         {Enabled: true, Status: types.ComponentStatusCompleted},
-		types.ComponentOperate:       {Enabled: false, Status: types.ComponentStatusSkipped},
-		types.ComponentTasklist:      {Enabled: true, Status: types.ComponentStatusSkipped},
-		types.ComponentOptimize:      {Enabled: false, Status: types.ComponentStatusSkipped},
-		types.ComponentElasticsearch: {Enabled: false, Status: types.ComponentStatusSkipped},
+		types.ComponentZeebe:    {Enabled: true, Status: types.ComponentStatusCompleted},
+		types.ComponentOperate:  {Enabled: true, Status: types.ComponentStatusSkipped},
+		types.ComponentTasklist: {Enabled: false, Status: types.ComponentStatusSkipped},
 	}
 	s3.mu.Unlock()
 
@@ -1026,16 +1051,19 @@ func TestDeleteBackup_SkipsSkippedComponents(t *testing.T) {
 	}
 }
 
-// An interrupted backup can leave artifacts it never recorded, so unrecorded
-// components are still purged.
-func TestDeleteBackup_PurgesComponentsMissingFromRecord(t *testing.T) {
+// The orchestrator seeds the component map with every ENABLED component before
+// any of them runs, so a component absent from the record was disabled at backup
+// time and owns no artifact. Purging it anyway would send DELETEs to components
+// this backup never touched.
+func TestDeleteBackup_DoesNotPurgeComponentsAbsentFromRecord(t *testing.T) {
 	mgr, s3, _, servers := newArtifactTestManager(t)
 	defer servers.Close()
 
 	s3.addIncomplete("inst-1", "b-inc", time.Now().Add(-2*time.Hour))
 	s3.mu.Lock()
+	// Only Zeebe was enabled; Operate/Tasklist/Optimize/ES are absent entirely.
 	s3.incomplete["inst-1"]["b-inc"].Components = map[string]models.ComponentBackupInfo{
-		types.ComponentZeebe: {Enabled: true, Status: types.ComponentStatusCompleted},
+		types.ComponentZeebe: {Enabled: true, Status: types.ComponentStatusRunning},
 	}
 	s3.mu.Unlock()
 
@@ -1043,8 +1071,60 @@ func TestDeleteBackup_PurgesComponentsMissingFromRecord(t *testing.T) {
 		t.Fatalf("DeleteBackup: %v", err)
 	}
 
-	if got := servers.recorded(); len(got) != 5 {
-		t.Errorf("expected all 5 components to be purged, got %v", got)
+	got := servers.recorded()
+	if len(got) != 1 || got[0] != "/zeebe/backups/b-inc" {
+		t.Errorf("expected only the recorded component to be purged, got %v", got)
+	}
+}
+
+// A record with no components at all cannot be purged safely: we cannot tell
+// what it wrote, so deleting the metadata would strand whatever exists.
+func TestDeleteBackup_RefusesRecordWithNoComponents(t *testing.T) {
+	mgr, s3, _, servers := newArtifactTestManager(t)
+	defer servers.Close()
+
+	s3.addBackup("inst-1", "b-bare", types.BackupStatusFailed, time.Now().Add(-2*time.Hour))
+	s3.mu.Lock()
+	s3.backupHistory["inst-1"]["b-bare"].Components = nil
+	s3.mu.Unlock()
+
+	err := mgr.DeleteBackup("inst-1", "b-bare", false)
+	if !errors.Is(err, utils.ErrBackupArtifactsRemain) {
+		t.Fatalf("expected ErrBackupArtifactsRemain, got %v", err)
+	}
+	if _, getErr := s3.GetBackupHistory("inst-1", "b-bare"); getErr != nil {
+		t.Error("expected the record to survive so it is not silently orphaned")
+	}
+	if len(servers.recorded()) != 0 {
+		t.Errorf("expected no DELETEs for an unidentifiable backup, got %v", servers.recorded())
+	}
+
+	// force is the documented escape hatch.
+	if err := mgr.DeleteBackup("inst-1", "b-bare", true); err != nil {
+		t.Fatalf("expected force to delete the bare record, got %v", err)
+	}
+}
+
+// Deleting a backup the orchestrator is still writing races it, so it is
+// refused outright — force does not apply.
+func TestDeleteBackup_RefusesRunningBackup(t *testing.T) {
+	mgr, s3, _, servers := newArtifactTestManager(t)
+	defer servers.Close()
+
+	s3.addBackup("inst-1", "b-running", types.BackupStatusRunning, time.Now())
+
+	for _, force := range []bool{false, true} {
+		err := mgr.DeleteBackup("inst-1", "b-running", force)
+		if !errors.Is(err, utils.ErrCannotDeleteRunningBackup) {
+			t.Fatalf("force=%v: expected ErrCannotDeleteRunningBackup, got %v", force, err)
+		}
+	}
+
+	if _, err := s3.GetBackupHistory("inst-1", "b-running"); err != nil {
+		t.Error("expected the running backup's record to survive")
+	}
+	if len(servers.recorded()) != 0 {
+		t.Errorf("expected no artifacts to be touched for a running backup, got %v", servers.recorded())
 	}
 }
 
@@ -1108,6 +1188,98 @@ func TestDeleteBackup_TreatsMissingArtifactsAsDeleted(t *testing.T) {
 	if err := mgr.DeleteBackup("inst-1", "b-old", false); err != nil {
 		t.Fatalf("expected 404s to count as deleted, got %v", err)
 	}
+}
+
+// Retention runs unattended, so it is the path where a silently orphaned
+// artifact is most likely to go unnoticed. It must hold the metadata record
+// back exactly like the manual path does.
+func TestApplyRetention_KeepsRecordWhenArtifactDeletionFails(t *testing.T) {
+	mgr, s3, _, servers := newArtifactTestManager(t)
+	defer servers.Close()
+	servers.setStatus(http.StatusInternalServerError)
+
+	now := time.Now()
+	for i, id := range []string{"b1", "b2", "b3"} {
+		s3.addBackup("inst-1", id, types.BackupStatusCompleted, now.Add(-time.Duration(3-i)*time.Hour))
+		s3.mu.Lock()
+		s3.backupHistory["inst-1"][id].Components = allComponentsCompleted()
+		s3.mu.Unlock()
+	}
+
+	instance := artifactInstance("inst-1", servers)
+	instance.SuccessRetention = 1
+	instance.FailureRetention = 1
+
+	result := mgr.ApplyRetention(instance)
+
+	if len(result.DeletedSuccessful) != 0 {
+		t.Errorf("expected no backups reported deleted when the purge failed, got %v", result.DeletedSuccessful)
+	}
+	if len(result.Errors) == 0 {
+		t.Error("expected the purge failures to be recorded on the result")
+	}
+	remaining, _ := s3.ListBackupHistory("inst-1", types.BackupStatusCompleted)
+	if len(remaining) != 3 {
+		t.Errorf("expected all 3 records to survive so retention can retry, got %d", len(remaining))
+	}
+}
+
+func TestApplyRetention_CleanupIncomplete_KeepsRecordWhenPurgeFails(t *testing.T) {
+	mgr, s3, _, servers := newArtifactTestManager(t)
+	defer servers.Close()
+	servers.setStatus(http.StatusInternalServerError)
+
+	now := time.Now()
+	s3.addBackup("inst-1", "b-completed", types.BackupStatusCompleted, now)
+	s3.addIncomplete("inst-1", "b-inc", now.Add(-2*time.Hour))
+	s3.mu.Lock()
+	s3.incomplete["inst-1"]["b-inc"].Components = allComponentsCompleted()
+	s3.mu.Unlock()
+
+	instance := artifactInstance("inst-1", servers)
+	result := mgr.ApplyRetention(instance)
+
+	if len(result.CleanedIncomplete) != 0 {
+		t.Errorf("expected the incomplete backup to be kept, got %v", result.CleanedIncomplete)
+	}
+	if _, err := s3.GetBackupHistory("inst-1", "b-inc"); err != nil {
+		t.Error("expected the incomplete record to survive a failed purge")
+	}
+}
+
+func TestApplyRetention_PrunesOnceArtifactsAreGone(t *testing.T) {
+	mgr, s3, _, servers := newArtifactTestManager(t)
+	defer servers.Close()
+
+	now := time.Now()
+	for i, id := range []string{"b1", "b2", "b3"} {
+		s3.addBackup("inst-1", id, types.BackupStatusCompleted, now.Add(-time.Duration(3-i)*time.Hour))
+		s3.mu.Lock()
+		s3.backupHistory["inst-1"][id].Components = allComponentsCompleted()
+		s3.mu.Unlock()
+	}
+
+	instance := artifactInstance("inst-1", servers)
+	instance.SuccessRetention = 1
+	instance.FailureRetention = 1
+
+	result := mgr.ApplyRetention(instance)
+
+	if len(result.DeletedSuccessful) != 2 {
+		t.Fatalf("expected 2 pruned backups, got %v (errors: %v)", result.DeletedSuccessful, result.Errors)
+	}
+	remaining, _ := s3.ListBackupHistory("inst-1", types.BackupStatusCompleted)
+	if len(remaining) != 1 || remaining[0].BackupID != "b3" {
+		t.Errorf("expected only the newest backup to remain, got %v", backupIDsOf(remaining))
+	}
+}
+
+func backupIDsOf(backups []*models.BackupHistory) []string {
+	ids := make([]string, 0, len(backups))
+	for _, b := range backups {
+		ids = append(ids, b.BackupID)
+	}
+	return ids
 }
 
 func TestApplyRetention_CleanupIncomplete_PurgesArtifacts(t *testing.T) {
