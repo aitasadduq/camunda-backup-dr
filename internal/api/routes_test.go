@@ -238,6 +238,50 @@ func TestRouter_DeleteBackup(t *testing.T) {
 	}
 }
 
+func TestRouter_BulkDeleteBackups(t *testing.T) {
+	router, cm, _, _, _, ret := newTestRouter()
+
+	cm.instances = []models.CamundaInstance{
+		{ID: "test-1", Name: "Test 1"},
+	}
+
+	body := strings.NewReader(`{"backup_ids":["20260320080000","20260321080000"]}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/camundas/test-1/backups/delete", body)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, w.Code, w.Body.String())
+	}
+	if len(ret.deletedBackups) != 2 {
+		t.Errorf("expected 2 deletion attempts, got %v", ret.deletedBackups)
+	}
+}
+
+// The bulk path is a reserved sub-path of the collection. Without its own case
+// it would fall through to the single-backup route, which would read "delete" as
+// a backup ID and try to delete a backup by that name.
+func TestRouter_BulkDeletePathIsNotABackupID(t *testing.T) {
+	router, cm, _, _, _, ret := newTestRouter()
+
+	cm.instances = []models.CamundaInstance{
+		{ID: "test-1", Name: "Test 1"},
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/camundas/test-1/backups/delete", nil)
+	w := httptest.NewRecorder()
+
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusMethodNotAllowed, w.Code, w.Body.String())
+	}
+	if len(ret.deletedBackups) != 0 {
+		t.Errorf(`expected no attempt to delete a backup named "delete", got %v`, ret.deletedBackups)
+	}
+}
+
 func TestRouter_ListOrphanedBackups(t *testing.T) {
 	router, cm, _, _, _, _ := newTestRouter()
 

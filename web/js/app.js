@@ -1395,6 +1395,8 @@ function renderBackupsTable(instanceId, backups, opts = {}) {
     // history, so their freshness and completeness need saying somewhere.
     if (opts.scanNote) header = renderScanNote() + header;
 
+    syncSelectionToRows(instanceId, backups);
+
     if (backups.length === 0) {
         const report = opts.report;
         const partial = report && !Object.values(report.sources_checked || {})
@@ -1418,10 +1420,17 @@ function renderBackupsTable(instanceId, backups, opts = {}) {
     }
 
     el.innerHTML = header + `
+        <div id="backups-bulk-bar">${renderBulkBar(instanceId)}</div>
         <div class="overflow-x-auto">
             <table class="data-table">
                 <thead>
                     <tr>
+                        <th class="col-select">
+                            ${backups.some(isBackupDeletable) ? `
+                            <input type="checkbox" id="backups-select-all" class="row-select"
+                                onchange="toggleSelectAllBackups('${escapeForInlineHandler(instanceId)}', this.checked)"
+                                aria-label="Select all deletable backups">` : ''}
+                        </th>
                         <th>Backup ID</th>
                         <th>Start Time</th>
                         <th class="hidden sm:table-cell">End Time</th>
@@ -1435,6 +1444,13 @@ function renderBackupsTable(instanceId, backups, opts = {}) {
                 <tbody>
                     ${backups.map(b => `
                         <tr>
+                            <td class="col-select">
+                                ${isBackupDeletable(b) ? `
+                                <input type="checkbox" class="row-select" value="${escapeHtml(b.backup_id)}"
+                                    ${backupSelection.has(b.backup_id) ? 'checked' : ''}
+                                    onchange="toggleBackupSelection('${escapeForInlineHandler(instanceId)}', '${escapeForInlineHandler(b.backup_id)}', this.checked)"
+                                    aria-label="Select backup ${escapeHtml(b.backup_id)}">` : ''}
+                            </td>
                             <td class="font-mono text-xs font-medium text-gray-900">${escapeHtml(b.backup_id)}</td>
                             <td class="text-xs text-gray-500">${b.start_time ? formatTime(b.start_time) : '—'}</td>
                             <td class="hidden sm:table-cell text-xs text-gray-500">${b.end_time ? formatTime(b.end_time) : '—'}</td>
@@ -1460,8 +1476,9 @@ function renderBackupsTable(instanceId, backups, opts = {}) {
                                         class="p-1 text-gray-400 hover:text-green-600 transition-colors">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                                     </button>`}
-                                    ${['FAILED', 'INCOMPLETE', 'COMPLETED'].includes(b.status) ? `
-                                    <button onclick="confirmDeleteBackup('${escapeForInlineHandler(instanceId)}', '${escapeForInlineHandler(b.backup_id)}')" title="Delete"
+                                    ${isBackupDeletable(b) ? `
+                                    <button onclick="confirmDeleteBackup('${escapeForInlineHandler(instanceId)}', '${escapeForInlineHandler(b.backup_id)}', '${escapeForInlineHandler(b.status)}')"
+                                        title="${b.status === 'ORPHANED' ? 'Delete leftover data' : 'Delete'}"
                                         class="p-1 text-gray-400 hover:text-red-600 transition-colors">
                                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                                     </button>` : ''}
@@ -1587,18 +1604,144 @@ async function viewBackupLogs(instanceId, backupId) {
     }
 }
 
-async function confirmDeleteBackup(instanceId, backupId) {
-    const confirmed = await showConfirm(
-        `Delete backup ${backupId}? This removes the snapshot from Elasticsearch and every Camunda component as well. This action cannot be undone.`
-    );
+// ============================================================
+// Backup Selection
+// ============================================================
+/**
+ * Backups the user has ticked, and the instance they belong to. A tick only
+ * means something against the rows it was made on, so the set is pruned to the
+ * visible rows on every render rather than accumulating across reloads.
+ */
+let backupSelection = new Set();
+let backupSelectionInstanceId = null;
+
+/**
+ * Status by backup ID for the rows currently rendered. The delete confirmation
+ * summarises a selection from this, so it can say "3 completed, 1 orphaned"
+ * without re-fetching rows the user is already looking at.
+ */
+let renderedBackupStatus = new Map();
+
+// A backup ID the controller could have issued: GenerateBackupID formats one as
+// YYYYMMDDHHMMSS and nothing else ever creates a record.
+function isBackupIdShaped(backupId) {
+    return /^\d{14}$/.test(backupId || '');
+}
+
+// Which rows offer a delete action.
+//
+// RUNNING is never deletable: it races the orchestrator, which would go on to
+// finish creating the artifacts just removed. An orphan is only deletable when
+// its ID is in the controller's own format — an orphan named anything else was
+// reported by a component rather than issued by the controller, and the server
+// refuses to build a DELETE from it. Those rows still show the exact command in
+// their detail view, for an operator to run deliberately.
+function isBackupDeletable(backup) {
+    if (backup.status === 'RUNNING') return false;
+    if (backup.status === 'ORPHANED') return isBackupIdShaped(backup.backup_id);
+    return ['FAILED', 'INCOMPLETE', 'COMPLETED'].includes(backup.status);
+}
+
+// Drops ticks that no longer refer to a visible row, so a bulk request can never
+// carry a backup the user cannot currently see.
+function syncSelectionToRows(instanceId, backups) {
+    if (backupSelectionInstanceId !== instanceId) {
+        backupSelection = new Set();
+        backupSelectionInstanceId = instanceId;
+    }
+    const selectable = new Set(backups.filter(isBackupDeletable).map(b => b.backup_id));
+    backupSelection = new Set([...backupSelection].filter(id => selectable.has(id)));
+    renderedBackupStatus = new Map(backups.map(b => [b.backup_id, b.status]));
+}
+
+function renderBulkBar(instanceId) {
+    const count = backupSelection.size;
+    if (count === 0) return '';
+    return `
+        <div class="bulk-bar">
+            <span class="bulk-bar-count">${count} selected</span>
+            <button type="button" onclick="confirmDeleteSelectedBackups('${escapeForInlineHandler(instanceId)}')"
+                class="bulk-bar-delete">Delete selected</button>
+            <button type="button" onclick="clearBackupSelection(true)" class="bulk-bar-clear">Clear</button>
+        </div>
+    `;
+}
+
+// Refreshes the bar and the header checkbox in place. Re-rendering the whole
+// table on every tick would reset the scroll position mid-selection.
+function updateBulkBar(instanceId) {
+    const bar = document.getElementById('backups-bulk-bar');
+    if (bar) bar.innerHTML = renderBulkBar(instanceId);
+
+    const selectAll = document.getElementById('backups-select-all');
+    if (!selectAll) return;
+    const boxes = rowCheckboxes();
+    const checked = boxes.filter(box => box.checked).length;
+    selectAll.checked = boxes.length > 0 && checked === boxes.length;
+    selectAll.indeterminate = checked > 0 && checked < boxes.length;
+}
+
+// The per-row checkboxes only. The header's select-all carries no value
+// attribute, which is what keeps it out of this list.
+function rowCheckboxes() {
+    return [...document.querySelectorAll('#backups-table-container input.row-select[value]')];
+}
+
+function toggleBackupSelection(instanceId, backupId, checked) {
+    backupSelectionInstanceId = instanceId;
+    if (checked) backupSelection.add(backupId);
+    else backupSelection.delete(backupId);
+    updateBulkBar(instanceId);
+}
+
+function toggleSelectAllBackups(instanceId, checked) {
+    const boxes = rowCheckboxes();
+    boxes.forEach(box => { box.checked = checked; });
+    backupSelectionInstanceId = instanceId;
+    backupSelection = checked ? new Set(boxes.map(box => box.value)) : new Set();
+    updateBulkBar(instanceId);
+}
+
+function clearBackupSelection(syncDom = false) {
+    backupSelection = new Set();
+    if (!syncDom) return;
+    document.querySelectorAll('#backups-table-container input.row-select').forEach(box => {
+        box.checked = false;
+        box.indeterminate = false;
+    });
+    updateBulkBar(backupSelectionInstanceId);
+}
+
+// ============================================================
+// Backup Deletion
+// ============================================================
+async function confirmDeleteBackup(instanceId, backupId, status) {
+    const orphan = status === 'ORPHANED';
+    const message = orphan
+        ? `Delete orphaned backup ${backupId}? This removes the leftover data from every component and snapshot the last scan found it in. The controller has no record of this backup, so it cannot be restored afterwards.`
+        : `Delete backup ${backupId}? This removes the snapshot from Elasticsearch and every Camunda component as well. This action cannot be undone.`;
+
+    const confirmed = await showConfirm(message);
     if (!confirmed) return;
 
     try {
         await api.del(`api/camundas/${instanceId}/backups/${backupId}`);
-        showToast('Backup deleted everywhere', 'success');
-        loadBackups(instanceId, state.backupFilter);
+        showToast(orphan ? 'Orphaned data deleted' : 'Backup deleted everywhere', 'success');
+        await reloadAfterDelete(instanceId, [backupId], orphan);
         return;
     } catch (err) {
+        // An orphan has no controller record, so force — which drops exactly
+        // that record — means nothing here and is not offered. A partial
+        // failure still removed some artifacts, though, so the scan behind the
+        // row is stale and has to be redone.
+        if (orphan) {
+            showToast(err.message || 'Failed to delete orphaned data', 'error');
+            if (err.errorType === 'artifacts_remain') {
+                await reloadAfterDelete(instanceId, [], true);
+            }
+            return;
+        }
+
         // The backup was left in place because some of its data could not be
         // deleted. Offer to drop the controller's record anyway — the leftovers
         // then show up as orphans in the reconcile report.
@@ -1622,10 +1765,192 @@ async function forceDeleteBackup(instanceId, backupId, reason) {
     try {
         await api.del(`api/camundas/${instanceId}/backups/${backupId}?force=true`);
         showToast('Backup record removed; leftover data reported as orphaned', 'warning');
-        loadBackups(instanceId, state.backupFilter);
+        await reloadAfterDelete(instanceId, [backupId], false);
     } catch (err) {
         showToast(err.message || 'Failed to delete backup', 'error');
     }
+}
+
+async function confirmDeleteSelectedBackups(instanceId) {
+    const ids = [...backupSelection];
+    if (ids.length === 0) return;
+
+    // One tick is the same act as clicking that row's delete button, including
+    // the force-retry it offers, so it goes down the same path.
+    if (ids.length === 1) {
+        await confirmDeleteBackup(instanceId, ids[0], renderedBackupStatus.get(ids[0]));
+        return;
+    }
+
+    const confirmed = await showConfirm(
+        `Delete ${ids.length} backups? Each one is removed from Elasticsearch and every Camunda component as well. This action cannot be undone.`,
+        { detailsHtml: renderSelectionSummary(ids), confirmLabel: `Delete ${ids.length}` }
+    );
+    if (!confirmed) return;
+
+    await runBulkDelete(instanceId, ids);
+}
+
+// What is actually about to be deleted, broken down by status. A bare count does
+// not tell the user that three of their seven ticks were orphans — the case
+// where the deletion removes data the controller cannot describe, and which no
+// amount of re-running a backup brings back.
+function renderSelectionSummary(ids) {
+    const counts = new Map();
+    ids.forEach(id => {
+        const status = renderedBackupStatus.get(id) || 'UNKNOWN';
+        counts.set(status, (counts.get(status) || 0) + 1);
+    });
+
+    const rows = [...counts.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .map(([status, count]) => `
+            <li>
+                <span class="badge badge-${escapeHtml(status.toLowerCase())}">${escapeHtml(status)}</span>
+                <span class="delete-summary-count">${count}</span>
+            </li>
+        `).join('');
+
+    const orphans = counts.get('ORPHANED') || 0;
+    const note = orphans
+        ? `<p class="delete-summary-note">${orphans === 1 ? 'One of these is an orphan' : `${orphans} of these are orphans`}: leftover data with no controller record. Only what the last scan could actually see will be removed.</p>`
+        : '';
+
+    return `<ul class="delete-summary">${rows}</ul>${note}`;
+}
+
+// Deletes a batch, then offers the one recovery the server leaves open: backups
+// held back because their artifacts survived can still have their controller
+// record dropped, which is what force does.
+async function runBulkDelete(instanceId, ids) {
+    const first = await postBulkDelete(instanceId, ids, false);
+    if (!first) return;
+
+    let deleted = first.deleted || [];
+    let failed = first.failed || [];
+
+    // Only tracked backups are retryable. force drops a controller record, and
+    // an orphan has none, so offering it there would promise nothing.
+    const retryable = failed
+        .filter(f => f.error === 'artifacts_remain' && renderedBackupStatus.get(f.backup_id) !== 'ORPHANED')
+        .map(f => f.backup_id);
+
+    // Only the retryable failures go in the prompt. Listing a safety refusal
+    // beside them would imply that confirming overrides it, which it does not —
+    // those are reported afterwards with everything else that survived.
+    const retryableFailures = failed.filter(f => retryable.includes(f.backup_id));
+
+    if (retryable.length > 0 && await confirmForceRetry(retryableFailures)) {
+        const second = await postBulkDelete(instanceId, retryable, true);
+        if (second) {
+            deleted = deleted.concat(second.deleted || []);
+            failed = failed
+                .filter(f => !retryable.includes(f.backup_id))
+                .concat(second.failed || []);
+        }
+    }
+
+    // A partial failure removed some of an orphan's artifacts, so the scan
+    // behind that row is just as stale as the scan behind one that went fully.
+    const touchedOrphan = deleted
+        .concat(failed.filter(f => f.error === 'artifacts_remain').map(f => f.backup_id))
+        .some(id => renderedBackupStatus.get(id) === 'ORPHANED');
+
+    reportBulkDeleteOutcome(deleted, failed);
+    await reloadAfterDelete(instanceId, deleted, touchedOrphan);
+}
+
+async function postBulkDelete(instanceId, ids, force) {
+    try {
+        return await api.post(`api/camundas/${instanceId}/backups/delete`, { backup_ids: ids, force });
+    } catch (err) {
+        showToast(err.message || 'Failed to delete backups', 'error');
+        return null;
+    }
+}
+
+function confirmForceRetry(retryableFailures) {
+    const message = retryableFailures.length === 1
+        ? 'One backup was left in place because some of its data could not be deleted. Remove it from the controller anyway? The data left behind will be reported as orphaned.'
+        : `${retryableFailures.length} backups were left in place because some of their data could not be deleted. Remove them from the controller anyway? The data left behind will be reported as orphaned.`;
+
+    return showConfirm(message, {
+        detailsHtml: renderDeleteFailureList(retryableFailures),
+        confirmLabel: 'Remove records',
+    });
+}
+
+// A batch is not all-or-nothing, so a single toast cannot carry the result. The
+// counts go in the toast and the reasons go in a modal, one line per backup.
+function reportBulkDeleteOutcome(deleted, failed) {
+    if (failed.length === 0) {
+        showToast(`Deleted ${deleted.length} backups everywhere`, 'success');
+        return;
+    }
+    if (deleted.length > 0) {
+        showToast(`Deleted ${deleted.length}; ${failed.length} left in place`, 'warning');
+    } else {
+        showToast(`Nothing deleted; ${failed.length} left in place`, 'error');
+    }
+    showModal(renderDeleteFailureModal(failed));
+}
+
+function renderDeleteFailureList(failed) {
+    return `
+        <ul class="delete-summary">
+            ${failed.map(f => `
+                <li class="delete-failure">
+                    <span class="font-mono text-xs">${escapeHtml(f.backup_id)}</span>
+                    <span class="delete-summary-note">${escapeHtml(f.message || f.error || 'Unknown error')}</span>
+                </li>
+            `).join('')}
+        </ul>
+    `;
+}
+
+function renderDeleteFailureModal(failed) {
+    return `
+        <div class="bg-white rounded-xl shadow-xl delete-failure-modal">
+            <div class="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+                <h2 class="text-lg font-semibold text-gray-900">Backups left in place</h2>
+                <button onclick="closeModal()" class="text-gray-400 hover:text-gray-600">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+            <div class="px-6 py-4">
+                <p class="text-sm text-gray-500 mb-3">
+                    These backups were not deleted. Their data is still where it was, so
+                    the deletion can be retried once the cause is resolved.
+                </p>
+                ${renderDeleteFailureList(failed)}
+            </div>
+            <div class="px-6 py-4 border-t border-gray-200 flex justify-end">
+                <button onclick="closeModal()" class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700">
+                    Close
+                </button>
+            </div>
+        </div>
+    `;
+}
+
+// After a deletion the cached scan is stale: it still lists artifacts that are
+// now gone. Orphan rows come from that scan and from nothing else, so deleting
+// one has to be followed by a fresh sweep — otherwise the row reappears the next
+// time the stored report is read. Tracked rows come from backup history, which
+// is already authoritative, so those only need the stale findings pruned.
+async function reloadAfterDelete(instanceId, deletedIds, deletedOrphan) {
+    clearBackupSelection();
+
+    if (deletedOrphan) {
+        await refreshBackups();
+        return;
+    }
+
+    if (reconcileReport?.backup_issues && deletedIds.length > 0) {
+        const gone = new Set(deletedIds);
+        reconcileReport.backup_issues = reconcileReport.backup_issues.filter(i => !gone.has(i.backup_id));
+    }
+    await loadBackups(instanceId, state.backupFilter);
 }
 
 // ============================================================
@@ -1633,6 +1958,15 @@ async function forceDeleteBackup(instanceId, backupId, reason) {
 // ============================================================
 /** Element that held focus before the modal opened, restored on close. */
 let _priorFocusEl = null;
+
+/**
+ * Pending "blank the panel" timer from closeModal. One dialog can lead straight
+ * into another — a delete that needs a force confirmation, a batch that reports
+ * what it could not delete — and the second one opens well inside the closing
+ * transition. Without cancelling this, that timer fires afterwards and empties
+ * the dialog the user is now looking at.
+ */
+let _modalClearTimer = null;
 
 function initModalListeners() {
     // Backdrop click — use delegation on the backdrop element itself
@@ -1702,6 +2036,11 @@ function showModal(contentHtml) {
     // Remember the element that had focus so we can restore it later
     _priorFocusEl = document.activeElement;
 
+    if (_modalClearTimer) {
+        clearTimeout(_modalClearTimer);
+        _modalClearTimer = null;
+    }
+
     panel.innerHTML = contentHtml;
 
     // Ensure the panel is marked as a dialog for assistive tech
@@ -1734,7 +2073,10 @@ function closeModal() {
     panel.removeAttribute('role');
     panel.removeAttribute('aria-modal');
 
-    setTimeout(() => { panel.innerHTML = ''; }, MODAL_TRANSITION_MS);
+    _modalClearTimer = setTimeout(() => {
+        panel.innerHTML = '';
+        _modalClearTimer = null;
+    }, MODAL_TRANSITION_MS);
 
     // Restore focus to the element that was focused before the modal opened
     if (_priorFocusEl && typeof _priorFocusEl.focus === 'function') {
@@ -1750,7 +2092,14 @@ function closeModal() {
 // ============================================================
 let _pendingConfirm = null;
 
-function showConfirm(message) {
+/**
+ * Asks the user to confirm a destructive action.
+ *
+ * detailsHtml is markup this module builds itself — a status breakdown, a list
+ * of failures — and is inserted as-is, so every value inside it must already be
+ * escaped by its builder. message is plain text and is escaped here.
+ */
+function showConfirm(message, { detailsHtml = '', confirmLabel = 'Delete' } = {}) {
     // If a confirm is already pending, reject it before opening a new one
     if (_pendingConfirm) {
         _pendingConfirm.resolve(false);
@@ -1763,7 +2112,7 @@ function showConfirm(message) {
         _pendingConfirm = { id: confirmId, resolve };
 
         const html = `
-            <div class="bg-white rounded-xl shadow-xl w-full max-w-sm">
+            <div class="bg-white rounded-xl shadow-xl confirm-panel">
                 <div class="p-6">
                     <div class="flex items-center gap-3 mb-4">
                         <div class="flex-shrink-0 w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
@@ -1771,9 +2120,10 @@ function showConfirm(message) {
                         </div>
                         <p class="text-sm text-gray-700">${escapeHtml(message)}</p>
                     </div>
+                    ${detailsHtml ? `<div class="mb-4">${detailsHtml}</div>` : ''}
                     <div class="flex justify-end gap-2">
                         <button onclick="resolveConfirm(false)" class="px-3 py-1.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50">Cancel</button>
-                        <button onclick="resolveConfirm(true)" class="px-3 py-1.5 text-sm font-medium text-white bg-red-600 rounded-md hover:bg-red-700">Delete</button>
+                        <button onclick="resolveConfirm(true)" class="px-3 py-1.5 text-sm font-medium text-white bg-red-600 rounded-md hover:bg-red-700">${escapeHtml(confirmLabel)}</button>
                     </div>
                 </div>
             </div>
@@ -2046,6 +2396,11 @@ function groupFindingsByReason(reasons) {
 // action that goes through the retention manager and its never-delete-the-most-
 // recent-backup guard; offering raw DELETE calls alongside it would invite the
 // user to route around that check.
+//
+// An orphan has a Delete action too, but the commands stay useful next to it:
+// the controller deletes an orphan only from the sources the last scan could
+// actually reach, and it refuses backup IDs it could not have issued itself.
+// Those leftovers are removable by hand and by nothing else.
 function renderFindingCards(issue, { showCommands = false } = {}) {
     const groups = groupFindingsByReason(issue.reasons);
     const cmds = showCommands ? remediationCommands(issue) : [];
@@ -2070,8 +2425,8 @@ function renderFindingCards(issue, { showCommands = false } = {}) {
         `;
     }).join('') + (cmds.length ? `
         <div class="border border-gray-200 rounded-md p-3 bg-white">
-            <div class="text-sm font-medium mb-1">Commands to remove it</div>
-            <p class="text-xs text-gray-500 mb-1">The controller will not run these. Confirm the backup is not needed first.</p>
+            <div class="text-sm font-medium mb-1">Commands to remove it by hand</div>
+            <p class="text-xs text-gray-500 mb-1">Delete covers the sources this scan could reach. Run these to remove anything it could not, and confirm the backup is not needed first.</p>
             ${cmds.map(c => `<code class="reconcile-remediation">${escapeHtml(c)}</code>`).join('')}
         </div>
     ` : '');
@@ -2285,6 +2640,7 @@ function showOrphanedBackupDetail(instanceId, backupId) {
     }
 
     const findings = renderFindingCards(issue, { showCommands: true });
+    const deletable = isBackupIdShaped(backupId);
 
     const sourceList = (names, cls, mark) =>
         (names || []).map(n => `<span class="source-chip ${cls}">${mark} ${escapeHtml(n)}</span>`).join(' ');
@@ -2335,7 +2691,16 @@ function showOrphanedBackupDetail(instanceId, backupId) {
                     <p class="text-xs text-gray-500 mt-1">Explained by the findings above, so not reported separately.</p>
                 </div>` : ''}
             </div>
-            <div class="px-6 py-4 border-t border-gray-200 flex justify-end">
+            <div class="px-6 py-4 border-t border-gray-200 flex justify-between gap-2">
+                ${deletable ? `
+                <button onclick="closeModal(); confirmDeleteBackup('${escapeForInlineHandler(instanceId)}', '${escapeForInlineHandler(backupId)}', 'ORPHANED')"
+                    class="px-3 py-1.5 text-sm font-medium text-white bg-red-600 rounded-md hover:bg-red-700">
+                    Delete leftover data
+                </button>` : `
+                <p class="text-xs text-gray-500">
+                    This backup ID is not in the controller's format, so it was reported by a
+                    component rather than issued here. Remove it with the commands above.
+                </p>`}
                 <button onclick="closeModal()" class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700">
                     Close
                 </button>

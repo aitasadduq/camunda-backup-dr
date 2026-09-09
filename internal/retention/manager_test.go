@@ -1357,10 +1357,10 @@ func TestDeleteComponentBackup_AlertsOnBadStatus(t *testing.T) {
 
 	now := time.Now()
 	instance := &models.CamundaInstance{
-		ID:                    "inst-1",
-		SuccessRetention:      1,
-		FailureRetention:      1,
-		ZeebeBackupEndpoint:   componentServer.URL + "/zeebe",
+		ID:                  "inst-1",
+		SuccessRetention:    1,
+		FailureRetention:    1,
+		ZeebeBackupEndpoint: componentServer.URL + "/zeebe",
 	}
 
 	// Add 3 completed backups so retention prunes the oldest
@@ -1409,10 +1409,10 @@ func TestDeleteComponentBackup_NoAlertWhenAlerterNil(t *testing.T) {
 
 	now := time.Now()
 	instance := &models.CamundaInstance{
-		ID:                    "inst-1",
-		SuccessRetention:      1,
-		FailureRetention:      1,
-		ZeebeBackupEndpoint:   componentServer.URL + "/zeebe",
+		ID:                  "inst-1",
+		SuccessRetention:    1,
+		FailureRetention:    1,
+		ZeebeBackupEndpoint: componentServer.URL + "/zeebe",
 	}
 
 	s3.addBackup("inst-1", "b1", types.BackupStatusCompleted, now.Add(-2*time.Hour))
@@ -1470,11 +1470,11 @@ func TestDeleteESSnapshot_AlertsOnError(t *testing.T) {
 
 	now := time.Now()
 	instance := &models.CamundaInstance{
-		ID:                      "inst-1",
-		SuccessRetention:        1,
-		FailureRetention:        1,
-		ElasticsearchEndpoint:   esServer.URL,
-		ElasticsearchUsername:   "elastic",
+		ID:                    "inst-1",
+		SuccessRetention:      1,
+		FailureRetention:      1,
+		ElasticsearchEndpoint: esServer.URL,
+		ElasticsearchUsername: "elastic",
 	}
 
 	// Add 2 completed backups with ES component so oldest gets pruned
@@ -1582,4 +1582,257 @@ func (m *mockS3Storage) StoreReconcileReport(camundaInstanceID string, report []
 
 func (m *mockS3Storage) GetLatestReconcileReport(camundaInstanceID string) ([]byte, error) {
 	return nil, utils.ErrBackupNotFound
+}
+
+// --- DeleteOrphan ---
+
+// orphanTestEnv wires a manager against live component and Elasticsearch stubs,
+// recording every DELETE they receive so a test can assert exactly which
+// artifacts were addressed.
+type orphanTestEnv struct {
+	mgr       *Manager
+	s3        *mockS3Storage
+	fs        *mockFileStorage
+	instances *mockInstanceProvider
+	instance  *models.CamundaInstance
+
+	mu      sync.Mutex
+	deletes []string
+	status  int
+}
+
+func newOrphanTestEnv(t *testing.T) *orphanTestEnv {
+	t.Helper()
+
+	env := &orphanTestEnv{status: http.StatusNoContent}
+	record := func(w http.ResponseWriter, r *http.Request) {
+		env.mu.Lock()
+		if r.Method == http.MethodDelete {
+			env.deletes = append(env.deletes, r.URL.Path)
+		}
+		status := env.status
+		env.mu.Unlock()
+
+		// Elasticsearch answers a snapshot delete with 200 and an
+		// acknowledgement, not the 204 a component backup delete returns, and
+		// the client checks for exactly that.
+		if status == http.StatusNoContent && strings.HasPrefix(r.URL.Path, "/_snapshot/") {
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]bool{"acknowledged": true})
+			return
+		}
+		w.WriteHeader(status)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(record))
+	t.Cleanup(server.Close)
+
+	logger := utils.NewLogger("debug")
+	httpClient := camunda.NewHTTPClient(camunda.HTTPClientConfig{
+		Timeout:    5 * time.Second,
+		MaxRetries: 0,
+	}, logger)
+
+	env.s3 = newMockS3Storage()
+	env.fs = newMockFileStorage()
+	env.mgr = NewManager(env.s3, env.fs, httpClient, &config.Config{DefaultElasticsearchSnapshotRepository: "camunda-backup"}, logger)
+
+	env.instance = &models.CamundaInstance{
+		ID:                    "inst-1",
+		ZeebeBackupEndpoint:   server.URL + "/zeebe/actuator/backups",
+		OperateBackupEndpoint: server.URL + "/operate/actuator/backups",
+		ElasticsearchEndpoint: server.URL,
+	}
+	env.instances = newMockInstanceProvider()
+	env.instances.instances["inst-1"] = env.instance
+	env.mgr.SetInstanceProvider(env.instances)
+
+	return env
+}
+
+func (e *orphanTestEnv) recorded() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := append([]string(nil), e.deletes...)
+	sort.Strings(out)
+	return out
+}
+
+func (e *orphanTestEnv) failComponents(status int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.status = status
+}
+
+func TestDeleteOrphan_DeletesOnlyWhatTheSweepFound(t *testing.T) {
+	env := newOrphanTestEnv(t)
+	env.fs.logFiles["inst-1"] = []string{"20260320080000"}
+
+	err := env.mgr.DeleteOrphan("inst-1", OrphanArtifacts{
+		BackupID:      "20260320080000",
+		Components:    []string{types.ComponentZeebe},
+		SnapshotNames: []string{"camunda-20260320080000"},
+		Repository:    "camunda-backup",
+	})
+	if err != nil {
+		t.Fatalf("DeleteOrphan: %v", err)
+	}
+
+	got := env.recorded()
+	want := []string{
+		"/_snapshot/camunda-backup/camunda-20260320080000",
+		"/zeebe/actuator/backups/20260320080000",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("expected %v, got %v", want, got)
+		}
+	}
+
+	// Operate was not in the sweep's findings, so it must not have been asked.
+	for _, path := range got {
+		if strings.Contains(path, "/operate/") {
+			t.Errorf("deleted from Operate, which the sweep never found: %v", got)
+		}
+	}
+
+	if len(env.fs.logFiles["inst-1"]) != 0 {
+		t.Errorf("expected the stray log file to be removed, got %v", env.fs.logFiles["inst-1"])
+	}
+}
+
+// The snapshot name comes from the report, never from the backup ID: a
+// configured name prefix makes the snapshot unaddressable by ID alone.
+func TestDeleteOrphan_UsesReportedSnapshotName(t *testing.T) {
+	env := newOrphanTestEnv(t)
+
+	err := env.mgr.DeleteOrphan("inst-1", OrphanArtifacts{
+		BackupID:      "20260320080000",
+		SnapshotNames: []string{"prod-prefix-20260320080000"},
+		Repository:    "other-repo",
+	})
+	if err != nil {
+		t.Fatalf("DeleteOrphan: %v", err)
+	}
+
+	got := env.recorded()
+	if len(got) != 1 || got[0] != "/_snapshot/other-repo/prod-prefix-20260320080000" {
+		t.Fatalf("expected the reported snapshot name to be deleted, got %v", got)
+	}
+}
+
+// A record appearing between the sweep and the deletion means this is no longer
+// an orphan, and the guards that only DeleteBackup applies would be skipped.
+func TestDeleteOrphan_RefusesWhenRecordAppeared(t *testing.T) {
+	env := newOrphanTestEnv(t)
+	env.s3.addBackup("inst-1", "20260320080000", types.BackupStatusCompleted, time.Now())
+
+	err := env.mgr.DeleteOrphan("inst-1", OrphanArtifacts{
+		BackupID:   "20260320080000",
+		Components: []string{types.ComponentZeebe},
+	})
+	if !errors.Is(err, utils.ErrOrphanRecordAppeared) {
+		t.Fatalf("expected ErrOrphanRecordAppeared, got %v", err)
+	}
+	if got := env.recorded(); len(got) != 0 {
+		t.Errorf("expected nothing to be deleted, got %v", got)
+	}
+}
+
+func TestDeleteOrphan_RefusesWithNoArtifactsNamed(t *testing.T) {
+	env := newOrphanTestEnv(t)
+
+	err := env.mgr.DeleteOrphan("inst-1", OrphanArtifacts{BackupID: "20260320080000"})
+	if !errors.Is(err, utils.ErrOrphanArtifactsUnidentifiable) {
+		t.Fatalf("expected ErrOrphanArtifactsUnidentifiable, got %v", err)
+	}
+	if got := env.recorded(); len(got) != 0 {
+		t.Errorf("expected nothing to be deleted, got %v", got)
+	}
+}
+
+func TestDeleteOrphan_ReportsSurvivingArtifacts(t *testing.T) {
+	env := newOrphanTestEnv(t)
+	env.failComponents(http.StatusInternalServerError)
+
+	err := env.mgr.DeleteOrphan("inst-1", OrphanArtifacts{
+		BackupID:   "20260320080000",
+		Components: []string{types.ComponentZeebe},
+	})
+	if !errors.Is(err, utils.ErrBackupArtifactsRemain) {
+		t.Fatalf("expected ErrBackupArtifactsRemain, got %v", err)
+	}
+}
+
+// A component with no endpoint configured cannot be deleted from, and saying so
+// is the only honest answer: reporting success would hide the leftover.
+func TestDeleteOrphan_ReportsUnconfiguredComponent(t *testing.T) {
+	env := newOrphanTestEnv(t)
+
+	err := env.mgr.DeleteOrphan("inst-1", OrphanArtifacts{
+		BackupID:   "20260320080000",
+		Components: []string{types.ComponentTasklist},
+	})
+	if !errors.Is(err, utils.ErrBackupArtifactsRemain) {
+		t.Fatalf("expected ErrBackupArtifactsRemain, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "no tasklist backup endpoint configured") {
+		t.Errorf("expected the message to name the missing endpoint, got %v", err)
+	}
+}
+
+// Elasticsearch is not a component with a backup endpoint. Naming it as one is a
+// caller bug, and it has to fail loudly rather than being skipped in silence.
+func TestDeleteOrphan_RejectsElasticsearchAsComponent(t *testing.T) {
+	env := newOrphanTestEnv(t)
+
+	err := env.mgr.DeleteOrphan("inst-1", OrphanArtifacts{
+		BackupID:   "20260320080000",
+		Components: []string{types.ComponentElasticsearch},
+	})
+	if !errors.Is(err, utils.ErrBackupArtifactsRemain) {
+		t.Fatalf("expected ErrBackupArtifactsRemain, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "unknown component") {
+		t.Errorf("expected an unknown-component message, got %v", err)
+	}
+}
+
+// A component answering 404 counts as deleted: the goal is the artifact's
+// absence, not the act of removing it.
+func TestDeleteOrphan_TreatsMissingArtifactAsDeleted(t *testing.T) {
+	env := newOrphanTestEnv(t)
+	env.failComponents(http.StatusNotFound)
+
+	err := env.mgr.DeleteOrphan("inst-1", OrphanArtifacts{
+		BackupID:   "20260320080000",
+		Components: []string{types.ComponentZeebe, types.ComponentOperate},
+	})
+	if err != nil {
+		t.Fatalf("expected a 404 to count as deleted, got %v", err)
+	}
+}
+
+func TestDeleteOrphan_RequiresBackupID(t *testing.T) {
+	env := newOrphanTestEnv(t)
+
+	if err := env.mgr.DeleteOrphan("inst-1", OrphanArtifacts{Components: []string{types.ComponentZeebe}}); err == nil {
+		t.Fatal("expected an error for an empty backup ID")
+	}
+}
+
+func TestDeleteOrphan_NoInstanceProvider(t *testing.T) {
+	env := newOrphanTestEnv(t)
+	env.mgr.SetInstanceProvider(nil)
+
+	err := env.mgr.DeleteOrphan("inst-1", OrphanArtifacts{
+		BackupID:   "20260320080000",
+		Components: []string{types.ComponentZeebe},
+	})
+	if !errors.Is(err, utils.ErrInstanceProviderNotConfigured) {
+		t.Fatalf("expected ErrInstanceProviderNotConfigured, got %v", err)
+	}
 }

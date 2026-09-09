@@ -33,7 +33,14 @@ its underlying snapshots are gone.
 ## 2. How detection works
 
 A **sweep** enumerates every source, joins them on the backup ID, and reports
-where they disagree. It is strictly **report-only** — it never deletes anything.
+where they disagree. The sweep itself is strictly **report-only** — it never
+deletes anything, and nothing it concludes causes a deletion on its own.
+
+Acting on a finding is a separate, explicit act by a person, carried out by
+`internal/retention` using the sweep's findings as its evidence. See
+[§7 Acting on findings](#7-acting-on-findings). The distinction is the point: a
+detector that deleted on its own conclusions would turn a false positive into
+data loss.
 
 ### Evidence sources
 
@@ -176,7 +183,7 @@ These look like orphans and must never be flagged. Each is enforced by a test.
 | **404 vs. empty** | Components answer `404` when they hold *no* backups. Decoded as an empty list, not an error. |
 | **Shared ES repository** | A conventionally-named snapshot the controller cannot match is `A4` (foreign), not `A2`. |
 | **Grace period** | Backups younger than `RECONCILE_GRACE_PERIOD_MINUTES` (default 15) are skipped entirely — their artifacts may still be landing. |
-| **Deliberate manual backups** | Genuinely untracked, often intentional. Reported, never deleted. |
+| **Deliberate manual backups** | Genuinely untracked, often intentional. Reported, and never deleted unless a person asks. |
 | **Non-conforming IDs** | An ID that is not `YYYYMMDDHHMMSS` belongs to another tool; classified `info`. |
 
 The unreachable-source guard is why every report carries `sources_checked` and
@@ -296,12 +303,16 @@ quietly if one is already running, and the endpoint answers `409`.
 
 ## 7. Acting on findings
 
-Detection never deletes. Removing a backup stays deliberate.
+Detection never deletes on its own. Removing a backup is always a deliberate act
+— a click in the UI or a call to the API — and it is carried out by
+`internal/retention`, never by the reconciler.
 
-For a backup that **has** a history record, use the existing endpoint. It
-deletes the backup from every system that holds it — the ES snapshot, each
-component's backup, the controller's record and the log file — and still
-refuses to delete the most recent successful backup:
+### A backup that has a record
+
+The delete endpoint removes it from every system that holds it — the ES
+snapshot, each component's backup, the controller's record and the log file —
+and still refuses to delete the most recent successful backup or one that is
+still `RUNNING`:
 
 ```bash
 curl -X DELETE http://localhost:8080/api/camundas/{id}/backups/{backupId}
@@ -312,9 +323,35 @@ and removes nothing, so the backup does not become an orphan of the kind this
 report exists to find. Add `?force=true` to drop the controller's record anyway
 once you accept that the leftovers will show up here.
 
-**Known gap.** That endpoint resolves backups through `BackupHistory`, so it
-cannot act on `A1`–`A4` — artifacts that by definition have no record. For
-those, the UI shows the exact command to run by hand:
+### An orphan, which has none
+
+`A1`–`A3` artifacts have no record, so nothing on the tracked path can describe
+them. The **latest report** describes them instead, and the same endpoint uses
+it: the controller deletes the component backups and the exact snapshots the
+sweep positively found, and nothing else.
+
+```bash
+# Identical call. Which path it takes is decided from whether a record exists.
+curl -X DELETE http://localhost:8080/api/camundas/{id}/backups/{backupId}
+```
+
+Three limits are deliberate:
+
+- **A source the sweep could not reach is not deleted from.** Its artifacts
+  survive and the next sweep reports them again. This is the unreachable-source
+  guard applied to deletion: absence of evidence never justifies concluding an
+  artifact is gone, and it never justifies removing one either.
+- **Only IDs the controller could have issued are deleted.** A component API can
+  report backup IDs the controller never generated, and that ID becomes a path
+  segment in the `DELETE` built from it. Anything not matching `YYYYMMDDHHMMSS`
+  answers `409 not_deletable` and stays report-only.
+- **A record appearing after the sweep stops the deletion.** It answers `409
+  stale_report`, because that record's safety guards must be applied and only
+  the tracked path applies them.
+
+`force` does nothing here — it drops a controller record, and an orphan has none.
+
+For anything the controller will not delete, the UI shows the exact commands:
 
 ```bash
 # Component backup
@@ -325,7 +362,21 @@ curl -u elastic:$ES_PASSWORD -X DELETE \
   http://elasticsearch:9200/_snapshot/{repository}/{snapshot_name}
 ```
 
-An artifact-level delete path would close this gap and is tracked separately.
+### Several at once
+
+The UI offers per-row checkboxes and a select-all, and a multi-backup
+confirmation that breaks the selection down by status so it is clear how many
+orphans are among it. Under it:
+
+```bash
+curl -X POST http://localhost:8080/api/camundas/{id}/backups/delete \
+  -H 'X-Requested-With: XMLHttpRequest' -H 'Content-Type: application/json' \
+  -d '{"backup_ids": ["20240115020000", "20240114020000"]}'
+```
+
+Each backup goes down the same path it would alone, so every guard above still
+applies per backup. The batch is not a transaction: the response reports which
+backups were deleted and, for each one that survived, why.
 
 ---
 

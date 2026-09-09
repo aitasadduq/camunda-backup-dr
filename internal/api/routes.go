@@ -200,6 +200,18 @@ func (r *Router) camundaResourceHandler() http.HandlerFunc {
 			}
 			r.handlers.ListFailedBackupsHandler(w, req)
 
+		// POST /api/camundas/{id}/backups/delete
+		// Bulk deletion. It is a POST to a reserved sub-path rather than a
+		// DELETE on the collection because the batch travels in the body, and
+		// this case must precede the single-backup case below, which would
+		// otherwise read "delete" as a backup ID.
+		case strings.HasSuffix(path, "/backups/delete"):
+			if req.Method != http.MethodPost {
+				r.methodNotAllowed(w, req)
+				return
+			}
+			r.handlers.BulkDeleteBackupsHandler(w, req)
+
 		// GET /api/camundas/{id}/backups/{backupId}/logs
 		case strings.HasSuffix(path, "/logs") && strings.Contains(path, "/backups/"):
 			if req.Method != http.MethodGet {

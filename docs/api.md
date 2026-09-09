@@ -595,9 +595,10 @@ Returns the backup history for a Camunda instance, ordered by most recent first.
 
 #### `GET /api/camundas/{id}/backups/{backupId}` — Get Backup Details
 
-> **Reserved names.** `orphaned`, `incomplete`, `failed` and `reconcile` are
-> routed as their own sub-paths and cannot be addressed as backup IDs. Backup
-> IDs are `YYYYMMDDHHMMSS` timestamps, so this never collides in practice.
+> **Reserved names.** `orphaned`, `incomplete`, `failed`, `reconcile` and
+> `delete` are routed as their own sub-paths and cannot be addressed as backup
+> IDs. Backup IDs are `YYYYMMDDHHMMSS` timestamps, so this never collides in
+> practice.
 
 Returns detailed information for a specific backup.
 
@@ -649,6 +650,11 @@ Permanently deletes a specific backup from every system that holds it:
 3. the controller's own metadata record in S3,
 4. the backup's log file.
 
+This endpoint handles both a **tracked** backup, which the controller has a
+metadata record for, and an **orphan**, which it does not. Which path a request
+takes is decided by the controller, from whether a record exists — never by the
+caller. See [Deleting an orphan](#deleting-an-orphan) below.
+
 The most recent successful backup cannot be deleted, and neither can a backup
 that is still `RUNNING` — deleting one races the orchestrator still writing it.
 Neither guard is overridable by `force`.
@@ -685,9 +691,101 @@ deleting the record first would strand the artifacts as orphans.
 | Error Code | Condition |
 |---|---|
 | 400 | Instance ID or Backup ID missing |
-| 404 | Instance or backup not found |
+| 404 | Instance not found, or the backup is neither recorded nor reported as an orphan |
 | 409 | Cannot delete the most recent backup, or the backup is still RUNNING (safety refusal) |
 | 409 | `artifacts_remain` — one or more artifacts could not be deleted; nothing was removed from the controller. Retry, or repeat with `?force=true` |
+| 409 | `no_report` — the backup has no record and no sweep has run, so nothing can say what it left behind. Run a sweep first |
+| 409 | `stale_report` — the backup was reported as an orphan but has since acquired a record. Re-run the sweep |
+| 409 | `unidentifiable` — the sweep found the orphan but named no artifact to delete |
+| 409 | `not_deletable` — the orphan's ID is not in the controller's `YYYYMMDDHHMMSS` format, so it can only be removed by hand |
+| 500 | Internal server error |
+
+##### Deleting an orphan
+
+An orphan has no metadata record, so the component map that decides what a
+tracked deletion purges does not exist. The **latest reconciliation report**
+takes its place: the controller deletes the component backups and the exact
+Elasticsearch snapshots that sweep positively found, and nothing else.
+
+Three consequences follow, and all three are deliberate:
+
+- **The caller cannot name the artifacts.** The report is read server-side. A
+  client able to specify what to delete could name any snapshot in the
+  repository.
+- **A source the sweep could not reach is not deleted from.** Its artifacts
+  survive and the next sweep reports them again. This is the same rule that
+  stops the reconciler reporting a backup as missing from a source it never
+  enumerated — an unreachable source is not evidence of absence, and it is not a
+  licence to delete either.
+- **Only IDs the controller could have issued are deleted.** A component API is
+  free to report backup IDs the controller never generated, and that ID becomes
+  a path segment in the `DELETE` built from it. Anything not matching
+  `YYYYMMDDHHMMSS` is reported with a remediation command and never deleted
+  automatically.
+
+`force` has no meaning for an orphan: it exists to drop a controller record
+despite surviving artifacts, and an orphan has no record. An orphan whose
+artifacts survive answers `409 artifacts_remain`, and the fix is to resolve the
+cause and retry.
+
+There is no most-recent-backup guard on this path, and none is needed: the
+controller cannot consider a backup it has no record of to be its latest
+recovery point. If a record appears between the sweep and the deletion, the
+request is refused with `409 stale_report` rather than proceeding — that record's
+guards have to be applied, and only the tracked path applies them.
+
+---
+
+#### `POST /api/camundas/{id}/backups/delete` — Delete Several Backups
+
+Deletes a batch of backups, each one through exactly the same path as
+`DELETE /api/camundas/{id}/backups/{backupId}` above, tracked or orphaned.
+
+**Headers:** `X-Requested-With: XMLHttpRequest`, `Content-Type: application/json`
+
+**Request body:**
+
+```json
+{
+  "backup_ids": ["20240115020000", "20240114020000"],
+  "force": false
+}
+```
+
+| Field | Description |
+|---|---|
+| `backup_ids` | Backup IDs to delete. Duplicates are collapsed; at most 200 per request |
+| `force` | Applied to each tracked deletion, exactly as the query parameter above. Ignored for orphans |
+
+**Response:** `200 OK`
+
+A batch is **not a transaction**, and the response does not pretend otherwise.
+Deletions span several systems, so one backup can be refused by a safety guard
+or blocked by an unreachable component while the rest succeed. The status code
+reports only whether the request was valid; the outcome is per backup.
+
+```json
+{
+  "requested": 3,
+  "deleted": ["20240114020000", "20240113020000"],
+  "failed": [
+    {
+      "backup_id": "20240115020000",
+      "error": "safety_refusal",
+      "message": "cannot delete the most recent successful backup (20240115020000)"
+    }
+  ]
+}
+```
+
+Each `failed` entry carries the same `error` code the single-backup endpoint
+would have returned for that backup, so a client can react per backup instead of
+parsing prose.
+
+| Error Code | Condition |
+|---|---|
+| 400 | Instance ID missing, body invalid, `backup_ids` empty, more than 200 IDs, or an ID containing a path separator |
+| 404 | Instance not found |
 | 500 | Internal server error |
 
 ---
@@ -1213,7 +1311,8 @@ Generic — unreachable:
 | `GET` | `/api/camundas/{id}/backups` | List backup history |
 | `GET` | `/api/camundas/{id}/backups/{backupId}` | Get backup details |
 | `GET` | `/api/camundas/{id}/backups/{backupId}/logs` | Get backup logs |
-| `DELETE` | `/api/camundas/{id}/backups/{backupId}` | Delete backup |
+| `DELETE` | `/api/camundas/{id}/backups/{backupId}` | Delete one backup, tracked or orphaned |
+| `POST` | `/api/camundas/{id}/backups/delete` | Delete several backups in one request |
 | `GET` | `/api/camundas/{id}/backups/orphaned` | List records under the `orphaned/` prefix |
 | `GET` | `/api/camundas/{id}/backups/reconcile` | Latest reconciliation report |
 | `POST` | `/api/camundas/{id}/backups/reconcile` | Run a reconciliation sweep now |

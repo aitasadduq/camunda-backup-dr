@@ -22,7 +22,7 @@ Camunda Backup & Disaster Recovery Controller — a Go service that manages mult
 - `internal/storage/` — file storage (config/logs) and S3 storage (backup data) behind interfaces
 - `internal/elasticsearch/` — ES snapshot creation and status checking
 - `internal/retention/` — keep-last-N policy, incomplete backup handling, manual deletion
-- `internal/reconcile/` — orphaned backup detection: cross-references controller metadata against Zeebe, the component APIs and the ES snapshot repository; report-only
+- `internal/reconcile/` — orphaned backup detection: cross-references controller metadata against Zeebe, the component APIs and the ES snapshot repository; report-only (deletion lives in `internal/retention`)
 - `internal/utils/` — structured logging, `AppError` type, circuit breaker, alerting
 - `internal/models/` — `CamundaInstance`, `BackupExecution`, `BackupHistory`
 - `internal/config/` — env-var-driven configuration with defaults and validation
@@ -64,7 +64,9 @@ After every change, run in this order:
 - The backup record's `Components` map is the authority on what a backup wrote. The orchestrator seeds it with every *enabled* component before any of them runs, so a component absent from the map was disabled at backup time and owns no artifact — never purge absent components. A record with no components at all is unidentifiable and is refused rather than deleted
 - Tests use table-driven patterns, mock interfaces, `httptest.Server` for external services, and `testEnv` struct with deferred cleanup
 - Build tags: `//go:build integration` for ES/S3 tests, `//go:build e2e` for end-to-end tests
-- Orphan detection is report-only and never deletes; every conclusion drawn from an artifact being *absent* must be gated on that source having been reachable (see `internal/reconcile/classify.go`)
+- The reconciler is report-only and never deletes; every conclusion drawn from an artifact being *absent* must be gated on that source having been reachable (see `internal/reconcile/classify.go`)
+- Deleting an orphan is a separate, explicit act carried out by `retention.Manager.DeleteOrphan`, never by the reconciler. An orphan has no record, so the *latest report* is the authority for what it left behind: only sources the sweep positively found are deleted from, and only backup IDs the controller could have issued (`camunda.IsBackupIDShaped`) — a component API can report IDs the controller never generated, and that ID becomes a path segment in the DELETE. The report is read server-side; a client never names the artifacts to delete
+- `force` means "drop the controller's record despite surviving artifacts". It is meaningless for an orphan, which has no record — never offer it there
 - Reason codes in `internal/reconcile/reasons.go` are a public API contract — their string values must stay stable, and every code needs a catalogue entry with remediation text
 - For the orphan taxonomy and its false-positive guards, see `docs/orphaned-backups.md`
 - For architecture details, see `planning/architecture-ait-updated.md`
@@ -80,7 +82,8 @@ After every change, run in this order:
 - Don't bypass the `AppError` system for HTTP error responses — use `ToHTTPError()` to convert errors to consistent JSON responses
 - Don't add an external database — all state is file-based (config/logs on PVC) or in S3 (backup data/history)
 - Don't skip middleware ordering — it must be: recovery → logging → CORS → CSRF → content-type
-- Don't let the reconciler delete anything, and don't report a backup as missing from a source that could not be enumerated — an unreachable component is not evidence of absence
+- Don't let the reconciler delete anything, and don't report a backup as missing from a source that could not be enumerated — an unreachable component is not evidence of absence, and it is not licence to delete either: an orphan deletion skips sources the sweep could not reach and lets the next sweep report them again
+- Don't let a bulk delete become all-or-nothing or collapse to one status code. Deletions span several systems, so report the outcome per backup — which were deleted, and why each survivor did not
 
 ## gstack
 Use the `/browse` skill from gstack for all web browsing. Never use `mcp__claude-in-chrome__*` tools.

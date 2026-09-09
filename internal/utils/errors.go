@@ -66,4 +66,31 @@ var (
 	// ErrInstanceProviderNotConfigured is returned when a deletion needs the
 	// instance's component endpoints but no instance provider is wired.
 	ErrInstanceProviderNotConfigured = errors.New("instance provider not configured")
+
+	// ErrNoReconcileReport is returned when an orphan deletion is requested but
+	// no sweep has run. An orphan has no metadata record, so the scan is the only
+	// thing that can say which artifacts it left behind.
+	ErrNoReconcileReport = errors.New("no reconciliation report for this instance; run a scan first")
+
+	// ErrNotAnOrphan is returned when a backup the caller asked to delete is
+	// neither recorded by the controller nor reported as an orphan by the latest
+	// scan. Nothing identifies its artifacts, so there is nothing safe to delete.
+	ErrNotAnOrphan = errors.New("backup is not an orphan in the latest scan")
+
+	// ErrOrphanRecordAppeared is returned when a backup reported as an orphan has
+	// since acquired a controller record. Deleting it down the orphan path would
+	// bypass the retention safety guards, so the caller must re-scan instead.
+	ErrOrphanRecordAppeared = errors.New("backup now has a controller record; re-scan before deleting")
+
+	// ErrOrphanArtifactsUnidentifiable is returned when an orphan's findings name
+	// no artifact to delete. Guessing which components hold it would send DELETEs
+	// to components the backup never touched.
+	ErrOrphanArtifactsUnidentifiable = errors.New("orphan names no artifacts, so it cannot be deleted")
+
+	// ErrBackupIDNotDeletable is returned for a backup ID that is not in the
+	// controller's own YYYYMMDDHHMMSS format. Such an ID reached the controller
+	// from a component API rather than being issued by it, and it would become a
+	// path segment in a component DELETE URL, so it is reported but never
+	// deleted automatically.
+	ErrBackupIDNotDeletable = errors.New("backup ID is not in the controller's format, so it can only be deleted by hand")
 )

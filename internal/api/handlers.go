@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -13,6 +12,7 @@ import (
 	"github.com/aitasadduq/camunda-backup-dr/internal/config"
 	"github.com/aitasadduq/camunda-backup-dr/internal/models"
 	"github.com/aitasadduq/camunda-backup-dr/internal/orchestrator"
+	"github.com/aitasadduq/camunda-backup-dr/internal/retention"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
 	"github.com/aitasadduq/camunda-backup-dr/pkg/types"
 )
@@ -55,6 +55,7 @@ type SchedulerInterface interface {
 // RetentionManager defines the interface for retention operations
 type RetentionManager interface {
 	DeleteBackup(camundaInstanceID, backupID string, force bool) error
+	DeleteOrphan(camundaInstanceID string, artifacts retention.OrphanArtifacts) error
 	ListOrphanedBackups(camundaInstanceID string) ([]*models.BackupHistory, error)
 	ListIncompleteBackups(camundaInstanceID string) ([]*models.BackupHistory, error)
 	ListFailedBackups(camundaInstanceID string) ([]*models.BackupHistory, error)
@@ -789,23 +790,15 @@ func (h *Handlers) DeleteBackupHandler(w http.ResponseWriter, r *http.Request) {
 
 	// force=true deletes the controller's record even when some artifacts could
 	// not be removed. Without it, a partial deletion leaves the backup in place.
+	// It has no meaning for an orphan, which has no record to hold back.
 	force := r.URL.Query().Get("force") == "true"
 
-	if err := h.retentionManager.DeleteBackup(instanceID, backupID, force); err != nil {
-		if errors.Is(err, utils.ErrBackupNotFound) {
-			writeError(w, http.StatusNotFound, "not_found", "Backup not found")
-			return
+	if err := h.deleteBackupEverywhere(instanceID, backupID, force); err != nil {
+		status, code, message := deleteFailureResponse(err)
+		if status == http.StatusInternalServerError {
+			h.logger.Error("Failed to delete backup: %v", err)
 		}
-		if errors.Is(err, utils.ErrCannotDeleteMostRecentBackup) || errors.Is(err, utils.ErrCannotDeleteRunningBackup) {
-			writeError(w, http.StatusConflict, "safety_refusal", err.Error())
-			return
-		}
-		if errors.Is(err, utils.ErrBackupArtifactsRemain) {
-			writeError(w, http.StatusConflict, "artifacts_remain", err.Error())
-			return
-		}
-		h.logger.Error("Failed to delete backup: %v", err)
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to delete backup")
+		writeError(w, status, code, message)
 		return
 	}
 
