@@ -99,7 +99,7 @@ func TestRollupImplications(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			report := Rollup("prod", tt.findings, nil, nil, now, now)
+			report := Rollup("prod", tt.findings, nil, nil, nil, now, now)
 
 			if len(report.BackupIssues) != tt.wantIssueLen {
 				t.Fatalf("got %d issues, want %d", len(report.BackupIssues), tt.wantIssueLen)
@@ -138,7 +138,7 @@ func TestRollupZeebeReboundCollapsesPerBackupFindings(t *testing.T) {
 		findings = append(findings, f(id, ReasonDanglingComponentBackup, types.ComponentZeebe))
 	}
 
-	report := Rollup("prod", findings, nil, nil, now, now)
+	report := Rollup("prod", findings, nil, nil, nil, now, now)
 
 	if len(report.InstanceFindings) != 1 {
 		t.Fatalf("want 1 instance finding, got %d", len(report.InstanceFindings))
@@ -156,7 +156,7 @@ func TestRollupSeparatesScopes(t *testing.T) {
 		f(oldBackupID, ReasonDuplicateRecord),
 	}
 
-	report := Rollup("prod", findings, nil, nil, now, now)
+	report := Rollup("prod", findings, nil, nil, nil, now, now)
 
 	if len(report.InstanceFindings) != 1 || len(report.RepositoryFindings) != 1 || len(report.BackupIssues) != 1 {
 		t.Fatalf("scopes not separated: instance=%d repository=%d backups=%d",
@@ -170,7 +170,7 @@ func TestRollupOrdersWorstFirst(t *testing.T) {
 		f("20260320080000", ReasonMissingLogFile),
 		f("20260320090000", ReasonSplitRestorePair),
 		f("20260320100000", ReasonDanglingESSnapshot),
-	}, nil, nil, now, now)
+	}, nil, nil, nil, now, now)
 
 	got := make([]Severity, 0, len(report.BackupIssues))
 	for _, issue := range report.BackupIssues {
@@ -188,7 +188,7 @@ func TestRollupOrdersWorstFirst(t *testing.T) {
 // backup ID is itself a timestamp.
 func TestRollupParsesBackupTimeFromID(t *testing.T) {
 	now := time.Now()
-	report := Rollup("prod", []Finding{f(oldBackupID, ReasonUntrackedComponentBackup)}, nil, nil, now, now)
+	report := Rollup("prod", []Finding{f(oldBackupID, ReasonUntrackedComponentBackup)}, nil, nil, nil, now, now)
 
 	issue := findIssue(t, report, oldBackupID)
 	if issue.BackupTime == nil {
@@ -225,7 +225,7 @@ func TestRollupMarksTrackedBackups(t *testing.T) {
 	report := Rollup("prod", []Finding{
 		f("20260320080000", ReasonDanglingESSnapshot),
 		f("20260320090000", ReasonUntrackedComponentBackup),
-	}, tracked, nil, now, now)
+	}, tracked, nil, nil, now, now)
 
 	for _, issue := range report.BackupIssues {
 		want := issue.BackupID == "20260320080000"
@@ -243,8 +243,45 @@ func TestRollupCollectsSnapshotNames(t *testing.T) {
 	b := f(oldBackupID, ReasonUntrackedAppESSnapshot)
 	b.SnapshotName = "camunda_operate_" + oldBackupID + "_8.6.0_part_2_of_6"
 
-	issue := findIssue(t, Rollup("prod", []Finding{a, b}, nil, nil, now, now), oldBackupID)
+	issue := findIssue(t, Rollup("prod", []Finding{a, b}, nil, nil, nil, now, now), oldBackupID)
 	if len(issue.SnapshotNames) != 2 {
 		t.Fatalf("got %d snapshot names, want 2: %v", len(issue.SnapshotNames), issue.SnapshotNames)
+	}
+}
+
+// A backup's snapshots must reach the report even when no finding names them.
+// The A3 rule deliberately does not report a component snapshot while the
+// component still tracks the backup, and deleting from the finding-derived list
+// alone would leave those snapshots behind.
+func TestRollupCarriesSnapshotsWithNoFindingOfTheirOwn(t *testing.T) {
+	now := time.Now()
+	observed := map[string][]string{
+		oldBackupID: {"camunda_operate_" + oldBackupID + "_8.6.0_part_1_of_6"},
+	}
+
+	report := Rollup("prod", []Finding{f(oldBackupID, ReasonUntrackedComponentBackup)},
+		nil, nil, observed, now, now)
+
+	issue := findIssue(t, report, oldBackupID)
+	if len(issue.SnapshotNames) != 0 {
+		t.Errorf("expected no finding-derived snapshot names, got %v", issue.SnapshotNames)
+	}
+	if len(issue.AllSnapshotNames) != 1 || issue.AllSnapshotNames[0] != observed[oldBackupID][0] {
+		t.Fatalf("expected the observed snapshot to survive into the report, got %v", issue.AllSnapshotNames)
+	}
+}
+
+// AllSnapshotNames is a superset: names a finding does report belong in it too.
+func TestRollupAllSnapshotNamesIncludesFindingNames(t *testing.T) {
+	now := time.Now()
+	finding := f(oldBackupID, ReasonUntrackedESSnapshot)
+	finding.SnapshotName = "camunda-" + oldBackupID
+
+	report := Rollup("prod", []Finding{finding}, nil, nil,
+		map[string][]string{oldBackupID: {"camunda_operate_" + oldBackupID + "_8.6.0_part_1_of_6"}}, now, now)
+
+	issue := findIssue(t, report, oldBackupID)
+	if len(issue.AllSnapshotNames) != 2 {
+		t.Fatalf("expected both snapshots, got %v", issue.AllSnapshotNames)
 	}
 }

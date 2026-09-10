@@ -320,7 +320,16 @@ The API returns structured JSON errors. Below is a reference of common error cod
 | 400 | `validation_error` | Request body or parameters are invalid | Missing required fields, invalid JSON, malformed instance ID |
 | 404 | `not_found` | The requested resource does not exist | Wrong instance ID, wrong backup ID |
 | 409 | `conflict` / `backup_in_progress` | Resource conflict | Creating a duplicate instance, triggering a backup while one is running |
-| 409 | `safety_refusal` | Safety check prevented the operation | Attempting to delete the most recent successful backup |
+| 409 | `safety_refusal` | Safety check prevented the operation | Attempting to delete the most recent successful backup, or one that is still `RUNNING` |
+| 409 | `artifacts_remain` | Some of the backup's data could not be deleted, so nothing was removed | A component or Elasticsearch was unreachable during a delete |
+| 404 | `no_report` | The backup has no record and no sweep has run, so nothing can say whether it is an orphan | Deleting an orphan before any sweep has run. An unknown ID always answers 404, so repeat DELETEs stay idempotent |
+| 409 | `stale_report` | The backup was reported as an orphan but has since acquired a record | A sweep ran before the record appeared — re-scan and retry |
+| 409 | `report_partial` | The sweep could not reach every source, so the full artifact set is unknown | A component or Elasticsearch was down during the scan — re-scan once everything is reachable |
+| 409 | `report_stale` | The sweep is more than an hour old | Re-scan before deleting |
+| 409 | `endpoint_drift` | A component's backup endpoint changed since the sweep | The instance was re-pointed — re-scan so the deletion targets the endpoint that actually holds it |
+| 409 | `ownership_unverified` | Another configured instance may own the artifacts | Two instances share a snapshot repository with no distinct name prefix, or share a component endpoint |
+| 409 | `unidentifiable` | The sweep found the orphan but named no artifact to delete | A finding with no component or snapshot attached |
+| 409 | `not_deletable` | A backup ID or snapshot name is not addressable | An artifact reported by a component but never issued by the controller — remove it by hand |
 | 500 | `internal_error` | An unexpected server error occurred | Storage failures, unhandled exceptions |
 | 500 | `backup_failed` | The backup operation itself failed | Component errors, S3 failures |
 | 500 | `cleanup_failed` | Post-failure cleanup failed | S3 move-to-incomplete errors |
@@ -880,10 +889,26 @@ The system then looks up:
 ### How do I delete a backup?
 
 ```bash
-curl -X DELETE http://localhost:8080/api/camundas/<instance-id>/backups/<backup-id>
+curl -X DELETE http://localhost:8080/api/camundas/<instance-id>/backups/<backup-id> \
+  -H 'X-Requested-With: XMLHttpRequest'
 ```
 
-**Note:** You cannot delete the most recent successful backup. The system returns a 409 `safety_refusal` error to prevent accidental data loss.
+Several at once:
+
+```bash
+curl -X POST http://localhost:8080/api/camundas/<instance-id>/backups/delete \
+  -H 'X-Requested-With: XMLHttpRequest' -H 'Content-Type: application/json' \
+  -d '{"backup_ids": ["20240115020000", "20240114020000"]}'
+```
+
+The batch answers `200` whenever the request was valid and reports the outcome
+per backup, because one deletion can be refused while the rest succeed.
+
+**Note:** You cannot delete the most recent successful backup, or one that is
+still `RUNNING`. The system returns a 409 `safety_refusal` error to prevent
+accidental data loss. The same endpoint also deletes an **orphan** — a backup
+with no controller record — using the latest sweep as the authority for what it
+left behind; see [Orphaned Backup Detection](orphaned-backups.md).
 
 ---
 

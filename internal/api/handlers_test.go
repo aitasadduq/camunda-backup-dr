@@ -13,6 +13,8 @@ import (
 	"github.com/aitasadduq/camunda-backup-dr/internal/config"
 	"github.com/aitasadduq/camunda-backup-dr/internal/models"
 	"github.com/aitasadduq/camunda-backup-dr/internal/orchestrator"
+	"github.com/aitasadduq/camunda-backup-dr/internal/reconcile"
+	"github.com/aitasadduq/camunda-backup-dr/internal/retention"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
 	"github.com/aitasadduq/camunda-backup-dr/pkg/types"
 )
@@ -207,11 +209,32 @@ type mockRetentionManager struct {
 	deleteErr   error
 	listErr     error
 	deleteForce bool
+
+	// Per-backup delete outcomes, for exercising a bulk request whose entries
+	// do not all end the same way. A backup absent from the map falls back to
+	// deleteErr.
+	deleteErrByID map[string]error
+
+	// orphanErr is returned by DeleteOrphan; deletedOrphans records what it was
+	// asked to delete so a test can assert the artifacts came from the report
+	// rather than from the request.
+	orphanErr      error
+	deletedOrphans []retention.OrphanArtifacts
+	deletedBackups []string
 }
 
-func (m *mockRetentionManager) DeleteBackup(camundaInstanceID, backupID string, force bool) error {
+func (m *mockRetentionManager) DeleteBackup(ctx context.Context, camundaInstanceID, backupID string, force bool) error {
 	m.deleteForce = force
+	m.deletedBackups = append(m.deletedBackups, backupID)
+	if err, ok := m.deleteErrByID[backupID]; ok {
+		return err
+	}
 	return m.deleteErr
+}
+
+func (m *mockRetentionManager) DeleteOrphan(ctx context.Context, camundaInstanceID string, artifacts retention.OrphanArtifacts) error {
+	m.deletedOrphans = append(m.deletedOrphans, artifacts)
+	return m.orphanErr
 }
 
 func (m *mockRetentionManager) ListOrphanedBackups(camundaInstanceID string) ([]*models.BackupHistory, error) {
@@ -652,7 +675,8 @@ func TestGetBackupDetailsHandler_NotFound(t *testing.T) {
 // --- Retention Handler Tests ---
 
 func TestDeleteBackupHandler_Success(t *testing.T) {
-	handlers, cm, _, _, _, ret, _ := newTestHandlers()
+	handlers, cm, _, hist, _, ret, _ := newTestHandlers()
+	hist.history = []*models.BackupHistory{{CamundaInstanceID: "test-1", BackupID: "backup-1"}}
 
 	cm.instances = []models.CamundaInstance{
 		{ID: "test-1", Name: "Test Instance 1"},
@@ -669,6 +693,9 @@ func TestDeleteBackupHandler_Success(t *testing.T) {
 	}
 }
 
+// A backup with no controller record is not automatically absent: it may be an
+// orphan the last scan found. It is only "not found" once a scan has run and
+// does not list it either.
 func TestDeleteBackupHandler_NotFound(t *testing.T) {
 	handlers, cm, _, _, _, ret, _ := newTestHandlers()
 
@@ -676,6 +703,7 @@ func TestDeleteBackupHandler_NotFound(t *testing.T) {
 		{ID: "test-1", Name: "Test Instance 1"},
 	}
 	ret.deleteErr = utils.ErrBackupNotFound
+	handlers.SetReconciler(&mockReconciler{report: &reconcile.Report{CamundaInstanceID: "test-1"}})
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/camundas/test-1/backups/backup-1", nil)
 	w := httptest.NewRecorder()
@@ -687,8 +715,34 @@ func TestDeleteBackupHandler_NotFound(t *testing.T) {
 	}
 }
 
-func TestDeleteBackupHandler_SafetyRefusal(t *testing.T) {
+// Reports are held in memory, so a restart loses them while the UI still shows
+// orphan rows from its own cached copy. Telling the user to re-scan is more use
+// than reporting the backup as absent, which the controller cannot know.
+func TestDeleteBackupHandler_UntrackedWithoutReport(t *testing.T) {
 	handlers, cm, _, _, _, ret, _ := newTestHandlers()
+
+	cm.instances = []models.CamundaInstance{
+		{ID: "test-1", Name: "Test Instance 1"},
+	}
+	ret.deleteErr = utils.ErrBackupNotFound
+	handlers.SetReconciler(&mockReconciler{latestErr: utils.ErrBackupNotFound})
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/camundas/test-1/backups/20260320080000", nil)
+	w := httptest.NewRecorder()
+
+	handlers.DeleteBackupHandler(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusNotFound, w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "no_report") {
+		t.Errorf("expected a no_report error code, got: %s", w.Body.String())
+	}
+}
+
+func TestDeleteBackupHandler_SafetyRefusal(t *testing.T) {
+	handlers, cm, _, hist, _, ret, _ := newTestHandlers()
+	hist.history = []*models.BackupHistory{{CamundaInstanceID: "test-1", BackupID: "backup-1"}}
 
 	cm.instances = []models.CamundaInstance{
 		{ID: "test-1", Name: "Test Instance 1"},
@@ -706,7 +760,8 @@ func TestDeleteBackupHandler_SafetyRefusal(t *testing.T) {
 }
 
 func TestDeleteBackupHandler_ArtifactsRemain(t *testing.T) {
-	handlers, cm, _, _, _, ret, _ := newTestHandlers()
+	handlers, cm, _, hist, _, ret, _ := newTestHandlers()
+	hist.history = []*models.BackupHistory{{CamundaInstanceID: "test-1", BackupID: "backup-1"}}
 
 	cm.instances = []models.CamundaInstance{
 		{ID: "test-1", Name: "Test Instance 1"},
@@ -730,7 +785,8 @@ func TestDeleteBackupHandler_ArtifactsRemain(t *testing.T) {
 }
 
 func TestDeleteBackupHandler_ForceQueryParam(t *testing.T) {
-	handlers, cm, _, _, _, ret, _ := newTestHandlers()
+	handlers, cm, _, hist, _, ret, _ := newTestHandlers()
+	hist.history = []*models.BackupHistory{{CamundaInstanceID: "test-1", BackupID: "backup-1"}}
 
 	cm.instances = []models.CamundaInstance{
 		{ID: "test-1", Name: "Test Instance 1"},
@@ -1579,7 +1635,8 @@ func TestGetBackupDetailsHandler_InvalidPath(t *testing.T) {
 // --- DeleteBackupHandler Error Tests ---
 
 func TestDeleteBackupHandler_InternalError(t *testing.T) {
-	handlers, cm, _, _, _, ret, _ := newTestHandlers()
+	handlers, cm, _, hist, _, ret, _ := newTestHandlers()
+	hist.history = []*models.BackupHistory{{CamundaInstanceID: "test-1", BackupID: "backup-1"}}
 
 	cm.instances = []models.CamundaInstance{
 		{ID: "test-1", Name: "Test Instance 1"},
@@ -2157,7 +2214,7 @@ func TestGetDefaultsHandler(t *testing.T) {
 		DefaultSuccessRetention:                14,
 		DefaultFailureRetention:                14,
 		DefaultElasticsearchEndpoint:           "http://es:9200",
-		DefaultElasticsearchUsername:            "elastic",
+		DefaultElasticsearchUsername:           "elastic",
 		DefaultElasticsearchSnapshotRepository: "my-repo",
 		DefaultElasticsearchSnapshotNamePrefix: "snap-",
 		DefaultS3Endpoint:                      "http://minio:9000",
@@ -2179,15 +2236,15 @@ func TestGetDefaultsHandler(t *testing.T) {
 	}
 
 	checks := map[string]interface{}{
-		"schedule":                          "0 3 * * *",
-		"success_retention":                 float64(14),
-		"failure_retention":                 float64(14),
-		"elasticsearch_endpoint":            "http://es:9200",
-		"elasticsearch_username":            "elastic",
+		"schedule":                           "0 3 * * *",
+		"success_retention":                  float64(14),
+		"failure_retention":                  float64(14),
+		"elasticsearch_endpoint":             "http://es:9200",
+		"elasticsearch_username":             "elastic",
 		"elasticsearch_snapshot_repository":  "my-repo",
 		"elasticsearch_snapshot_name_prefix": "snap-",
-		"s3_endpoint":                       "http://minio:9000",
-		"s3_accesskey":                      "AKID",
+		"s3_endpoint":                        "http://minio:9000",
+		"s3_accesskey":                       "AKID",
 	}
 	for key, want := range checks {
 		if got := defaults[key]; got != want {

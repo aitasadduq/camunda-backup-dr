@@ -566,3 +566,39 @@ func TestFindingsCarryTheSnapshotName(t *testing.T) {
 		t.Fatal("expected an untracked component-snapshot finding")
 	})
 }
+
+// Every untracked rule concludes something from the absence of a record, so all
+// of them are withheld when the controller's own metadata could not be read.
+// Before this gate, a failed listing made live backups look deletable.
+func TestClassifyUntrackedGatedOnControllerMetadata(t *testing.T) {
+	ev := newEvidence().
+		holds(types.ComponentZeebe, oldBackupID, "COMPLETED").
+		snapshot(oldBackupID, elasticsearch.SnapshotStateSuccess).
+		unreachable(SourceControllerS3).
+		build()
+
+	findings := classify(ev, DefaultOptions())
+
+	for _, code := range []ReasonCode{
+		ReasonUntrackedComponentBackup,
+		ReasonUntrackedESSnapshot,
+		ReasonUntrackedAppESSnapshot,
+		ReasonUntrackedLogFile,
+	} {
+		if hasReason(findings, code) {
+			t.Errorf("reported %s from a controller-metadata listing that failed", code)
+		}
+	}
+}
+
+// The same evidence with the metadata readable must still report the orphan,
+// so the gate above suppresses only what it should.
+func TestClassifyUntrackedReportedWhenControllerMetadataReadable(t *testing.T) {
+	ev := newEvidence().
+		holds(types.ComponentZeebe, oldBackupID, "COMPLETED").
+		build()
+
+	if !hasReason(classify(ev, DefaultOptions()), ReasonUntrackedComponentBackup) {
+		t.Error("expected an untracked component backup to be reported")
+	}
+}

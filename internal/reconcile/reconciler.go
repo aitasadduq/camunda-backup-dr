@@ -133,7 +133,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, instance *models.CamundaInst
 		tracked[rec.BackupID] = true
 	}
 
-	report := Rollup(instance.ID, findings, tracked, ev.sources, started, r.now())
+	report := Rollup(instance.ID, findings, tracked, ev.sources, observedSnapshots(ev), started, r.now())
 	report.SnapshotRepository = ev.repository
 	report.ComponentEndpoints = make(map[string]string)
 	for name, endpoint := range componentEndpoints(instance) {
@@ -156,6 +156,29 @@ func (r *Reconciler) Reconcile(ctx context.Context, instance *models.CamundaInst
 	}
 
 	return report, nil
+}
+
+// observedSnapshots groups every snapshot the sweep saw by the backup ID it
+// belongs to, independent of which findings survived implication.
+//
+// A deletion needs the full artifact set, and the finding list is deliberately
+// not that: it is de-duplicated for reading. Returns nil when Elasticsearch was
+// not enumerated, so an incomplete sweep contributes nothing rather than an
+// empty set that could be mistaken for "no snapshots".
+func observedSnapshots(ev *evidence) map[string][]string {
+	if !ev.reachable(SourceElasticsearch) {
+		return nil
+	}
+
+	byBackup := make(map[string][]string)
+	for _, snap := range ev.snapshots {
+		owner, backupID, _ := elasticsearch.ClassifySnapshot(snap.Name, ev.namePrefix)
+		if backupID == "" || owner == elasticsearch.OwnerForeign {
+			continue
+		}
+		byBackup[backupID] = append(byBackup[backupID], snap.Name)
+	}
+	return byBackup
 }
 
 // LatestReport returns the most recent stored report for an instance.

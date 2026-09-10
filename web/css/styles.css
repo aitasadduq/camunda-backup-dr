@@ -529,3 +529,139 @@
         margin-left: 0;
     }
 }
+
+/* ========== Bulk selection & deletion ========== */
+
+/* The checkbox column: narrow, and tighter than the default cell padding so a
+   checkbox does not sit in as much space as a timestamp. */
+.data-table th.col-select,
+.data-table td.col-select {
+    width: 2.5rem;
+    /* Both sides, not just padding-right: the base rule sets 0.75rem 1rem and
+       the responsive block sets 0.5rem, so overriding one side left the
+       checkbox off-centre by a different amount at each breakpoint. */
+    padding-left: 0.25rem;
+    padding-right: 0.25rem;
+    text-align: center;
+}
+
+.row-select {
+    width: 0.875rem;
+    height: 0.875rem;
+    cursor: pointer;
+    accent-color: #2563eb;
+    vertical-align: middle;
+}
+
+/* Sits between the scan note and the table, and only exists while something is
+   selected, so it must not reserve height when empty. */
+.bulk-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 0.75rem;
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-radius: 0.375rem;
+}
+
+.bulk-bar-count {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: #1e40af;
+    margin-right: auto;
+}
+
+.bulk-bar-delete,
+.bulk-bar-clear {
+    padding: 0.25rem 0.625rem;
+    font-size: 0.75rem;
+    font-weight: 500;
+    border-radius: 0.375rem;
+    cursor: pointer;
+    border: 1px solid transparent;
+}
+
+.bulk-bar-delete {
+    background: #dc2626;
+    color: #ffffff;
+}
+
+.bulk-bar-delete:hover {
+    background: #b91c1c;
+}
+
+.bulk-bar-clear {
+    background: #ffffff;
+    color: #374151;
+    border-color: #d1d5db;
+}
+
+.bulk-bar-clear:hover {
+    background: #f9fafb;
+}
+
+/* The status breakdown in a multi-backup delete confirmation, and the per-backup
+   reasons when part of a batch survives. Both can run long, so the list scrolls
+   inside the dialog rather than pushing its buttons off screen. */
+.delete-summary {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    max-height: 14rem;
+    overflow-y: auto;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.375rem;
+}
+
+.delete-summary li {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.375rem 0.625rem;
+    border-bottom: 1px solid #f3f4f6;
+}
+
+.delete-summary li:last-child {
+    border-bottom: none;
+}
+
+.delete-summary-count {
+    margin-left: auto;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: #374151;
+}
+
+.delete-summary-note {
+    font-size: 0.75rem;
+    color: #6b7280;
+    margin-top: 0.5rem;
+}
+
+/* Inside a failure row the reason follows the ID and takes the free space, so it
+   wraps instead of squeezing the ID. */
+.delete-failure {
+    align-items: flex-start;
+}
+
+.delete-failure .delete-summary-note {
+    margin-top: 0;
+    flex: 1;
+    min-width: 0;
+    word-break: break-word;
+}
+
+/* tailwind.css is a purged prebuilt bundle with no max-w-md or max-w-lg in it,
+   so these two dialog widths are defined here. */
+.confirm-panel {
+    width: 100%;
+    max-width: 26rem;
+}
+
+.delete-failure-modal {
+    width: 100%;
+    max-width: 32rem;
+}
