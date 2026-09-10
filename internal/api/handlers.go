@@ -330,6 +330,32 @@ func validateExportingEndpoint(endpoint string) error {
 	return nil
 }
 
+// validateNotifications returns an error if either configured notification is
+// enabled but malformed, or targets a private/loopback address (SSRF guard).
+// The model rejects the same requests, but only as a generic invalid-instance
+// error — this reports which field the user has to fix.
+func validateNotifications(nc models.NotificationConfig) error {
+	for label, nr := range map[string]models.NotificationRequest{
+		"on_success": nc.OnSuccess,
+		"on_failure": nc.OnFailure,
+	} {
+		if !nr.Enabled {
+			continue
+		}
+		if err := nr.Validate(); err != nil {
+			return utils.NewValidationError("notifications." + label + ": " + err.Error())
+		}
+		u, err := url.Parse(nr.URL)
+		if err != nil {
+			return utils.NewValidationError("notifications." + label + ": url is not a valid URL")
+		}
+		if isBlockedHost(u.Hostname()) {
+			return utils.NewValidationError("notifications." + label + ": url must not target private or loopback addresses (set PROBE_ALLOW_PRIVATE_IPS=true to allow)")
+		}
+	}
+	return nil
+}
+
 // CreateCamundaInstanceHandler handles creating a new Camunda instance
 func (h *Handlers) CreateCamundaInstanceHandler(w http.ResponseWriter, r *http.Request) {
 	var instance models.CamundaInstance
@@ -354,6 +380,10 @@ func (h *Handlers) CreateCamundaInstanceHandler(w http.ResponseWriter, r *http.R
 		return
 	}
 	if err := validateExportingEndpoint(instance.ExportingEndpoint); err != nil {
+		writeAppError(w, err)
+		return
+	}
+	if err := validateNotifications(instance.Notifications); err != nil {
 		writeAppError(w, err)
 		return
 	}
@@ -478,6 +508,10 @@ func (h *Handlers) UpdateCamundaInstanceHandler(w http.ResponseWriter, r *http.R
 		return
 	}
 	if err := validateExportingEndpoint(updates.ExportingEndpoint); err != nil {
+		writeAppError(w, err)
+		return
+	}
+	if err := validateNotifications(updates.Notifications); err != nil {
 		writeAppError(w, err)
 		return
 	}

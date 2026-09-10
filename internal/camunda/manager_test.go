@@ -859,3 +859,72 @@ func TestManager_UpdateComponentConfig_SaveError(t *testing.T) {
 		t.Error("Expected error when save fails")
 	}
 }
+
+func TestManager_NotificationsSurviveConfigRoundTrip(t *testing.T) {
+	manager, _, cleanup := setupTestManager(t)
+	defer cleanup()
+
+	notifications := models.NotificationConfig{
+		OnSuccess: models.NotificationRequest{
+			Enabled:      true,
+			Method:       "POST",
+			URL:          "https://hooks.example.com:8443/success",
+			Body:         `{"channel":"backups"}`,
+			MessageField: "payload.text",
+		},
+		OnFailure: models.NotificationRequest{
+			Enabled:      true,
+			Method:       "PUT",
+			URL:          "https://hooks.example.com:8443/failure",
+			MessageField: "text",
+		},
+	}
+
+	instance := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
+	instance.BackupIDS3Endpoint = "https://s3.example.com"
+	instance.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
+	instance.Notifications = notifications
+
+	if err := manager.CreateInstance(instance); err != nil {
+		t.Fatalf("Failed to create instance: %v", err)
+	}
+
+	retrieved, err := manager.GetInstance("camunda-a")
+	if err != nil {
+		t.Fatalf("Failed to retrieve instance: %v", err)
+	}
+	if retrieved.Notifications != notifications {
+		t.Fatalf("Expected notifications to be persisted, got %+v", retrieved.Notifications)
+	}
+
+	// An update that carries the notifications forward must not drop them, and
+	// one that clears them must actually clear them.
+	updated := models.NewCamundaInstance("camunda-a", "Test Camunda", "https://test.example.com")
+	updated.BackupIDS3Endpoint = "https://s3.example.com"
+	updated.BackupIDS3AccessKey = "AKIAIOSFODNN7EXAMPLE"
+	updated.Notifications = notifications
+	if err := manager.UpdateInstance("camunda-a", updated); err != nil {
+		t.Fatalf("Failed to update instance: %v", err)
+	}
+
+	retrieved, err = manager.GetInstance("camunda-a")
+	if err != nil {
+		t.Fatalf("Failed to retrieve instance: %v", err)
+	}
+	if retrieved.Notifications != notifications {
+		t.Errorf("Expected notifications to survive an update, got %+v", retrieved.Notifications)
+	}
+
+	updated.Notifications = models.NotificationConfig{}
+	if err := manager.UpdateInstance("camunda-a", updated); err != nil {
+		t.Fatalf("Failed to update instance: %v", err)
+	}
+
+	retrieved, err = manager.GetInstance("camunda-a")
+	if err != nil {
+		t.Fatalf("Failed to retrieve instance: %v", err)
+	}
+	if retrieved.Notifications != (models.NotificationConfig{}) {
+		t.Errorf("Expected notifications to be cleared, got %+v", retrieved.Notifications)
+	}
+}
