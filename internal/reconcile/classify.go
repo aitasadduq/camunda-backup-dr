@@ -421,8 +421,17 @@ func classifyESComponent(ev *evidence, idx *evidenceIndex, record *models.Backup
 }
 
 // classifyUntracked finds artifacts that exist with no controller record.
+//
+// Every rule here concludes something from the *absence* of a record, so all of
+// them are gated on the controller's own metadata having been enumerable. A
+// short or failed listing would otherwise make live, restorable backups look
+// untracked — and an untracked artifact is one the UI offers to delete.
 func classifyUntracked(ev *evidence, idx *evidenceIndex, opts Options) []Finding {
 	var out []Finding
+
+	if !ev.reachable(SourceControllerS3) {
+		return out
+	}
 
 	// A1: a component holds a backup the controller never recorded.
 	for component, byID := range ev.componentBackups {
@@ -496,8 +505,9 @@ func classifyUntracked(ev *evidence, idx *evidenceIndex, opts Options) []Finding
 		})
 	}
 
-	// A5: log files with no record behind them.
-	if ev.reachable(SourceLogs) && ev.reachable(SourceControllerS3) {
+	// A5: log files with no record behind them. The controller-metadata gate is
+	// applied for every rule at the top of this function.
+	if ev.reachable(SourceLogs) {
 		var stray []string
 		for backupID := range ev.logBackupIDs {
 			if len(idx.recordsByID[backupID]) == 0 && !withinGrace(backupID, ev, opts) {

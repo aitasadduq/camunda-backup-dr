@@ -18,7 +18,7 @@ import (
 //
 // Suppressed codes are not discarded: they move to BackupIssue.Implied so the
 // evidence stays visible when a row is expanded.
-func Rollup(instanceID string, findings []Finding, trackedIDs map[string]bool, sources map[string]SourceStatus, started, finished time.Time) *Report {
+func Rollup(instanceID string, findings []Finding, trackedIDs map[string]bool, sources map[string]SourceStatus, snapshotsByBackup map[string][]string, started, finished time.Time) *Report {
 	report := &Report{
 		CamundaInstanceID: instanceID,
 		StartedAt:         started,
@@ -42,7 +42,7 @@ func Rollup(instanceID string, findings []Finding, trackedIDs map[string]bool, s
 
 	for backupID, group := range byBackup {
 		report.BackupIssues = append(report.BackupIssues,
-			buildIssue(backupID, group, implied[backupID], trackedIDs[backupID]))
+			buildIssue(backupID, group, implied[backupID], trackedIDs[backupID], snapshotsByBackup[backupID]))
 	}
 
 	sortFindings(report.InstanceFindings)
@@ -52,7 +52,7 @@ func Rollup(instanceID string, findings []Finding, trackedIDs map[string]bool, s
 }
 
 // buildIssue collapses one backup's findings into a single row.
-func buildIssue(backupID string, group []Finding, implied []ReasonCode, tracked bool) BackupIssue {
+func buildIssue(backupID string, group []Finding, implied []ReasonCode, tracked bool, observedSnapshots []string) BackupIssue {
 	sortFindings(group)
 
 	issue := BackupIssue{
@@ -80,6 +80,10 @@ func buildIssue(backupID string, group []Finding, implied []ReasonCode, tracked 
 		}
 	}
 	issue.SnapshotNames = dedupeStrings(snapshots)
+	// Every snapshot seen for this ID, including ones whose finding was
+	// suppressed as already explained. Deletion reads this; the display reads
+	// SnapshotNames.
+	issue.AllSnapshotNames = dedupeStrings(append(append([]string(nil), observedSnapshots...), snapshots...))
 	issue.PresentIn = dedupeStrings(present)
 	issue.MissingIn = dedupeStrings(missing)
 	issue.Unverified = dedupeStrings(unverified)

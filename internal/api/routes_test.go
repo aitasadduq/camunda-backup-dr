@@ -222,11 +222,12 @@ func TestRouter_MethodNotAllowed(t *testing.T) {
 }
 
 func TestRouter_DeleteBackup(t *testing.T) {
-	router, cm, _, _, _, _ := newTestRouter()
+	router, cm, _, hist, _, _ := newTestRouter()
 
 	cm.instances = []models.CamundaInstance{
 		{ID: "test-1", Name: "Test 1"},
 	}
+	hist.history = []*models.BackupHistory{{CamundaInstanceID: "test-1", BackupID: "backup-1"}}
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/camundas/test-1/backups/backup-1", nil)
 	w := httptest.NewRecorder()
@@ -239,10 +240,14 @@ func TestRouter_DeleteBackup(t *testing.T) {
 }
 
 func TestRouter_BulkDeleteBackups(t *testing.T) {
-	router, cm, _, _, _, ret := newTestRouter()
+	router, cm, _, hist, _, ret := newTestRouter()
 
 	cm.instances = []models.CamundaInstance{
 		{ID: "test-1", Name: "Test 1"},
+	}
+	hist.history = []*models.BackupHistory{
+		{CamundaInstanceID: "test-1", BackupID: "20260320080000"},
+		{CamundaInstanceID: "test-1", BackupID: "20260321080000"},
 	}
 
 	body := strings.NewReader(`{"backup_ids":["20260320080000","20260321080000"]}`)

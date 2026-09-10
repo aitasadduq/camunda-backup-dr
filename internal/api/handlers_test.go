@@ -223,7 +223,7 @@ type mockRetentionManager struct {
 	deletedBackups []string
 }
 
-func (m *mockRetentionManager) DeleteBackup(camundaInstanceID, backupID string, force bool) error {
+func (m *mockRetentionManager) DeleteBackup(ctx context.Context, camundaInstanceID, backupID string, force bool) error {
 	m.deleteForce = force
 	m.deletedBackups = append(m.deletedBackups, backupID)
 	if err, ok := m.deleteErrByID[backupID]; ok {
@@ -232,7 +232,7 @@ func (m *mockRetentionManager) DeleteBackup(camundaInstanceID, backupID string, 
 	return m.deleteErr
 }
 
-func (m *mockRetentionManager) DeleteOrphan(camundaInstanceID string, artifacts retention.OrphanArtifacts) error {
+func (m *mockRetentionManager) DeleteOrphan(ctx context.Context, camundaInstanceID string, artifacts retention.OrphanArtifacts) error {
 	m.deletedOrphans = append(m.deletedOrphans, artifacts)
 	return m.orphanErr
 }
@@ -675,7 +675,8 @@ func TestGetBackupDetailsHandler_NotFound(t *testing.T) {
 // --- Retention Handler Tests ---
 
 func TestDeleteBackupHandler_Success(t *testing.T) {
-	handlers, cm, _, _, _, ret, _ := newTestHandlers()
+	handlers, cm, _, hist, _, ret, _ := newTestHandlers()
+	hist.history = []*models.BackupHistory{{CamundaInstanceID: "test-1", BackupID: "backup-1"}}
 
 	cm.instances = []models.CamundaInstance{
 		{ID: "test-1", Name: "Test Instance 1"},
@@ -731,8 +732,8 @@ func TestDeleteBackupHandler_UntrackedWithoutReport(t *testing.T) {
 
 	handlers.DeleteBackupHandler(w, req)
 
-	if w.Code != http.StatusConflict {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusConflict, w.Code, w.Body.String())
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusNotFound, w.Code, w.Body.String())
 	}
 	if !strings.Contains(w.Body.String(), "no_report") {
 		t.Errorf("expected a no_report error code, got: %s", w.Body.String())
@@ -740,7 +741,8 @@ func TestDeleteBackupHandler_UntrackedWithoutReport(t *testing.T) {
 }
 
 func TestDeleteBackupHandler_SafetyRefusal(t *testing.T) {
-	handlers, cm, _, _, _, ret, _ := newTestHandlers()
+	handlers, cm, _, hist, _, ret, _ := newTestHandlers()
+	hist.history = []*models.BackupHistory{{CamundaInstanceID: "test-1", BackupID: "backup-1"}}
 
 	cm.instances = []models.CamundaInstance{
 		{ID: "test-1", Name: "Test Instance 1"},
@@ -758,7 +760,8 @@ func TestDeleteBackupHandler_SafetyRefusal(t *testing.T) {
 }
 
 func TestDeleteBackupHandler_ArtifactsRemain(t *testing.T) {
-	handlers, cm, _, _, _, ret, _ := newTestHandlers()
+	handlers, cm, _, hist, _, ret, _ := newTestHandlers()
+	hist.history = []*models.BackupHistory{{CamundaInstanceID: "test-1", BackupID: "backup-1"}}
 
 	cm.instances = []models.CamundaInstance{
 		{ID: "test-1", Name: "Test Instance 1"},
@@ -782,7 +785,8 @@ func TestDeleteBackupHandler_ArtifactsRemain(t *testing.T) {
 }
 
 func TestDeleteBackupHandler_ForceQueryParam(t *testing.T) {
-	handlers, cm, _, _, _, ret, _ := newTestHandlers()
+	handlers, cm, _, hist, _, ret, _ := newTestHandlers()
+	hist.history = []*models.BackupHistory{{CamundaInstanceID: "test-1", BackupID: "backup-1"}}
 
 	cm.instances = []models.CamundaInstance{
 		{ID: "test-1", Name: "Test Instance 1"},
@@ -1631,7 +1635,8 @@ func TestGetBackupDetailsHandler_InvalidPath(t *testing.T) {
 // --- DeleteBackupHandler Error Tests ---
 
 func TestDeleteBackupHandler_InternalError(t *testing.T) {
-	handlers, cm, _, _, _, ret, _ := newTestHandlers()
+	handlers, cm, _, hist, _, ret, _ := newTestHandlers()
+	hist.history = []*models.BackupHistory{{CamundaInstanceID: "test-1", BackupID: "backup-1"}}
 
 	cm.instances = []models.CamundaInstance{
 		{ID: "test-1", Name: "Test Instance 1"},

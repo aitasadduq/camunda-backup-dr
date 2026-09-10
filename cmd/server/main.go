@@ -116,6 +116,11 @@ func main() {
 		retentionManager.ApplyRetention(instance)
 	})
 	retentionManager.SetInstanceProvider(camundaManager)
+	// An orphan has no record to read a RUNNING status from, so the orphan
+	// delete path asks the orchestrator directly instead. Without this it would
+	// happily delete the artifacts of a live backup whose initial record write
+	// failed.
+	retentionManager.SetBackupRunningFunc(backupOrchestrator.IsBackupRunning)
 	logger.Info("Retention manager initialized and wired to orchestrator")
 
 	// Reconciler: cross-references controller metadata against the artifacts that

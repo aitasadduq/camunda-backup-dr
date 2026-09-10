@@ -54,8 +54,8 @@ type SchedulerInterface interface {
 
 // RetentionManager defines the interface for retention operations
 type RetentionManager interface {
-	DeleteBackup(camundaInstanceID, backupID string, force bool) error
-	DeleteOrphan(camundaInstanceID string, artifacts retention.OrphanArtifacts) error
+	DeleteBackup(ctx context.Context, camundaInstanceID, backupID string, force bool) error
+	DeleteOrphan(ctx context.Context, camundaInstanceID string, artifacts retention.OrphanArtifacts) error
 	ListOrphanedBackups(camundaInstanceID string) ([]*models.BackupHistory, error)
 	ListIncompleteBackups(camundaInstanceID string) ([]*models.BackupHistory, error)
 	ListFailedBackups(camundaInstanceID string) ([]*models.BackupHistory, error)
@@ -793,7 +793,10 @@ func (h *Handlers) DeleteBackupHandler(w http.ResponseWriter, r *http.Request) {
 	// It has no meaning for an orphan, which has no record to hold back.
 	force := r.URL.Query().Get("force") == "true"
 
-	if err := h.deleteBackupEverywhere(instanceID, backupID, force); err != nil {
+	ctx, cancel := context.WithTimeout(r.Context(), singleDeleteTimeout)
+	defer cancel()
+
+	if err := h.deleteBackupEverywhere(ctx, instanceID, backupID, force, h.orphanIndexFor(instanceID)); err != nil {
 		status, code, message := deleteFailureResponse(err)
 		if status == http.StatusInternalServerError {
 			h.logger.Error("Failed to delete backup: %v", err)

@@ -93,4 +93,33 @@ var (
 	// path segment in a component DELETE URL, so it is reported but never
 	// deleted automatically.
 	ErrBackupIDNotDeletable = errors.New("backup ID is not in the controller's format, so it can only be deleted by hand")
+
+	// ErrOrphanReportPartial is returned when the sweep an orphan deletion would
+	// act on could not reach every source. Absence of evidence is not evidence
+	// of absence, and it is not licence to delete either: a source that was not
+	// enumerated may hold artifacts this deletion would leave behind while
+	// reporting success.
+	ErrOrphanReportPartial = errors.New("the last scan could not check every source, so what this backup left behind is not fully known")
+
+	// ErrOrphanOwnershipUnverified is returned when another configured instance
+	// could own the artifacts an orphan deletion would remove — because it holds
+	// a record for the same backup ID, or because it shares the repository or
+	// component endpoint the artifacts live behind. Backup IDs are timestamps,
+	// so the same ID routinely exists in several instances.
+	ErrOrphanOwnershipUnverified = errors.New("another configured instance may own this backup, so it will not be deleted automatically")
+
+	// ErrOrphanEndpointDrift is returned when a component's backup endpoint has
+	// changed since the sweep that found the orphan. The DELETE would go to an
+	// endpoint that never reported this backup, where the same timestamp ID can
+	// name a completely different, live backup.
+	ErrOrphanEndpointDrift = errors.New("component endpoints have changed since the last scan; re-scan before deleting")
+
+	// ErrOrphanReportStale is returned when the sweep an orphan deletion would
+	// act on is too old to be trusted as a description of what exists now.
+	ErrOrphanReportStale = errors.New("the last scan is too old to delete from; re-scan first")
+
+	// ErrSnapshotNameNotDeletable is returned for a snapshot name that could
+	// address something other than itself once placed in a URL path. Names come
+	// from a repository listing, which is outside the controller.
+	ErrSnapshotNameNotDeletable = errors.New("snapshot name contains characters that are not addressable, so it can only be deleted by hand")
 )

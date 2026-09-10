@@ -595,8 +595,8 @@ Returns the backup history for a Camunda instance, ordered by most recent first.
 
 #### `GET /api/camundas/{id}/backups/{backupId}` — Get Backup Details
 
-> **Reserved names.** `orphaned`, `incomplete`, `failed`, `reconcile` and
-> `delete` are routed as their own sub-paths and cannot be addressed as backup
+> **Reserved names.** `orphaned`, `incomplete`, `failed`, `reconcile`, `delete`
+> and `logs` are routed as their own sub-paths and cannot be addressed as backup
 > IDs. Backup IDs are `YYYYMMDDHHMMSS` timestamps, so this never collides in
 > practice.
 
@@ -691,13 +691,17 @@ deleting the record first would strand the artifacts as orphans.
 | Error Code | Condition |
 |---|---|
 | 400 | Instance ID or Backup ID missing |
-| 404 | Instance not found, or the backup is neither recorded nor reported as an orphan |
-| 409 | Cannot delete the most recent backup, or the backup is still RUNNING (safety refusal) |
-| 409 | `artifacts_remain` — one or more artifacts could not be deleted; nothing was removed from the controller. Retry, or repeat with `?force=true` |
-| 409 | `no_report` — the backup has no record and no sweep has run, so nothing can say what it left behind. Run a sweep first |
+| 404 | `not_found` — instance not found, or the backup is neither recorded nor reported as an orphan by the latest sweep |
+| 404 | `no_report` — the backup has no record and no sweep has run, so nothing can say whether it is an orphan. Repeat DELETEs stay idempotent: an unknown ID always answers 404 |
+| 409 | Cannot delete the most recent backup, or the backup is still RUNNING (safety refusal). An **orphan** is also refused while any backup is in flight, because it has no record to read a status from |
+| 409 | `artifacts_remain` — one or more artifacts could not be deleted; nothing was removed from the controller. For a **tracked** backup: retry, or repeat with `?force=true`. For an **orphan**: `force` does not apply, so resolve the unreachable source and retry |
 | 409 | `stale_report` — the backup was reported as an orphan but has since acquired a record. Re-run the sweep |
+| 409 | `report_partial` — the sweep could not reach every source, so what the backup left behind is not fully known. Re-scan once every source is reachable |
+| 409 | `report_stale` — the sweep is more than an hour old. Re-scan first |
+| 409 | `endpoint_drift` — a component's backup endpoint has changed since the sweep. Re-scan first |
+| 409 | `ownership_unverified` — another configured instance holds a record for this ID, or shares the repository or endpoint the artifacts live behind |
 | 409 | `unidentifiable` — the sweep found the orphan but named no artifact to delete |
-| 409 | `not_deletable` — the orphan's ID is not in the controller's `YYYYMMDDHHMMSS` format, so it can only be removed by hand |
+| 409 | `not_deletable` — the orphan's ID is not in the controller's `YYYYMMDDHHMMSS` format, or a snapshot name is not addressable. Remove it by hand |
 | 500 | Internal server error |
 
 ##### Deleting an orphan
@@ -707,21 +711,43 @@ tracked deletion purges does not exist. The **latest reconciliation report**
 takes its place: the controller deletes the component backups and the exact
 Elasticsearch snapshots that sweep positively found, and nothing else.
 
-Three consequences follow, and all three are deliberate:
+Which sweep, and how far it is trusted, is the whole design. Every one of these
+is a refusal, not a best effort:
 
 - **The caller cannot name the artifacts.** The report is read server-side. A
   client able to specify what to delete could name any snapshot in the
   repository.
-- **A source the sweep could not reach is not deleted from.** Its artifacts
-  survive and the next sweep reports them again. This is the same rule that
-  stops the reconciler reporting a backup as missing from a source it never
-  enumerated — an unreachable source is not evidence of absence, and it is not a
-  licence to delete either.
-- **Only IDs the controller could have issued are deleted.** A component API is
-  free to report backup IDs the controller never generated, and that ID becomes
-  a path segment in the `DELETE` built from it. Anything not matching
-  `YYYYMMDDHHMMSS` is reported with a remediation command and never deleted
-  automatically.
+- **A partial sweep authorises nothing.** If any source could not be reached,
+  the deletion is refused outright (`report_partial`) rather than removing what
+  was seen and stranding the rest. An unreachable source is not evidence of
+  absence, and it is not a licence to delete either.
+- **An old sweep authorises nothing.** A report older than an hour is refused
+  (`report_stale`). A deletion acts on a description of the world, and an old
+  description is not one.
+- **Endpoints must not have moved.** The sweep records the component endpoints
+  it actually talked to; if the instance now points somewhere else the deletion
+  is refused (`endpoint_drift`). Backup IDs are timestamps from a cron schedule,
+  so the same ID routinely names a live backup in another environment.
+- **Ownership must be establishable.** If another configured instance holds a
+  record for the same ID, or shares the snapshot repository or a component
+  endpoint with nothing to tell their backups apart, the deletion is refused
+  (`ownership_unverified`). With the default empty snapshot name prefix, two
+  instances share one repository and each sees the other's backups as orphans.
+- **No backup may be in flight.** An orphan has no record to read a `RUNNING`
+  status from, and a live backup whose initial record write failed looks exactly
+  like one, so any in-flight backup refuses the deletion.
+- **Only addressable names are deleted.** A component API can report backup IDs
+  the controller never generated, and a repository can report snapshot names
+  containing path separators or wildcards; both become path segments in the
+  `DELETE`. Anything not matching `YYYYMMDDHHMMSS`, or carrying a character
+  Elasticsearch itself forbids in a snapshot name, is reported with a
+  remediation command and never deleted automatically.
+
+The artifact list also comes from every snapshot the sweep *observed* for that
+backup, not only the ones a finding named. Findings are de-duplicated for
+reading — a component snapshot is not reported separately while the component
+still tracks the backup — and deleting from the reported set alone would leave
+those snapshots behind while reporting the backup fully deleted.
 
 `force` has no meaning for an orphan: it exists to drop a controller record
 despite surviving artifacts, and an orphan has no record. An orphan whose
@@ -754,7 +780,7 @@ Deletes a batch of backups, each one through exactly the same path as
 
 | Field | Description |
 |---|---|
-| `backup_ids` | Backup IDs to delete. Duplicates are collapsed; at most 200 per request |
+| `backup_ids` | Backup IDs to delete. Duplicates are collapsed; at most 25 per request |
 | `force` | Applied to each tracked deletion, exactly as the query parameter above. Ignored for orphans |
 
 **Response:** `200 OK`
@@ -780,11 +806,21 @@ reports only whether the request was valid; the outcome is per backup.
 
 Each `failed` entry carries the same `error` code the single-backup endpoint
 would have returned for that backup, so a client can react per backup instead of
-parsing prose.
+parsing prose. One extra code is specific to batches: `not_attempted` means the
+request ran out of time or was cancelled before reaching that backup, so it was
+never touched and can be retried.
+
+The cap is a time budget rather than a taste. Each backup costs an
+instance-wide S3 listing plus a fan-out to every component and to Elasticsearch,
+and one unreachable component burns four 30s attempts with backoff before giving
+up. The batch stops at 90s and reports the remainder as `not_attempted`, leaving
+room to write the response inside the server's 120s write timeout — because a
+batch that outruns the connection cannot deliver the per-backup outcome that is
+the point of the endpoint.
 
 | Error Code | Condition |
 |---|---|
-| 400 | Instance ID missing, body invalid, `backup_ids` empty, more than 200 IDs, or an ID containing a path separator |
+| 400 | Instance ID missing, body invalid or carrying trailing content, `backup_ids` empty, more than 25 IDs, or an ID containing a path separator |
 | 404 | Instance not found |
 | 500 | Internal server error |
 

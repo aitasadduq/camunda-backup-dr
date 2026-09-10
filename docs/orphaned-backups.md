@@ -315,7 +315,8 @@ and still refuses to delete the most recent successful backup or one that is
 still `RUNNING`:
 
 ```bash
-curl -X DELETE http://localhost:8080/api/camundas/{id}/backups/{backupId}
+curl -X DELETE http://localhost:8080/api/camundas/{id}/backups/{backupId} \
+  -H 'X-Requested-With: XMLHttpRequest'
 ```
 
 If any artifact cannot be deleted the endpoint answers `409 artifacts_remain`
@@ -332,22 +333,41 @@ sweep positively found, and nothing else.
 
 ```bash
 # Identical call. Which path it takes is decided from whether a record exists.
-curl -X DELETE http://localhost:8080/api/camundas/{id}/backups/{backupId}
+curl -X DELETE http://localhost:8080/api/camundas/{id}/backups/{backupId} \
+  -H 'X-Requested-With: XMLHttpRequest'
 ```
 
-Three limits are deliberate:
+The deletion trusts the sweep only as far as the sweep can be trusted, and every
+one of these is a refusal rather than a best effort:
 
-- **A source the sweep could not reach is not deleted from.** Its artifacts
-  survive and the next sweep reports them again. This is the unreachable-source
-  guard applied to deletion: absence of evidence never justifies concluding an
-  artifact is gone, and it never justifies removing one either.
-- **Only IDs the controller could have issued are deleted.** A component API can
-  report backup IDs the controller never generated, and that ID becomes a path
-  segment in the `DELETE` built from it. Anything not matching `YYYYMMDDHHMMSS`
-  answers `409 not_deletable` and stays report-only.
-- **A record appearing after the sweep stops the deletion.** It answers `409
-  stale_report`, because that record's safety guards must be applied and only
+- **A partial sweep authorises nothing** (`409 report_partial`). Deleting what it
+  saw and leaving the rest would report success over stranded artifacts. This is
+  the unreachable-source guard applied to deletion: absence of evidence never
+  justifies concluding an artifact is gone, and it never justifies removing one.
+- **A sweep older than an hour authorises nothing** (`409 report_stale`).
+- **Endpoints must not have moved** (`409 endpoint_drift`). The sweep records
+  where it found the backup; the same timestamp ID names a different, live backup
+  in another environment.
+- **Ownership must be establishable** (`409 ownership_unverified`). With the
+  default empty name prefix two instances share one repository and each sees the
+  other's live backups as orphans. A record for the same ID under another
+  instance, or a shared endpoint or repository with nothing to tell the backups
+  apart, stops the deletion.
+- **Nothing may be in flight** (`409 safety_refusal`). An orphan has no record to
+  read a `RUNNING` status from, and a live backup whose initial record write
+  failed is indistinguishable from one.
+- **Only addressable names are deleted** (`409 not_deletable`). Backup IDs that
+  do not match `YYYYMMDDHHMMSS`, and snapshot names carrying characters
+  Elasticsearch itself forbids, become path segments in the `DELETE` and stay
+  report-only.
+- **A record appearing after the sweep stops the deletion** (`409
+  stale_report`), because that record's safety guards must be applied and only
   the tracked path applies them.
+
+The artifact set comes from every snapshot the sweep *observed* for the backup,
+not only the ones a finding named. `A3` deliberately does not report a component
+snapshot while the component still tracks the backup — that is the `A1` finding —
+so deleting from the reported set alone would leave those snapshots behind.
 
 `force` does nothing here — it drops a controller record, and an orphan has none.
 
@@ -375,8 +395,13 @@ curl -X POST http://localhost:8080/api/camundas/{id}/backups/delete \
 ```
 
 Each backup goes down the same path it would alone, so every guard above still
-applies per backup. The batch is not a transaction: the response reports which
-backups were deleted and, for each one that survived, why.
+applies per backup. At most 25 per request, and the batch stops after 90s and
+reports the rest as `not_attempted`: a batch that outruns the connection cannot
+deliver the per-backup outcome that is the point of it. The UI sends a larger
+selection as several requests and merges the results.
+
+The batch is not a transaction: the response reports which backups were deleted
+and, for each one that survived, why.
 
 ---
 

@@ -65,10 +65,14 @@ After every change, run in this order:
 - Tests use table-driven patterns, mock interfaces, `httptest.Server` for external services, and `testEnv` struct with deferred cleanup
 - Build tags: `//go:build integration` for ES/S3 tests, `//go:build e2e` for end-to-end tests
 - The reconciler is report-only and never deletes; every conclusion drawn from an artifact being *absent* must be gated on that source having been reachable (see `internal/reconcile/classify.go`)
-- Deleting an orphan is a separate, explicit act carried out by `retention.Manager.DeleteOrphan`, never by the reconciler. An orphan has no record, so the *latest report* is the authority for what it left behind: only sources the sweep positively found are deleted from, and only backup IDs the controller could have issued (`camunda.IsBackupIDShaped`) — a component API can report IDs the controller never generated, and that ID becomes a path segment in the DELETE. The report is read server-side; a client never names the artifacts to delete
+- Deleting an orphan is a separate, explicit act carried out by `retention.Manager.DeleteOrphan`, never by the reconciler. An orphan has no record, so the *latest report* is the authority for what it left behind, and the report is read server-side — a client never names the artifacts to delete
+- That authority is bounded, and each bound is a refusal rather than a best effort: a partial sweep, a sweep older than `maxReportAge`, a component endpoint that has moved since the sweep, an unestablishable owner (another instance holding the same ID, or a shared repository/endpoint), any backup in flight, and any backup ID or snapshot name that is not addressable as a single URL path segment. Adding a source or an artifact kind means deciding which of these it needs
+- Deletion reads `BackupIssue.AllSnapshotNames`, never `SnapshotNames`. The latter is de-duplicated for display and omits snapshots another finding already explains; deleting from it leaves those behind while reporting success
+- The tracked/orphan choice is made by probing for the record (`Handlers.isTracked`), never by pattern-matching an error out of a call that has side effects — `DeleteBackup` reports not-found both before it touches anything and again after every artifact is gone
 - `force` means "drop the controller's record despite surviving artifacts". It is meaningless for an orphan, which has no record — never offer it there
 - Reason codes in `internal/reconcile/reasons.go` are a public API contract — their string values must stay stable, and every code needs a catalogue entry with remediation text
 - For the orphan taxonomy and its false-positive guards, see `docs/orphaned-backups.md`
+- For open findings not yet fixed, see `docs/known-issues.md` — check it before assuming a rough edge is news, and delete the entry when you fix it
 - For architecture details, see `planning/architecture-ait-updated.md`
 - For implementation status, see `planning/checklist.md`
 

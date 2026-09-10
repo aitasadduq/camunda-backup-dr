@@ -1490,6 +1490,12 @@ function renderBackupsTable(instanceId, backups, opts = {}) {
             </table>
         </div>
     `;
+
+    // The header checkbox is rendered without checked/indeterminate, and a
+    // selection can survive this render (syncSelectionToRows keeps any ID still
+    // present). Syncing it here is what keeps the column control from claiming
+    // nothing is selected while the rows below it are ticked.
+    updateBulkBar(instanceId);
 }
 
 // ============================================================
@@ -1860,13 +1866,39 @@ async function runBulkDelete(instanceId, ids) {
     await reloadAfterDelete(instanceId, deleted, touchedOrphan);
 }
 
+/**
+ * The server caps a batch because each backup costs a fan-out to every component
+ * and to Elasticsearch, and a batch large enough to outrun the request budget
+ * cannot deliver its own per-backup result. A bigger selection is sent as
+ * several requests and the results merged, so the user still sees one outcome.
+ */
+const BULK_DELETE_CHUNK = 25;
+
 async function postBulkDelete(instanceId, ids, force) {
-    try {
-        return await api.post(`api/camundas/${instanceId}/backups/delete`, { backup_ids: ids, force });
-    } catch (err) {
-        showToast(err.message || 'Failed to delete backups', 'error');
-        return null;
+    const merged = { requested: 0, deleted: [], failed: [] };
+
+    for (let i = 0; i < ids.length; i += BULK_DELETE_CHUNK) {
+        const chunk = ids.slice(i, i + BULK_DELETE_CHUNK);
+        let result;
+        try {
+            result = await api.post(`api/camundas/${instanceId}/backups/delete`, { backup_ids: chunk, force });
+        } catch (err) {
+            showToast(err.message || 'Failed to delete backups', 'error');
+            // Everything already deleted still counts; the rest is reported as
+            // untried so the user knows where it stopped.
+            ids.slice(i).forEach(id => merged.failed.push({
+                backup_id: id,
+                error: 'not_attempted',
+                message: err.message || 'the request failed before this backup was reached',
+            }));
+            return merged.deleted.length || merged.failed.length ? merged : null;
+        }
+        merged.requested += result.requested || chunk.length;
+        merged.deleted = merged.deleted.concat(result.deleted || []);
+        merged.failed = merged.failed.concat(result.failed || []);
     }
+
+    return merged;
 }
 
 function confirmForceRetry(retryableFailures) {
@@ -2523,7 +2555,25 @@ async function loadOrphanedBackups(instanceId) {
         return;
     }
 
-    const rows = (report.backup_issues || []).filter(i => !i.tracked).map(orphanToBackupRow);
+    // Cross-check the report against live history before calling anything an
+    // orphan. A record the sweep did not see makes a real, restorable backup
+    // look untracked — and the orphan confirmation tells the user it cannot be
+    // restored. The All tab already does this; the Orphaned tab did not.
+    let tracked = new Set();
+    try {
+        const backups = await api.get(`api/camundas/${instanceId}/backups`);
+        tracked = new Set((backups || []).map(b => b.backup_id));
+    } catch (err) {
+        // Without the cross-check we cannot tell an orphan from a backup whose
+        // record we simply failed to read, and the wrong answer here is the one
+        // that deletes live data. Show nothing rather than something unsafe.
+        el.innerHTML = `<div class="empty-state"><p>Could not confirm which backups are orphaned</p><p class="text-sm mt-1">${escapeHtml(err.message || 'Failed to load backup history')}</p></div>`;
+        return;
+    }
+
+    const rows = (report.backup_issues || [])
+        .filter(i => !i.tracked && !tracked.has(i.backup_id))
+        .map(orphanToBackupRow);
     renderBackupsTable(instanceId, rows, { report });
 }
 

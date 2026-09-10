@@ -1,11 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/camunda"
 	"github.com/aitasadduq/camunda-backup-dr/internal/reconcile"
@@ -13,10 +16,23 @@ import (
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
 )
 
-// maxBulkDeleteBatch caps one bulk request. Each backup in a batch fans out to
-// every component plus Elasticsearch, so an unbounded batch would hold a request
-// open long past any sensible timeout.
-const maxBulkDeleteBatch = 200
+// maxBulkDeleteBatch caps one bulk request.
+//
+// The cap is a time budget, not a taste. Each backup costs an instance-wide S3
+// listing plus a fan-out to every component and to Elasticsearch, and one
+// unreachable component burns four 30s attempts with backoff before it gives
+// up. The server's WriteTimeout is 120s, so a batch large enough to exceed it
+// cannot deliver the per-backup report that is the whole point of the endpoint.
+const maxBulkDeleteBatch = 25
+
+// bulkDeleteBudget bounds a whole batch, and singleDeleteTimeout one deletion.
+// Both sit under the server's 120s WriteTimeout so the handler stops with time
+// left to write its result, rather than being cut off mid-flight with the
+// outcome lost.
+const (
+	bulkDeleteBudget    = 90 * time.Second
+	singleDeleteTimeout = 90 * time.Second
+)
 
 // maxBulkDeleteBody caps the request body. The only content is a list of
 // fourteen-character IDs, so this is generous by an order of magnitude.
@@ -54,8 +70,9 @@ type bulkDeleteResponse struct {
 // request itself was valid, even if every individual deletion failed; the
 // per-backup outcome is in the body.
 func (h *Handlers) BulkDeleteBackupsHandler(w http.ResponseWriter, r *http.Request) {
+	// extractIDFromPath already stops at the first "/", so the instance ID
+	// arrives without the "/backups/delete" suffix.
 	id := extractIDFromPath(r.URL.Path, "/api/camundas/")
-	id = strings.TrimSuffix(strings.TrimSuffix(id, "/"), "/backups/delete")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "validation_error", "Instance ID is required")
 		return
@@ -77,8 +94,17 @@ func (h *Handlers) BulkDeleteBackupsHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	var req bulkDeleteRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBulkDeleteBody)).Decode(&req); err != nil {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBulkDeleteBody))
+	if err := decoder.Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "validation_error", "Invalid request body")
+		return
+	}
+	// Decode stops at the end of the first JSON value, so without this a body
+	// of "{...}" followed by anything at all would be accepted and go on to
+	// delete. A destructive endpoint should not act on a body it only partly
+	// understood.
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "validation_error", "Request body must contain exactly one JSON object")
 		return
 	}
 
@@ -88,10 +114,36 @@ func (h *Handlers) BulkDeleteBackupsHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(r.Context(), bulkDeleteBudget)
+	defer cancel()
+
+	// Read the sweep once. It cannot change mid-request, and re-reading it per
+	// backup would both re-transfer the whole document and let a concurrent
+	// sweep judge different backups in one batch against different reports.
+	orphans := h.orphanIndexFor(id)
+
 	resp := bulkDeleteResponse{Requested: len(ids), Deleted: []string{}, Failed: []bulkDeleteFailure{}}
 	for _, backupID := range ids {
-		if err := h.deleteBackupEverywhere(id, backupID, req.Force); err != nil {
-			_, code, message := deleteFailureResponse(err)
+		// A cancelled or expired batch stops rather than deleting into a
+		// connection nobody is reading. The remainder is reported as untried so
+		// the caller knows exactly where it stopped.
+		if err := ctx.Err(); err != nil {
+			resp.Failed = append(resp.Failed, bulkDeleteFailure{
+				BackupID: backupID,
+				Error:    "not_attempted",
+				Message:  "the batch ran out of time before reaching this backup; retry it in a smaller batch",
+			})
+			continue
+		}
+
+		if err := h.deleteBackupEverywhere(ctx, id, backupID, req.Force, orphans); err != nil {
+			status, code, message := deleteFailureResponse(err)
+			// The batch answers 200 regardless, so an unmapped failure would
+			// otherwise leave no trace anywhere: not in the status code, and
+			// not in the logs. The single-delete handler logs these too.
+			if status == http.StatusInternalServerError {
+				h.logger.Error("Failed to delete backup %s in batch for instance %s: %v", backupID, id, err)
+			}
 			resp.Failed = append(resp.Failed, bulkDeleteFailure{BackupID: backupID, Error: code, Message: message})
 			continue
 		}
@@ -143,84 +195,144 @@ func validateBulkDeleteIDs(requested []string) ([]string, string) {
 	return ids, ""
 }
 
-// deleteBackupEverywhere deletes one backup, tracked or orphaned, choosing the
-// path from what the controller actually holds rather than from anything the
-// caller says.
+// orphanIndex is one sweep, indexed for deletion: the untracked issues by
+// backup ID, plus the report-wide facts a deletion has to check against.
 //
-// A tracked backup goes through the retention manager and all of its guards. A
-// backup with no record is an orphan: its artifacts cannot be read off a record
-// that does not exist, so the latest sweep becomes the authority for what it
-// left behind.
-//
-// DeleteBackup's own not-found answer is what distinguishes the two. It reaches
-// that answer before touching anything, so using it as the probe costs nothing
-// and keeps a single definition of "tracked".
-func (h *Handlers) deleteBackupEverywhere(instanceID, backupID string, force bool) error {
-	err := h.retentionManager.DeleteBackup(instanceID, backupID, force)
-	if !errors.Is(err, utils.ErrBackupNotFound) {
-		return err
-	}
-
-	artifacts, err := h.orphanArtifactsFor(instanceID, backupID)
-	if err != nil {
-		return err
-	}
-	return h.retentionManager.DeleteOrphan(instanceID, artifacts)
+// It is resolved once per request. A sweep cannot change while a request runs,
+// and re-reading it per backup would let a concurrent sweep judge different
+// backups in one batch against different reports.
+type orphanIndex struct {
+	issues     map[string]reconcile.BackupIssue
+	repository string
+	endpoints  map[string]string
+	sweptAt    time.Time
+	complete   bool
+	err        error
 }
 
-// orphanArtifactsFor reads, from the latest sweep, exactly what an orphaned
-// backup left behind.
-//
-// Only sources the sweep positively found the backup in are returned. A source
-// it could not reach contributes nothing, so its artifacts survive and the next
-// sweep reports them again — the same rule that keeps the reconciler from
-// claiming a backup is missing from a source it never enumerated.
-//
-// The report is read server-side rather than accepted from the client. A client
-// that could name the artifacts to delete could name any snapshot in the
-// repository.
-func (h *Handlers) orphanArtifactsFor(instanceID, backupID string) (retention.OrphanArtifacts, error) {
+// orphanIndexFor loads the latest sweep for an instance. A failure to load it is
+// carried on the index rather than returned, because most deletions are of
+// tracked backups and never consult it — a missing report must not fail those.
+func (h *Handlers) orphanIndexFor(instanceID string) *orphanIndex {
+	idx := &orphanIndex{issues: map[string]reconcile.BackupIssue{}}
+
 	if h.reconciler == nil {
-		return retention.OrphanArtifacts{}, utils.ErrNoReconcileReport
+		idx.err = utils.ErrNoReconcileReport
+		return idx
 	}
 
 	report, err := h.reconciler.LatestReport(instanceID)
 	if err != nil {
 		if errors.Is(err, utils.ErrBackupNotFound) {
-			return retention.OrphanArtifacts{}, utils.ErrNoReconcileReport
+			idx.err = utils.ErrNoReconcileReport
+			return idx
 		}
-		return retention.OrphanArtifacts{}, err
+		idx.err = err
+		return idx
 	}
 
+	idx.repository = report.SnapshotRepository
+	idx.endpoints = report.ComponentEndpoints
+	idx.sweptAt = report.FinishedAt
+	idx.complete = report.AllSourcesReachable()
 	for _, issue := range report.BackupIssues {
-		if issue.BackupID != backupID || issue.Tracked {
-			continue
+		if !issue.Tracked {
+			idx.issues[issue.BackupID] = issue
 		}
+	}
+	return idx
+}
 
-		// Whether the controller may act on it is a separate question from
-		// whether it exists, so it is asked only once the orphan is found.
-		//
-		// Unlike a tracked deletion, nothing about this ID has been through the
-		// controller: it is whatever a component API or snapshot repository
-		// reported, and it becomes a path segment in the DELETEs built from it.
-		// Acting only on IDs the controller could itself have issued keeps a
-		// component's answer from steering those DELETEs somewhere else. The
-		// rest stay report-only, with the exact command shown to run by hand.
-		if !camunda.IsBackupIDShaped(backupID) {
-			return retention.OrphanArtifacts{}, fmt.Errorf("%w (%s)", utils.ErrBackupIDNotDeletable, backupID)
-		}
-
-		return retention.OrphanArtifacts{
-			BackupID:      backupID,
-			Components:    componentsHolding(issue.PresentIn),
-			SnapshotNames: issue.SnapshotNames,
-			Repository:    report.SnapshotRepository,
-		}, nil
+// deleteBackupEverywhere deletes one backup, tracked or orphaned, choosing the
+// path from what the controller actually holds rather than from anything the
+// caller says.
+//
+// The choice is made by looking the record up, not by pattern-matching an error
+// out of a call that has already had side effects. DeleteBackup reports
+// ErrBackupNotFound from two places — before it touches anything, and again
+// from the record deletion at the very end, after every artifact is gone — so
+// treating that error as "not tracked" would reroute an already-successful
+// deletion onto the orphan path and report it as a failure.
+func (h *Handlers) deleteBackupEverywhere(ctx context.Context, instanceID, backupID string, force bool, orphans *orphanIndex) error {
+	tracked, err := h.isTracked(instanceID, backupID)
+	if err != nil {
+		return err
+	}
+	if tracked {
+		return h.retentionManager.DeleteBackup(ctx, instanceID, backupID, force)
 	}
 
-	// Neither recorded nor reported as an orphan: there is nothing to delete and
-	// nothing that could describe it, which is the same answer as not existing.
-	return retention.OrphanArtifacts{}, utils.ErrBackupNotFound
+	artifacts, err := orphanArtifactsFor(orphans, backupID)
+	if err != nil {
+		return err
+	}
+	return h.retentionManager.DeleteOrphan(ctx, instanceID, artifacts)
+}
+
+// isTracked reports whether the controller holds a record for this backup.
+//
+// A read failure is not "no record": answering that would send a deletion down
+// the orphan path, which applies none of the record's safety guards. It is
+// returned as an error instead.
+func (h *Handlers) isTracked(instanceID, backupID string) (bool, error) {
+	if h.historyProvider == nil {
+		return false, fmt.Errorf("backup history provider not configured")
+	}
+	_, err := h.historyProvider.GetBackupHistory(instanceID, backupID)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, utils.ErrBackupNotFound) {
+		return false, nil
+	}
+	return false, fmt.Errorf("failed to determine whether backup %s is tracked: %w", backupID, err)
+}
+
+// orphanArtifactsFor reads, from the latest sweep, exactly what an orphaned
+// backup left behind.
+//
+// Only sources the sweep positively found the backup in are returned, and the
+// report's own reachability, age and observed endpoints travel with them so the
+// retention manager can refuse on any of the three. The report is read
+// server-side rather than accepted from the client: a client able to name the
+// artifacts to delete could name any snapshot in the repository.
+func orphanArtifactsFor(orphans *orphanIndex, backupID string) (retention.OrphanArtifacts, error) {
+	if orphans.err != nil {
+		return retention.OrphanArtifacts{}, orphans.err
+	}
+
+	issue, found := orphans.issues[backupID]
+	if !found {
+		// Neither recorded nor reported as an orphan: nothing to delete, and
+		// nothing that could describe it.
+		return retention.OrphanArtifacts{}, fmt.Errorf("%w (%s)", utils.ErrNotAnOrphan, backupID)
+	}
+
+	// Whether the controller may act on it is a separate question from whether
+	// it exists, so it is asked only once the orphan is found.
+	//
+	// Unlike a tracked deletion, nothing about this ID has been through the
+	// controller: it is whatever a component API or snapshot repository
+	// reported, and it becomes a path segment in the DELETEs built from it.
+	// Acting only on IDs the controller could itself have issued keeps a
+	// component's answer from steering those DELETEs somewhere else. The rest
+	// stay report-only, with the exact command shown to run by hand.
+	if !camunda.IsBackupIDShaped(backupID) {
+		return retention.OrphanArtifacts{}, fmt.Errorf("%w (%s)", utils.ErrBackupIDNotDeletable, backupID)
+	}
+
+	return retention.OrphanArtifacts{
+		BackupID:   backupID,
+		Components: componentsHolding(issue.PresentIn),
+		// AllSnapshotNames, not SnapshotNames: the latter is de-duplicated for
+		// display and omits snapshots whose finding another finding already
+		// explains, which for the commonest orphan shape is all of them.
+		SnapshotNames: issue.AllSnapshotNames,
+		Repository:    orphans.repository,
+		Endpoints:     orphans.endpoints,
+		SweptAt:       orphans.sweptAt,
+		Complete:      orphans.complete,
+	}, nil
 }
 
 // componentsHolding filters a finding's source list down to the components that
@@ -254,11 +366,25 @@ func deleteFailureResponse(err error) (int, string, string) {
 	case errors.Is(err, utils.ErrBackupArtifactsRemain):
 		return http.StatusConflict, "artifacts_remain", err.Error()
 	case errors.Is(err, utils.ErrNoReconcileReport):
-		return http.StatusConflict, "no_report", err.Error()
+		// 404, not 409: on main an unknown ID answered "not found", and clients
+		// rely on that for a repeat DELETE to be idempotent. The code still says
+		// which of the two reasons applies, and the message says what to do.
+		return http.StatusNotFound, "no_report",
+			"Backup not found. If you expected an orphaned backup here, run a reconciliation scan first."
 	case errors.Is(err, utils.ErrOrphanRecordAppeared):
 		return http.StatusConflict, "stale_report", err.Error()
 	case errors.Is(err, utils.ErrOrphanArtifactsUnidentifiable):
 		return http.StatusConflict, "unidentifiable", err.Error()
+	case errors.Is(err, utils.ErrOrphanReportPartial):
+		return http.StatusConflict, "report_partial", err.Error()
+	case errors.Is(err, utils.ErrOrphanReportStale):
+		return http.StatusConflict, "report_stale", err.Error()
+	case errors.Is(err, utils.ErrOrphanEndpointDrift):
+		return http.StatusConflict, "endpoint_drift", err.Error()
+	case errors.Is(err, utils.ErrOrphanOwnershipUnverified):
+		return http.StatusConflict, "ownership_unverified", err.Error()
+	case errors.Is(err, utils.ErrSnapshotNameNotDeletable):
+		return http.StatusConflict, "not_deletable", err.Error()
 	case errors.Is(err, utils.ErrBackupIDNotDeletable):
 		return http.StatusConflict, "not_deletable", err.Error()
 	default:

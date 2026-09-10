@@ -2,12 +2,15 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/models"
 	"github.com/aitasadduq/camunda-backup-dr/internal/reconcile"
@@ -17,15 +20,27 @@ import (
 // deleteTestSetup wires handlers whose retention manager reports every backup as
 // untracked, so deletions fall through to the orphan path, and whose latest
 // report describes one orphan spanning Zeebe and Elasticsearch.
-func deleteTestSetup(t *testing.T) (*Handlers, *mockRetentionManager, *mockReconciler) {
+func deleteTestSetup(t *testing.T) (*Handlers, *mockRetentionManager, *mockReconciler, *mockHistoryProvider) {
 	t.Helper()
 
-	handlers, cm, _, _, _, ret, _ := newTestHandlers()
+	handlers, cm, _, hist, _, ret, _ := newTestHandlers()
 	cm.instances = []models.CamundaInstance{{ID: "test-1", Name: "Test Instance 1"}}
 
 	rec := &mockReconciler{report: &reconcile.Report{
 		CamundaInstanceID:  "test-1",
+		FinishedAt:         time.Now(),
 		SnapshotRepository: "camunda-backup",
+		ComponentEndpoints: map[string]string{
+			reconcile.SourceZeebe: "http://zeebe:9600/actuator/backups",
+		},
+		// Every source reachable, so the deletion is not refused for acting on a
+		// partial description of the world.
+		SourcesChecked: map[string]reconcile.SourceStatus{
+			reconcile.SourceControllerS3:  {Name: reconcile.SourceControllerS3, Reachable: true},
+			reconcile.SourceZeebe:         {Name: reconcile.SourceZeebe, Reachable: true},
+			reconcile.SourceElasticsearch: {Name: reconcile.SourceElasticsearch, Reachable: true},
+			reconcile.SourceLogs:          {Name: reconcile.SourceLogs, Reachable: true},
+		},
 		BackupIssues: []reconcile.BackupIssue{{
 			BackupID:      "20260320080000",
 			Tracked:       false,
@@ -35,11 +50,23 @@ func deleteTestSetup(t *testing.T) (*Handlers, *mockRetentionManager, *mockRecon
 				reconcile.SourceElasticsearch,
 				reconcile.SourceLogs,
 			},
-			SnapshotNames: []string{"camunda-20260320080000"},
+			SnapshotNames:    []string{"camunda-20260320080000"},
+			AllSnapshotNames: []string{"camunda-20260320080000"},
 		}},
 	}}
 	handlers.SetReconciler(rec)
-	return handlers, ret, rec
+	return handlers, ret, rec, hist
+}
+
+// trackedIn seeds a controller record, which is what makes a deletion take the
+// tracked path.
+func trackedIn(hist *mockHistoryProvider, backupIDs ...string) {
+	for _, id := range backupIDs {
+		hist.history = append(hist.history, &models.BackupHistory{
+			CamundaInstanceID: "test-1",
+			BackupID:          id,
+		})
+	}
 }
 
 func postBulkDelete(t *testing.T, handlers *Handlers, body any) *httptest.ResponseRecorder {
@@ -72,7 +99,7 @@ func decodeBulkDelete(t *testing.T, w *httptest.ResponseRecorder) bulkDeleteResp
 // the controller's own log source are not component endpoints, so they must not
 // arrive as components.
 func TestDeleteBackupHandler_OrphanUsesReportedArtifacts(t *testing.T) {
-	handlers, ret, _ := deleteTestSetup(t)
+	handlers, ret, _, _ := deleteTestSetup(t)
 	ret.deleteErr = utils.ErrBackupNotFound
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/camundas/test-1/backups/20260320080000", nil)
@@ -104,7 +131,8 @@ func TestDeleteBackupHandler_OrphanUsesReportedArtifacts(t *testing.T) {
 // A tracked backup must never take the orphan path, because the orphan path
 // applies none of the retention guards.
 func TestDeleteBackupHandler_TrackedDoesNotUseOrphanPath(t *testing.T) {
-	handlers, ret, _ := deleteTestSetup(t)
+	handlers, ret, _, hist := deleteTestSetup(t)
+	trackedIn(hist, "20260320080000")
 
 	req := httptest.NewRequest(http.MethodDelete, "/api/camundas/test-1/backups/20260320080000", nil)
 	w := httptest.NewRecorder()
@@ -122,7 +150,7 @@ func TestDeleteBackupHandler_TrackedDoesNotUseOrphanPath(t *testing.T) {
 // deleted: that ID came from a component API and would become a path segment in
 // the DELETEs built from it.
 func TestDeleteBackupHandler_RefusesForeignOrphanID(t *testing.T) {
-	handlers, ret, rec := deleteTestSetup(t)
+	handlers, ret, rec, _ := deleteTestSetup(t)
 	ret.deleteErr = utils.ErrBackupNotFound
 	rec.report.BackupIssues = []reconcile.BackupIssue{{
 		BackupID:  "someone-elses-backup",
@@ -148,7 +176,7 @@ func TestDeleteBackupHandler_RefusesForeignOrphanID(t *testing.T) {
 // A backup reported as tracked in the sweep is not an orphan, so a request for
 // it must not be satisfied down the orphan path even when no record exists.
 func TestDeleteBackupHandler_TrackedIssueIsNotAnOrphan(t *testing.T) {
-	handlers, ret, rec := deleteTestSetup(t)
+	handlers, ret, rec, _ := deleteTestSetup(t)
 	ret.deleteErr = utils.ErrBackupNotFound
 	rec.report.BackupIssues[0].Tracked = true
 
@@ -167,7 +195,8 @@ func TestDeleteBackupHandler_TrackedIssueIsNotAnOrphan(t *testing.T) {
 // --- Bulk deletion ---
 
 func TestBulkDeleteBackupsHandler_DeletesEach(t *testing.T) {
-	handlers, _, _ := deleteTestSetup(t)
+	handlers, _, _, hist := deleteTestSetup(t)
+	trackedIn(hist, "20260320080000", "20260321080000", "20260322080000")
 
 	w := postBulkDelete(t, handlers, bulkDeleteRequest{
 		BackupIDs: []string{"20260320080000", "20260321080000", "20260322080000"},
@@ -191,7 +220,8 @@ func TestBulkDeleteBackupsHandler_DeletesEach(t *testing.T) {
 // A batch is not a transaction. One backup refused by a safety guard must not
 // stop the others, and the reason has to survive per backup.
 func TestBulkDeleteBackupsHandler_ReportsPerBackupOutcome(t *testing.T) {
-	handlers, ret, _ := deleteTestSetup(t)
+	handlers, ret, _, hist := deleteTestSetup(t)
+	trackedIn(hist, "20260320080000", "20260321080000", "20260322080000")
 	ret.deleteErrByID = map[string]error{
 		"20260321080000": fmt.Errorf("%w (20260321080000)", utils.ErrCannotDeleteMostRecentBackup),
 		"20260322080000": fmt.Errorf("%w for 20260322080000: Operate returned 500", utils.ErrBackupArtifactsRemain),
@@ -225,7 +255,8 @@ func TestBulkDeleteBackupsHandler_ReportsPerBackupOutcome(t *testing.T) {
 }
 
 func TestBulkDeleteBackupsHandler_ForwardsForce(t *testing.T) {
-	handlers, ret, _ := deleteTestSetup(t)
+	handlers, ret, _, hist := deleteTestSetup(t)
+	trackedIn(hist, "20260320080000")
 
 	postBulkDelete(t, handlers, bulkDeleteRequest{BackupIDs: []string{"20260320080000"}, Force: true})
 	if !ret.deleteForce {
@@ -234,7 +265,8 @@ func TestBulkDeleteBackupsHandler_ForwardsForce(t *testing.T) {
 }
 
 func TestBulkDeleteBackupsHandler_DeduplicatesIDs(t *testing.T) {
-	handlers, ret, _ := deleteTestSetup(t)
+	handlers, ret, _, hist := deleteTestSetup(t)
+	trackedIn(hist, "20260320080000")
 
 	w := postBulkDelete(t, handlers, bulkDeleteRequest{
 		BackupIDs: []string{"20260320080000", "20260320080000"},
@@ -253,7 +285,7 @@ func TestBulkDeleteBackupsHandler_DeduplicatesIDs(t *testing.T) {
 // each ID goes on to address an S3 key and a component URL.
 func TestBulkDeleteBackupsHandler_RejectsPathSeparators(t *testing.T) {
 	for _, backupID := range []string{"../other-instance/20260320080000", "a/b", `a\b`, ".."} {
-		handlers, ret, _ := deleteTestSetup(t)
+		handlers, ret, _, _ := deleteTestSetup(t)
 
 		w := postBulkDelete(t, handlers, bulkDeleteRequest{BackupIDs: []string{backupID}})
 		if w.Code != http.StatusBadRequest {
@@ -266,7 +298,7 @@ func TestBulkDeleteBackupsHandler_RejectsPathSeparators(t *testing.T) {
 }
 
 func TestBulkDeleteBackupsHandler_RejectsEmptyBatch(t *testing.T) {
-	handlers, _, _ := deleteTestSetup(t)
+	handlers, _, _, _ := deleteTestSetup(t)
 
 	w := postBulkDelete(t, handlers, bulkDeleteRequest{BackupIDs: []string{}})
 	if w.Code != http.StatusBadRequest {
@@ -275,7 +307,7 @@ func TestBulkDeleteBackupsHandler_RejectsEmptyBatch(t *testing.T) {
 }
 
 func TestBulkDeleteBackupsHandler_RejectsOversizedBatch(t *testing.T) {
-	handlers, ret, _ := deleteTestSetup(t)
+	handlers, ret, _, _ := deleteTestSetup(t)
 
 	ids := make([]string, maxBulkDeleteBatch+1)
 	for i := range ids {
@@ -292,7 +324,7 @@ func TestBulkDeleteBackupsHandler_RejectsOversizedBatch(t *testing.T) {
 }
 
 func TestBulkDeleteBackupsHandler_RejectsInvalidBody(t *testing.T) {
-	handlers, _, _ := deleteTestSetup(t)
+	handlers, _, _, _ := deleteTestSetup(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/camundas/test-1/backups/delete", strings.NewReader("not json"))
 	w := httptest.NewRecorder()
@@ -304,7 +336,7 @@ func TestBulkDeleteBackupsHandler_RejectsInvalidBody(t *testing.T) {
 }
 
 func TestBulkDeleteBackupsHandler_InstanceNotFound(t *testing.T) {
-	handlers, _, _ := deleteTestSetup(t)
+	handlers, _, _, _ := deleteTestSetup(t)
 
 	encoded, _ := json.Marshal(bulkDeleteRequest{BackupIDs: []string{"20260320080000"}})
 	req := httptest.NewRequest(http.MethodPost, "/api/camundas/nope/backups/delete", bytes.NewReader(encoded))
@@ -349,12 +381,70 @@ func TestComponentsHolding_KeepsOnlyBackupAPIComponents(t *testing.T) {
 }
 
 func TestOrphanArtifactsFor_NoReconcilerConfigured(t *testing.T) {
-	handlers, _, _ := deleteTestSetup(t)
+	handlers, _, _, _ := deleteTestSetup(t)
 	handlers.SetReconciler(nil)
 
-	_, err := handlers.orphanArtifactsFor("test-1", "20260320080000")
-	if err != utils.ErrNoReconcileReport {
+	_, err := orphanArtifactsFor(handlers.orphanIndexFor("test-1"), "20260320080000")
+	if !errors.Is(err, utils.ErrNoReconcileReport) {
 		t.Fatalf("expected ErrNoReconcileReport, got %v", err)
+	}
+}
+
+// The artifacts a deletion acts on come from the report, and they must carry the
+// report's own provenance: what it saw, when, whether it saw everything, and
+// which endpoints it talked to. Without those the retention manager cannot
+// refuse a stale, partial or re-pointed description of the world.
+func TestOrphanArtifactsFor_CarriesReportProvenance(t *testing.T) {
+	handlers, _, rec, _ := deleteTestSetup(t)
+
+	art, err := orphanArtifactsFor(handlers.orphanIndexFor("test-1"), "20260320080000")
+	if err != nil {
+		t.Fatalf("orphanArtifactsFor: %v", err)
+	}
+	if !art.Complete {
+		t.Error("expected the artifacts to record that the sweep was complete")
+	}
+	if !art.SweptAt.Equal(rec.report.FinishedAt) {
+		t.Errorf("expected SweptAt %v, got %v", rec.report.FinishedAt, art.SweptAt)
+	}
+	if art.Endpoints[reconcile.SourceZeebe] != "http://zeebe:9600/actuator/backups" {
+		t.Errorf("expected the observed Zeebe endpoint, got %q", art.Endpoints[reconcile.SourceZeebe])
+	}
+}
+
+// A sweep that could not reach every source does not describe the full artifact
+// set, and the artifacts must say so rather than looking complete.
+func TestOrphanArtifactsFor_MarksPartialSweep(t *testing.T) {
+	handlers, _, rec, _ := deleteTestSetup(t)
+	rec.report.SourcesChecked[reconcile.SourceElasticsearch] = reconcile.SourceStatus{
+		Name:  reconcile.SourceElasticsearch,
+		Error: "connection refused",
+	}
+
+	art, err := orphanArtifactsFor(handlers.orphanIndexFor("test-1"), "20260320080000")
+	if err != nil {
+		t.Fatalf("orphanArtifactsFor: %v", err)
+	}
+	if art.Complete {
+		t.Error("expected the artifacts to record that the sweep was partial")
+	}
+}
+
+// SnapshotNames is de-duplicated for display and omits snapshots another finding
+// already explains. Deleting from it would leave those behind.
+func TestOrphanArtifactsFor_UsesEveryObservedSnapshot(t *testing.T) {
+	handlers, _, rec, _ := deleteTestSetup(t)
+	rec.report.BackupIssues[0].SnapshotNames = nil
+	rec.report.BackupIssues[0].AllSnapshotNames = []string{
+		"camunda_operate_20260320080000_8.6.0_part_1_of_6",
+	}
+
+	art, err := orphanArtifactsFor(handlers.orphanIndexFor("test-1"), "20260320080000")
+	if err != nil {
+		t.Fatalf("orphanArtifactsFor: %v", err)
+	}
+	if len(art.SnapshotNames) != 1 || art.SnapshotNames[0] != "camunda_operate_20260320080000_8.6.0_part_1_of_6" {
+		t.Fatalf("expected the full observed snapshot set, got %v", art.SnapshotNames)
 	}
 }
 
@@ -369,10 +459,15 @@ func TestDeleteFailureResponse_MapsEveryKnownFailure(t *testing.T) {
 		{utils.ErrCannotDeleteMostRecentBackup, http.StatusConflict, "safety_refusal"},
 		{utils.ErrCannotDeleteRunningBackup, http.StatusConflict, "safety_refusal"},
 		{utils.ErrBackupArtifactsRemain, http.StatusConflict, "artifacts_remain"},
-		{utils.ErrNoReconcileReport, http.StatusConflict, "no_report"},
+		{utils.ErrNoReconcileReport, http.StatusNotFound, "no_report"},
 		{utils.ErrOrphanRecordAppeared, http.StatusConflict, "stale_report"},
 		{utils.ErrOrphanArtifactsUnidentifiable, http.StatusConflict, "unidentifiable"},
 		{utils.ErrBackupIDNotDeletable, http.StatusConflict, "not_deletable"},
+		{utils.ErrSnapshotNameNotDeletable, http.StatusConflict, "not_deletable"},
+		{utils.ErrOrphanReportPartial, http.StatusConflict, "report_partial"},
+		{utils.ErrOrphanReportStale, http.StatusConflict, "report_stale"},
+		{utils.ErrOrphanEndpointDrift, http.StatusConflict, "endpoint_drift"},
+		{utils.ErrOrphanOwnershipUnverified, http.StatusConflict, "ownership_unverified"},
 		{fmt.Errorf("disk on fire"), http.StatusInternalServerError, "internal_error"},
 	}
 
@@ -382,5 +477,103 @@ func TestDeleteFailureResponse_MapsEveryKnownFailure(t *testing.T) {
 		if status != tc.status || code != tc.code {
 			t.Errorf("%v: expected %d/%s, got %d/%s", tc.err, tc.status, tc.code, status, code)
 		}
+	}
+}
+
+// A batch is not a transaction and it is not unbounded either. When the budget
+// runs out the remainder is reported as untried, so the caller knows exactly
+// where it stopped rather than guessing from a broken connection.
+func TestBulkDeleteBackupsHandler_StopsOnCancellation(t *testing.T) {
+	handlers, ret, _, hist := deleteTestSetup(t)
+	trackedIn(hist, "20260320080000", "20260321080000")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	encoded, _ := json.Marshal(bulkDeleteRequest{BackupIDs: []string{"20260320080000", "20260321080000"}})
+	req := httptest.NewRequest(http.MethodPost, "/api/camundas/test-1/backups/delete", bytes.NewReader(encoded)).WithContext(ctx)
+	w := httptest.NewRecorder()
+	handlers.BulkDeleteBackupsHandler(w, req)
+
+	resp := decodeBulkDelete(t, w)
+	if len(resp.Deleted) != 0 {
+		t.Errorf("expected nothing deleted after cancellation, got %v", resp.Deleted)
+	}
+	if len(resp.Failed) != 2 {
+		t.Fatalf("expected both reported as untried, got %v", resp.Failed)
+	}
+	for _, f := range resp.Failed {
+		if f.Error != "not_attempted" {
+			t.Errorf("expected not_attempted, got %q", f.Error)
+		}
+	}
+	if len(ret.deletedBackups) != 0 {
+		t.Errorf("expected no deletion attempt, got %v", ret.deletedBackups)
+	}
+}
+
+// The batch is capped because it is a time budget: a batch large enough to
+// outrun the request cannot deliver its own per-backup result.
+func TestBulkDeleteBackupsHandler_CapIsATimeBudget(t *testing.T) {
+	if maxBulkDeleteBatch > 25 {
+		t.Errorf("batch cap of %d cannot finish inside the server's write timeout", maxBulkDeleteBatch)
+	}
+	if bulkDeleteBudget >= 120*time.Second {
+		t.Errorf("batch budget of %s leaves no room to write the response", bulkDeleteBudget)
+	}
+}
+
+// The report is read once per request. Re-reading it per backup would let a
+// concurrent sweep judge different backups in one batch against different
+// reports, besides re-transferring the whole document each time.
+func TestBulkDeleteBackupsHandler_ReadsTheReportOnce(t *testing.T) {
+	handlers, _, rec, _ := deleteTestSetup(t)
+
+	postBulkDelete(t, handlers, bulkDeleteRequest{
+		BackupIDs: []string{"20260320080000", "20260321080000", "20260322080000"},
+	})
+
+	if rec.latestCalls != 1 {
+		t.Errorf("expected the report to be read once, got %d reads", rec.latestCalls)
+	}
+}
+
+// A tracked backup must never take the orphan path: that path applies none of
+// the record's safety guards. The discriminator is the record itself, not an
+// error returned by a call that has already had side effects.
+func TestDeleteBackupEverywhere_TrackedNeverTakesOrphanPath(t *testing.T) {
+	handlers, ret, _, hist := deleteTestSetup(t)
+	trackedIn(hist, "20260320080000")
+
+	// DeleteBackup reports not-found from its final record deletion, after every
+	// artifact is already gone. Rerouting on that would report a successful
+	// deletion as a failure and re-delete down the orphan path.
+	ret.deleteErr = fmt.Errorf("failed to delete backup record: %w", utils.ErrBackupNotFound)
+
+	err := handlers.deleteBackupEverywhere(context.Background(), "test-1", "20260320080000", false,
+		handlers.orphanIndexFor("test-1"))
+
+	if !errors.Is(err, utils.ErrBackupNotFound) {
+		t.Fatalf("expected the tracked error to surface unchanged, got %v", err)
+	}
+	if len(ret.deletedOrphans) != 0 {
+		t.Errorf("expected no orphan deletion for a tracked backup, got %v", ret.deletedOrphans)
+	}
+}
+
+// A record read that fails is not "no record": answering that would send the
+// deletion down the orphan path, which applies none of the record's guards.
+func TestDeleteBackupEverywhere_RefusesWhenTrackednessUnknown(t *testing.T) {
+	handlers, ret, _, hist := deleteTestSetup(t)
+	hist.err = errors.New("s3: connection reset")
+
+	err := handlers.deleteBackupEverywhere(context.Background(), "test-1", "20260320080000", false,
+		handlers.orphanIndexFor("test-1"))
+
+	if err == nil {
+		t.Fatal("expected a refusal when the record could not be read")
+	}
+	if len(ret.deletedOrphans) != 0 || len(ret.deletedBackups) != 0 {
+		t.Errorf("expected nothing deleted, got orphans=%v tracked=%v", ret.deletedOrphans, ret.deletedBackups)
 	}
 }

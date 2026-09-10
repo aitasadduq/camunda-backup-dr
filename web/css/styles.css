@@ -537,6 +537,10 @@
 .data-table th.col-select,
 .data-table td.col-select {
     width: 2.5rem;
+    /* Both sides, not just padding-right: the base rule sets 0.75rem 1rem and
+       the responsive block sets 0.5rem, so overriding one side left the
+       checkbox off-centre by a different amount at each breakpoint. */
+    padding-left: 0.25rem;
     padding-right: 0.25rem;
     text-align: center;
 }

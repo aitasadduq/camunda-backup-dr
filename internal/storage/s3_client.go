@@ -435,8 +435,9 @@ func (c *S3Client) listBackupsInDir(ctx context.Context, camundaInstanceID, dir 
 
 			history, err := c.getBackupHistoryByKey(ctx, key)
 			if err != nil {
-				c.logger.Warn("Failed to get backup history for key %s: %v", key, err)
-				continue
+				// Skipping the object would drop a real record from the list and
+				// make the backup look untracked to everything downstream.
+				return nil, fmt.Errorf("failed to read backup record %s: %w", key, err)
 			}
 
 			// Filter by status if specified
@@ -669,13 +670,17 @@ func (c *S3Client) ListAllBackups(camundaInstanceID string) ([]*models.BackupHis
 
 	var allBackups []*models.BackupHistory
 
-	// List from all directories
+	// List from all directories.
+	//
+	// A partial read is returned as an error, not as a short list. Callers use
+	// this to decide whether a backup is recorded at all, and a silently
+	// truncated list makes recorded backups look untracked — which is how an
+	// orphan row appears for a live, restorable backup.
 	dirs := []string{historyDir, incompleteDir, orphanedDir}
 	for _, dir := range dirs {
 		backups, err := c.listBackupsInDir(ctx, camundaInstanceID, dir, "")
 		if err != nil {
-			c.logger.Warn("Failed to list backups from %s: %v", dir, err)
-			continue
+			return nil, fmt.Errorf("failed to list backups from %s: %w", dir, err)
 		}
 		allBackups = append(allBackups, backups...)
 	}

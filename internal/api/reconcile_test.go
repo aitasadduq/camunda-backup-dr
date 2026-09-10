@@ -14,10 +14,11 @@ import (
 )
 
 type mockReconciler struct {
-	report     *reconcile.Report
-	latestErr  error
-	sweepErr   error
-	sweepCalls int
+	report      *reconcile.Report
+	latestErr   error
+	sweepErr    error
+	sweepCalls  int
+	latestCalls int
 }
 
 func (m *mockReconciler) Reconcile(ctx context.Context, instance *models.CamundaInstance) (*reconcile.Report, error) {
@@ -29,6 +30,7 @@ func (m *mockReconciler) Reconcile(ctx context.Context, instance *models.Camunda
 }
 
 func (m *mockReconciler) LatestReport(camundaInstanceID string) (*reconcile.Report, error) {
+	m.latestCalls++
 	if m.latestErr != nil {
 		return nil, m.latestErr
 	}

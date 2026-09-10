@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/camunda"
 	"github.com/aitasadduq/camunda-backup-dr/internal/config"
@@ -17,11 +19,13 @@ import (
 	"github.com/aitasadduq/camunda-backup-dr/pkg/types"
 )
 
-// InstanceProvider resolves a Camunda instance by ID. Deleting a backup needs
-// the instance's component endpoints, which live in the instance config rather
-// than in the backup record.
+// InstanceProvider resolves Camunda instances. Deleting a backup needs the
+// instance's component endpoints, which live in the instance config rather than
+// in the backup record; deleting an *orphan* additionally needs every other
+// instance, because an artifact with no local record may belong to one of them.
 type InstanceProvider interface {
 	GetInstance(id string) (*models.CamundaInstance, error)
+	ListInstances() ([]models.CamundaInstance, error)
 }
 
 type Manager struct {
@@ -32,6 +36,12 @@ type Manager struct {
 	logger      *utils.Logger
 	alerter     *utils.Alerter
 	instances   InstanceProvider
+
+	// backupRunning reports whether the orchestrator has a backup in flight.
+	// The orphan path needs it because it has no record to read a status from:
+	// a backup whose initial record write failed runs with no record at all, and
+	// is otherwise indistinguishable from an orphan.
+	backupRunning func() bool
 }
 
 func NewManager(s3Storage storage.S3Storage, fileStorage storage.FileStorage, httpClient *camunda.HTTPClient, cfg *config.Config, logger *utils.Logger) *Manager {
@@ -53,6 +63,20 @@ func (m *Manager) SetInstanceProvider(p InstanceProvider) {
 // SetAlerter sets the alerter for cleanup failure notifications.
 func (m *Manager) SetAlerter(alerter *utils.Alerter) {
 	m.alerter = alerter
+}
+
+// SetBackupRunningFunc registers the check that tells a deletion whether the
+// orchestrator has a backup in flight. Without it, deletions assume none is,
+// which is only safe for a tracked backup — that path reads the record's status
+// instead.
+func (m *Manager) SetBackupRunningFunc(fn func() bool) {
+	m.backupRunning = fn
+}
+
+// isBackupRunning reports whether a backup is in flight, defaulting to false
+// when no check has been registered.
+func (m *Manager) isBackupRunning() bool {
+	return m.backupRunning != nil && m.backupRunning()
 }
 
 type RetentionResult struct {
@@ -447,7 +471,7 @@ func (m *Manager) ListFailedBackups(camundaInstanceID string) ([]*models.BackupH
 // visible and the deletion can be retried, rather than the artifacts being
 // stranded as orphans. Pass force to delete the record anyway; the surviving
 // artifacts are then reported by the reconciler as orphans.
-func (m *Manager) DeleteBackup(camundaInstanceID, backupID string, force bool) error {
+func (m *Manager) DeleteBackup(ctx context.Context, camundaInstanceID, backupID string, force bool) error {
 	completed, err := m.s3Storage.ListBackupHistory(camundaInstanceID, types.BackupStatusCompleted)
 	if err != nil {
 		return fmt.Errorf("failed to verify backup safety: %w", err)
@@ -484,7 +508,7 @@ func (m *Manager) DeleteBackup(camundaInstanceID, backupID string, force bool) e
 		return err
 	}
 
-	if errs := m.purgeBackupArtifacts(context.Background(), instance, backup); len(errs) > 0 {
+	if errs := m.purgeBackupArtifacts(ctx, instance, backup); len(errs) > 0 {
 		if !force {
 			return fmt.Errorf("%w for %s: %s", utils.ErrBackupArtifactsRemain, backupID, strings.Join(errs, "; "))
 		}
@@ -518,7 +542,30 @@ type OrphanArtifacts struct {
 	Components    []string
 	SnapshotNames []string
 	Repository    string
+
+	// Endpoints are the component backup endpoints the sweep actually talked
+	// to, keyed by component name and stripped of any userinfo. Deletion
+	// compares them against the instance's current configuration and refuses on
+	// a mismatch: backup IDs are timestamps from a cron schedule, so the same ID
+	// routinely names a different, live backup in another environment. Reading
+	// *where* the artifacts live from current config would undo the care taken
+	// to read *which* components hold them from the sweep.
+	Endpoints map[string]string
+
+	// SweptAt is when the sweep that observed all of this finished. A deletion
+	// acts on a description of the world, and an old description is not one.
+	SweptAt time.Time
+
+	// Complete says whether that sweep reached every source it needed. When it
+	// did not, nothing here can be treated as the full artifact set.
+	Complete bool
 }
+
+// maxReportAge bounds how old a sweep may be and still authorise a deletion.
+// Long enough that an operator reviewing a scan is not raced by the clock,
+// short enough that an instance cannot be re-pointed at another environment in
+// between.
+const maxReportAge = 1 * time.Hour
 
 // DeleteOrphan removes the artifacts of a backup the controller has no record
 // of, as named by a reconciliation sweep.
@@ -539,7 +586,7 @@ type OrphanArtifacts struct {
 // artifacts survive and the next sweep reports them again. That is intended:
 // deleting from a source that was never enumerated is not possible, and
 // pretending otherwise would hide the leftover.
-func (m *Manager) DeleteOrphan(camundaInstanceID string, art OrphanArtifacts) error {
+func (m *Manager) DeleteOrphan(ctx context.Context, camundaInstanceID string, art OrphanArtifacts) error {
 	if art.BackupID == "" {
 		return fmt.Errorf("orphan deletion requires a backup ID")
 	}
@@ -549,6 +596,28 @@ func (m *Manager) DeleteOrphan(camundaInstanceID string, art OrphanArtifacts) er
 	// backup never touched.
 	if len(art.Components) == 0 && len(art.SnapshotNames) == 0 {
 		return fmt.Errorf("%w (%s)", utils.ErrOrphanArtifactsUnidentifiable, art.BackupID)
+	}
+
+	// A sweep that could not reach every source does not describe the full
+	// artifact set, so deleting from what it did see and reporting success
+	// would strand the rest silently. This is the unreachable-source guard the
+	// reconciler applies to its conclusions, applied to acting on them.
+	if !art.Complete {
+		return fmt.Errorf("%w (%s)", utils.ErrOrphanReportPartial, art.BackupID)
+	}
+
+	if !art.SweptAt.IsZero() && time.Since(art.SweptAt) > maxReportAge {
+		return fmt.Errorf("%w (%s, scanned %s ago)", utils.ErrOrphanReportStale, art.BackupID,
+			time.Since(art.SweptAt).Round(time.Minute))
+	}
+
+	// The tracked path reads a status off the record to refuse a RUNNING
+	// backup. An orphan has no record, so a live backup whose initial record
+	// write failed looks exactly like one. Refusing while anything is in flight
+	// is the only version of that guard available here.
+	if m.isBackupRunning() {
+		return fmt.Errorf("%w (%s): a backup is in flight, so an untracked artifact may belong to it",
+			utils.ErrCannotDeleteRunningBackup, art.BackupID)
 	}
 
 	if _, err := m.s3Storage.GetBackupHistory(camundaInstanceID, art.BackupID); err == nil {
@@ -562,7 +631,14 @@ func (m *Manager) DeleteOrphan(camundaInstanceID string, art OrphanArtifacts) er
 		return err
 	}
 
-	ctx := context.Background()
+	if err := m.verifyOrphanOwnership(camundaInstanceID, instance, art); err != nil {
+		return err
+	}
+
+	if err := m.verifyEndpointsUnchanged(instance, art); err != nil {
+		return err
+	}
+
 	errs := append(
 		m.deleteOrphanComponents(ctx, instance, art),
 		m.deleteOrphanSnapshots(ctx, instance, art)...,
@@ -632,11 +708,177 @@ func (m *Manager) deleteOrphanSnapshots(ctx context.Context, instance *models.Ca
 
 	var errs []string
 	for _, name := range art.SnapshotNames {
+		// The names come from a repository listing, which is outside the
+		// controller, and they land in a URL path. A name carrying a path
+		// separator or a multi-target wildcard would address something other
+		// than itself once the path is cleaned.
+		if !isAddressableSnapshotName(name) {
+			errs = append(errs, fmt.Sprintf("%s (%q for orphan %s)",
+				utils.ErrSnapshotNameNotDeletable, name, art.BackupID))
+			continue
+		}
 		if err := m.deleteSnapshot(ctx, instance, repository, name, art.BackupID); err != nil {
 			errs = append(errs, err.Error())
 		}
 	}
 	return errs
+}
+
+// isAddressableSnapshotName reports whether a name addresses exactly one
+// snapshot when placed in a URL path.
+//
+// Elasticsearch already forbids these characters in a snapshot name, so a name
+// carrying one did not come from a healthy repository listing — it came from a
+// hostile or proxied endpoint, or a tampered report. Refusing here keeps such a
+// name from being path-cleaned into a different resource entirely: a name of
+// the shape "x_../../_all" resolves to DELETE /_snapshot/_all, which
+// unregisters every repository.
+func isAddressableSnapshotName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	return !strings.ContainsAny(name, `/\*?,"<>| #`)
+}
+
+// verifyOrphanOwnership refuses a deletion when another configured instance
+// could own the artifacts.
+//
+// Backup IDs are timestamps from a cron schedule, and both the snapshot
+// repository and the component endpoints default to shared values, so "this
+// instance has no record of it" is not the same as "nobody does". The
+// reconciler's own catalogue says as much about a shared repository: confirm
+// ownership before deleting anything in it.
+//
+// Two checks, cheapest first. A record for the same ID under another instance
+// is proof of ownership. Failing that, a shared repository or component
+// endpoint means ownership cannot be established at all, and the artifact stays
+// report-only.
+func (m *Manager) verifyOrphanOwnership(camundaInstanceID string, instance *models.CamundaInstance, art OrphanArtifacts) error {
+	if m.instances == nil {
+		return utils.ErrInstanceProviderNotConfigured
+	}
+
+	others, err := m.instances.ListInstances()
+	if err != nil {
+		return fmt.Errorf("failed to check whether another instance owns backup %s: %w", art.BackupID, err)
+	}
+
+	for i := range others {
+		other := &others[i]
+		if other.ID == camundaInstanceID {
+			continue
+		}
+
+		if _, err := m.s3Storage.GetBackupHistory(other.ID, art.BackupID); err == nil {
+			return fmt.Errorf("%w: instance %q has a record for backup %s",
+				utils.ErrOrphanOwnershipUnverified, other.ID, art.BackupID)
+		} else if !errors.Is(err, utils.ErrBackupNotFound) {
+			return fmt.Errorf("failed to check instance %s for backup %s: %w", other.ID, art.BackupID, err)
+		}
+
+		if shared := m.sharedSurface(instance, other, art); shared != "" {
+			return fmt.Errorf("%w: instance %q shares %s, and nothing distinguishes their backups",
+				utils.ErrOrphanOwnershipUnverified, other.ID, shared)
+		}
+	}
+
+	return nil
+}
+
+// sharedSurface names the first place two instances could hold artifacts the
+// controller cannot tell apart, or "" when they are distinguishable.
+//
+// A shared snapshot repository is only ambiguous while the two instances write
+// indistinguishable names: with distinct, non-empty name prefixes the
+// controller-owned snapshots separate cleanly. Component-owned snapshot names
+// carry no instance identifier at all, so a shared repository stays ambiguous
+// for those whenever this deletion would touch one.
+func (m *Manager) sharedSurface(instance, other *models.CamundaInstance, art OrphanArtifacts) string {
+	for _, component := range art.Components {
+		endpoint, known := componentEndpoint(instance, component)
+		if !known || endpoint == "" {
+			continue
+		}
+		if otherEndpoint, ok := componentEndpoint(other, component); ok && sameEndpoint(endpoint, otherEndpoint) {
+			return fmt.Sprintf("the %s backup endpoint", component)
+		}
+	}
+
+	if len(art.SnapshotNames) == 0 || m.cfg == nil {
+		return ""
+	}
+	if !sameEndpoint(instance.ElasticsearchEndpoint, other.ElasticsearchEndpoint) {
+		return ""
+	}
+	if m.cfg.GetElasticsearchSnapshotRepository(instance.ID, instance.ElasticsearchSnapshotRepository) !=
+		m.cfg.GetElasticsearchSnapshotRepository(other.ID, other.ElasticsearchSnapshotRepository) {
+		return ""
+	}
+
+	prefix := m.cfg.GetElasticsearchSnapshotNamePrefix(instance.ID)
+	otherPrefix := m.cfg.GetElasticsearchSnapshotNamePrefix(other.ID)
+	if prefix != "" && otherPrefix != "" && prefix != otherPrefix && !anyComponentSnapshot(art.SnapshotNames) {
+		return ""
+	}
+	return "the Elasticsearch snapshot repository"
+}
+
+// anyComponentSnapshot reports whether any name is a component-owned snapshot.
+// Those carry no instance identifier, so a name prefix cannot separate them.
+func anyComponentSnapshot(names []string) bool {
+	for _, name := range names {
+		if owner, _, _ := elasticsearch.ClassifySnapshot(name, ""); owner == elasticsearch.OwnerComponent {
+			return true
+		}
+	}
+	return false
+}
+
+// verifyEndpointsUnchanged refuses when a component's backup endpoint has moved
+// since the sweep that found the orphan.
+//
+// The sweep records what it actually talked to. Resolving endpoints from
+// current config instead would send the DELETE somewhere that never reported
+// this backup — and because backup IDs are timestamps, the same ID can name a
+// live backup there.
+func (m *Manager) verifyEndpointsUnchanged(instance *models.CamundaInstance, art OrphanArtifacts) error {
+	for _, component := range art.Components {
+		current, known := componentEndpoint(instance, component)
+		if !known || current == "" {
+			// Nothing to compare against, and nothing to delete through either.
+			// deleteOrphanComponents reports that more precisely.
+			continue
+		}
+		observed, recorded := art.Endpoints[component]
+		if !recorded {
+			return fmt.Errorf("%w: the scan did not record which %s endpoint held backup %s",
+				utils.ErrOrphanEndpointDrift, component, art.BackupID)
+		}
+		if !sameEndpoint(observed, current) {
+			return fmt.Errorf("%w: %s was scanned at %q but is now configured as %q",
+				utils.ErrOrphanEndpointDrift, component, observed, stripUserinfo(current))
+		}
+	}
+	return nil
+}
+
+// sameEndpoint compares two endpoints ignoring credentials and a trailing
+// slash. The sweep stores endpoints with userinfo stripped, so a byte
+// comparison against live config would report drift that is not there.
+func sameEndpoint(a, b string) bool {
+	return stripUserinfo(a) == stripUserinfo(b)
+}
+
+// stripUserinfo removes credentials from a URL and trims a trailing slash. It
+// mirrors the reconciler's own stripping, which is what the report contains.
+func stripUserinfo(raw string) string {
+	trimmed := strings.TrimRight(raw, "/")
+	u, err := url.Parse(trimmed)
+	if err != nil {
+		return trimmed
+	}
+	u.User = nil
+	return u.String()
 }
 
 // componentEndpoint resolves a component's backup endpoint by name. The names

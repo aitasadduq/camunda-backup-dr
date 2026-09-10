@@ -1,6 +1,7 @@
 package retention
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,7 +24,10 @@ import (
 // --- Mock storage implementations ---
 
 type mockS3Storage struct {
-	mu                sync.Mutex
+	mu sync.Mutex
+	// historyErr makes a record lookup fail for a reason other than not-found,
+	// so a guard that must not read that as "no record exists" can be tested.
+	historyErr        error
 	backupHistory     map[string]map[string]*models.BackupHistory
 	orphaned          map[string]map[string]*models.BackupHistory
 	incomplete        map[string]map[string]*models.BackupHistory
@@ -70,6 +74,9 @@ func (m *mockS3Storage) StoreBackupHistory(history *models.BackupHistory) error 
 func (m *mockS3Storage) GetBackupHistory(camundaInstanceID, backupID string) (*models.BackupHistory, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.historyErr != nil {
+		return nil, m.historyErr
+	}
 	for _, group := range []map[string]map[string]*models.BackupHistory{m.backupHistory, m.orphaned, m.incomplete} {
 		if group[camundaInstanceID] == nil {
 			continue
@@ -324,6 +331,18 @@ func newMockInstanceProvider() *mockInstanceProvider {
 	return &mockInstanceProvider{instances: make(map[string]*models.CamundaInstance)}
 }
 
+func (m *mockInstanceProvider) ListInstances() ([]models.CamundaInstance, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	out := make([]models.CamundaInstance, 0, len(m.instances))
+	for _, inst := range m.instances {
+		out = append(out, *inst)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
 func (m *mockInstanceProvider) GetInstance(id string) (*models.CamundaInstance, error) {
 	if m.err != nil {
 		return nil, m.err
@@ -532,7 +551,7 @@ func TestDeleteBackup_Success(t *testing.T) {
 	now := time.Now()
 	s3.addBackup("inst-1", "b1", types.BackupStatusCompleted, now.Add(-2*time.Hour))
 	s3.addBackup("inst-1", "b2", types.BackupStatusCompleted, now.Add(-1*time.Hour))
-	err := mgr.DeleteBackup("inst-1", "b1", false)
+	err := mgr.DeleteBackup(context.Background(), "inst-1", "b1", false)
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -547,7 +566,7 @@ func TestDeleteBackup_RefusesMostRecentCompleted(t *testing.T) {
 	now := time.Now()
 	s3.addBackup("inst-1", "b1", types.BackupStatusCompleted, now.Add(-2*time.Hour))
 	s3.addBackup("inst-1", "b2", types.BackupStatusCompleted, now.Add(-1*time.Hour))
-	err := mgr.DeleteBackup("inst-1", "b2", false)
+	err := mgr.DeleteBackup(context.Background(), "inst-1", "b2", false)
 	if err == nil {
 		t.Fatal("expected error when deleting most recent successful backup")
 	}
@@ -559,7 +578,7 @@ func TestDeleteBackup_RefusesMostRecentCompleted(t *testing.T) {
 
 func TestDeleteBackup_NotFound(t *testing.T) {
 	mgr, _, _ := newTestManager()
-	err := mgr.DeleteBackup("inst-1", "nonexistent", false)
+	err := mgr.DeleteBackup(context.Background(), "inst-1", "nonexistent", false)
 	if err != utils.ErrBackupNotFound {
 		t.Errorf("expected ErrBackupNotFound, got %v", err)
 	}
@@ -569,7 +588,7 @@ func TestDeleteBackup_FromOrphaned(t *testing.T) {
 	mgr, s3, _ := newTestManager()
 	now := time.Now()
 	s3.addOrphaned("inst-1", "b-orphaned", now.Add(-5*time.Hour))
-	err := mgr.DeleteBackup("inst-1", "b-orphaned", false)
+	err := mgr.DeleteBackup(context.Background(), "inst-1", "b-orphaned", false)
 	if err != nil {
 		t.Fatalf("expected nil error deleting orphaned backup, got %v", err)
 	}
@@ -579,7 +598,7 @@ func TestDeleteBackup_FromIncomplete(t *testing.T) {
 	mgr, s3, _ := newTestManager()
 	now := time.Now()
 	s3.addIncomplete("inst-1", "b-incomplete", now.Add(-5*time.Hour))
-	err := mgr.DeleteBackup("inst-1", "b-incomplete", false)
+	err := mgr.DeleteBackup(context.Background(), "inst-1", "b-incomplete", false)
 	if err != nil {
 		t.Fatalf("expected nil error deleting incomplete backup, got %v", err)
 	}
@@ -589,7 +608,7 @@ func TestDeleteBackup_OnlyOneCompletedBackup(t *testing.T) {
 	mgr, s3, _ := newTestManager()
 	now := time.Now()
 	s3.addBackup("inst-1", "b1", types.BackupStatusCompleted, now)
-	err := mgr.DeleteBackup("inst-1", "b1", false)
+	err := mgr.DeleteBackup(context.Background(), "inst-1", "b1", false)
 	if err == nil {
 		t.Fatal("expected error when deleting the only completed backup")
 	}
@@ -599,7 +618,7 @@ func TestDeleteBackup_FailedBackupCanBeDeleted(t *testing.T) {
 	mgr, s3, _ := newTestManager()
 	now := time.Now()
 	s3.addBackup("inst-1", "b-failed", types.BackupStatusFailed, now)
-	err := mgr.DeleteBackup("inst-1", "b-failed", false)
+	err := mgr.DeleteBackup(context.Background(), "inst-1", "b-failed", false)
 	if err != nil {
 		t.Fatalf("expected nil error deleting failed backup, got %v", err)
 	}
@@ -735,7 +754,7 @@ func TestDeleteBackup_ListErrorPreventsDelete(t *testing.T) {
 	now := time.Now()
 	s3.addBackup("inst-1", "b1", types.BackupStatusCompleted, now)
 	s3.listErr = fmt.Errorf("S3 error")
-	err := mgr.DeleteBackup("inst-1", "b1", false)
+	err := mgr.DeleteBackup(context.Background(), "inst-1", "b1", false)
 	if err == nil {
 		t.Fatal("expected error when ListBackupHistory fails")
 	}
@@ -826,7 +845,7 @@ func TestDeleteBackup_RecordDeleteError(t *testing.T) {
 	now := time.Now()
 	s3.addOrphaned("inst-1", "b-orphan", now.Add(-5*time.Hour))
 	s3.deleteErr = fmt.Errorf("delete failed")
-	err := mgr.DeleteBackup("inst-1", "b-orphan", false)
+	err := mgr.DeleteBackup(context.Background(), "inst-1", "b-orphan", false)
 	if err == nil {
 		t.Fatal("expected error when DeleteBackupHistory fails")
 	}
@@ -837,7 +856,7 @@ func TestDeleteBackup_RecordDeleteError(t *testing.T) {
 
 func TestDeleteBackup_NotFoundInAnyDirectory(t *testing.T) {
 	mgr, _, _ := newTestManager()
-	err := mgr.DeleteBackup("inst-1", "nonexistent", false)
+	err := mgr.DeleteBackup(context.Background(), "inst-1", "nonexistent", false)
 	if !errors.Is(err, utils.ErrBackupNotFound) {
 		t.Errorf("expected ErrBackupNotFound, got %v", err)
 	}
@@ -848,7 +867,7 @@ func TestDeleteBackup_NoCompletedBackups_AllowsDelete(t *testing.T) {
 	now := time.Now()
 	// Only orphaned backups exist (no completed)
 	s3.addOrphaned("inst-1", "b-orphan", now.Add(-5*time.Hour))
-	err := mgr.DeleteBackup("inst-1", "b-orphan", false)
+	err := mgr.DeleteBackup(context.Background(), "inst-1", "b-orphan", false)
 	if err != nil {
 		t.Fatalf("expected nil error when no completed backups exist, got %v", err)
 	}
@@ -860,7 +879,7 @@ func TestDeleteBackup_NoInstanceProvider(t *testing.T) {
 	mgr := NewManager(s3, fs, nil, nil, utils.NewLogger("debug"))
 	s3.addBackup("inst-1", "b-failed", types.BackupStatusFailed, time.Now())
 
-	err := mgr.DeleteBackup("inst-1", "b-failed", false)
+	err := mgr.DeleteBackup(context.Background(), "inst-1", "b-failed", false)
 	if !errors.Is(err, utils.ErrInstanceProviderNotConfigured) {
 		t.Fatalf("expected ErrInstanceProviderNotConfigured, got %v", err)
 	}
@@ -873,7 +892,7 @@ func TestDeleteBackup_UnknownInstance(t *testing.T) {
 	mgr, s3, _ := newTestManager()
 	s3.addBackup("inst-other", "b-failed", types.BackupStatusFailed, time.Now())
 
-	err := mgr.DeleteBackup("inst-other", "b-failed", false)
+	err := mgr.DeleteBackup(context.Background(), "inst-other", "b-failed", false)
 	if !errors.Is(err, utils.ErrCamundaInstanceNotFound) {
 		t.Fatalf("expected ErrCamundaInstanceNotFound, got %v", err)
 	}
@@ -996,7 +1015,7 @@ func TestDeleteBackup_DeletesArtifactsEverywhere(t *testing.T) {
 	s3.mu.Unlock()
 	fs.logFiles["inst-1"] = []string{"b-old"}
 
-	if err := mgr.DeleteBackup("inst-1", "b-old", false); err != nil {
+	if err := mgr.DeleteBackup(context.Background(), "inst-1", "b-old", false); err != nil {
 		t.Fatalf("DeleteBackup: %v", err)
 	}
 
@@ -1041,7 +1060,7 @@ func TestDeleteBackup_SkipsSkippedComponents(t *testing.T) {
 	}
 	s3.mu.Unlock()
 
-	if err := mgr.DeleteBackup("inst-1", "b-old", false); err != nil {
+	if err := mgr.DeleteBackup(context.Background(), "inst-1", "b-old", false); err != nil {
 		t.Fatalf("DeleteBackup: %v", err)
 	}
 
@@ -1067,7 +1086,7 @@ func TestDeleteBackup_DoesNotPurgeComponentsAbsentFromRecord(t *testing.T) {
 	}
 	s3.mu.Unlock()
 
-	if err := mgr.DeleteBackup("inst-1", "b-inc", false); err != nil {
+	if err := mgr.DeleteBackup(context.Background(), "inst-1", "b-inc", false); err != nil {
 		t.Fatalf("DeleteBackup: %v", err)
 	}
 
@@ -1088,7 +1107,7 @@ func TestDeleteBackup_RefusesRecordWithNoComponents(t *testing.T) {
 	s3.backupHistory["inst-1"]["b-bare"].Components = nil
 	s3.mu.Unlock()
 
-	err := mgr.DeleteBackup("inst-1", "b-bare", false)
+	err := mgr.DeleteBackup(context.Background(), "inst-1", "b-bare", false)
 	if !errors.Is(err, utils.ErrBackupArtifactsRemain) {
 		t.Fatalf("expected ErrBackupArtifactsRemain, got %v", err)
 	}
@@ -1100,7 +1119,7 @@ func TestDeleteBackup_RefusesRecordWithNoComponents(t *testing.T) {
 	}
 
 	// force is the documented escape hatch.
-	if err := mgr.DeleteBackup("inst-1", "b-bare", true); err != nil {
+	if err := mgr.DeleteBackup(context.Background(), "inst-1", "b-bare", true); err != nil {
 		t.Fatalf("expected force to delete the bare record, got %v", err)
 	}
 }
@@ -1114,7 +1133,7 @@ func TestDeleteBackup_RefusesRunningBackup(t *testing.T) {
 	s3.addBackup("inst-1", "b-running", types.BackupStatusRunning, time.Now())
 
 	for _, force := range []bool{false, true} {
-		err := mgr.DeleteBackup("inst-1", "b-running", force)
+		err := mgr.DeleteBackup(context.Background(), "inst-1", "b-running", force)
 		if !errors.Is(err, utils.ErrCannotDeleteRunningBackup) {
 			t.Fatalf("force=%v: expected ErrCannotDeleteRunningBackup, got %v", force, err)
 		}
@@ -1140,7 +1159,7 @@ func TestDeleteBackup_KeepsRecordWhenArtifactDeletionFails(t *testing.T) {
 	s3.mu.Unlock()
 	fs.logFiles["inst-1"] = []string{"b-old"}
 
-	err := mgr.DeleteBackup("inst-1", "b-old", false)
+	err := mgr.DeleteBackup(context.Background(), "inst-1", "b-old", false)
 	if !errors.Is(err, utils.ErrBackupArtifactsRemain) {
 		t.Fatalf("expected ErrBackupArtifactsRemain, got %v", err)
 	}
@@ -1165,7 +1184,7 @@ func TestDeleteBackup_ForceDeletesRecordDespiteArtifactFailure(t *testing.T) {
 	s3.backupHistory["inst-1"]["b-old"].Components = allComponentsCompleted()
 	s3.mu.Unlock()
 
-	if err := mgr.DeleteBackup("inst-1", "b-old", true); err != nil {
+	if err := mgr.DeleteBackup(context.Background(), "inst-1", "b-old", true); err != nil {
 		t.Fatalf("expected force delete to succeed, got %v", err)
 	}
 	if _, err := s3.GetBackupHistory("inst-1", "b-old"); !errors.Is(err, utils.ErrBackupNotFound) {
@@ -1185,7 +1204,7 @@ func TestDeleteBackup_TreatsMissingArtifactsAsDeleted(t *testing.T) {
 	s3.backupHistory["inst-1"]["b-old"].Components = allComponentsCompleted()
 	s3.mu.Unlock()
 
-	if err := mgr.DeleteBackup("inst-1", "b-old", false); err != nil {
+	if err := mgr.DeleteBackup(context.Background(), "inst-1", "b-old", false); err != nil {
 		t.Fatalf("expected 404s to count as deleted, got %v", err)
 	}
 }
@@ -1650,6 +1669,31 @@ func newOrphanTestEnv(t *testing.T) *orphanTestEnv {
 	return env
 }
 
+// complete fills the report-provenance a real deletion carries: a sweep that
+// reached every source, finished just now, and saw the endpoints the instance is
+// configured with. A test exercising one of those guards overrides just that
+// field, so the guard under test is the only thing that fails.
+func (e *orphanTestEnv) complete(art OrphanArtifacts) OrphanArtifacts {
+	art.Complete = true
+	if art.SweptAt.IsZero() {
+		art.SweptAt = time.Now()
+	}
+	if art.Endpoints == nil {
+		art.Endpoints = map[string]string{}
+		for _, component := range types.ValidComponents {
+			if endpoint, ok := componentEndpoint(e.instance, component); ok && endpoint != "" {
+				art.Endpoints[component] = endpoint
+			}
+		}
+	}
+	return art
+}
+
+// deleteOrphan is the call under test, with that provenance supplied.
+func (e *orphanTestEnv) deleteOrphan(art OrphanArtifacts) error {
+	return e.mgr.DeleteOrphan(context.Background(), "inst-1", e.complete(art))
+}
+
 func (e *orphanTestEnv) recorded() []string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -1668,7 +1712,7 @@ func TestDeleteOrphan_DeletesOnlyWhatTheSweepFound(t *testing.T) {
 	env := newOrphanTestEnv(t)
 	env.fs.logFiles["inst-1"] = []string{"20260320080000"}
 
-	err := env.mgr.DeleteOrphan("inst-1", OrphanArtifacts{
+	err := env.deleteOrphan(OrphanArtifacts{
 		BackupID:      "20260320080000",
 		Components:    []string{types.ComponentZeebe},
 		SnapshotNames: []string{"camunda-20260320080000"},
@@ -1709,7 +1753,7 @@ func TestDeleteOrphan_DeletesOnlyWhatTheSweepFound(t *testing.T) {
 func TestDeleteOrphan_UsesReportedSnapshotName(t *testing.T) {
 	env := newOrphanTestEnv(t)
 
-	err := env.mgr.DeleteOrphan("inst-1", OrphanArtifacts{
+	err := env.deleteOrphan(OrphanArtifacts{
 		BackupID:      "20260320080000",
 		SnapshotNames: []string{"prod-prefix-20260320080000"},
 		Repository:    "other-repo",
@@ -1730,7 +1774,7 @@ func TestDeleteOrphan_RefusesWhenRecordAppeared(t *testing.T) {
 	env := newOrphanTestEnv(t)
 	env.s3.addBackup("inst-1", "20260320080000", types.BackupStatusCompleted, time.Now())
 
-	err := env.mgr.DeleteOrphan("inst-1", OrphanArtifacts{
+	err := env.deleteOrphan(OrphanArtifacts{
 		BackupID:   "20260320080000",
 		Components: []string{types.ComponentZeebe},
 	})
@@ -1745,7 +1789,7 @@ func TestDeleteOrphan_RefusesWhenRecordAppeared(t *testing.T) {
 func TestDeleteOrphan_RefusesWithNoArtifactsNamed(t *testing.T) {
 	env := newOrphanTestEnv(t)
 
-	err := env.mgr.DeleteOrphan("inst-1", OrphanArtifacts{BackupID: "20260320080000"})
+	err := env.deleteOrphan(OrphanArtifacts{BackupID: "20260320080000"})
 	if !errors.Is(err, utils.ErrOrphanArtifactsUnidentifiable) {
 		t.Fatalf("expected ErrOrphanArtifactsUnidentifiable, got %v", err)
 	}
@@ -1758,7 +1802,7 @@ func TestDeleteOrphan_ReportsSurvivingArtifacts(t *testing.T) {
 	env := newOrphanTestEnv(t)
 	env.failComponents(http.StatusInternalServerError)
 
-	err := env.mgr.DeleteOrphan("inst-1", OrphanArtifacts{
+	err := env.deleteOrphan(OrphanArtifacts{
 		BackupID:   "20260320080000",
 		Components: []string{types.ComponentZeebe},
 	})
@@ -1772,7 +1816,7 @@ func TestDeleteOrphan_ReportsSurvivingArtifacts(t *testing.T) {
 func TestDeleteOrphan_ReportsUnconfiguredComponent(t *testing.T) {
 	env := newOrphanTestEnv(t)
 
-	err := env.mgr.DeleteOrphan("inst-1", OrphanArtifacts{
+	err := env.deleteOrphan(OrphanArtifacts{
 		BackupID:   "20260320080000",
 		Components: []string{types.ComponentTasklist},
 	})
@@ -1789,7 +1833,7 @@ func TestDeleteOrphan_ReportsUnconfiguredComponent(t *testing.T) {
 func TestDeleteOrphan_RejectsElasticsearchAsComponent(t *testing.T) {
 	env := newOrphanTestEnv(t)
 
-	err := env.mgr.DeleteOrphan("inst-1", OrphanArtifacts{
+	err := env.deleteOrphan(OrphanArtifacts{
 		BackupID:   "20260320080000",
 		Components: []string{types.ComponentElasticsearch},
 	})
@@ -1807,7 +1851,7 @@ func TestDeleteOrphan_TreatsMissingArtifactAsDeleted(t *testing.T) {
 	env := newOrphanTestEnv(t)
 	env.failComponents(http.StatusNotFound)
 
-	err := env.mgr.DeleteOrphan("inst-1", OrphanArtifacts{
+	err := env.deleteOrphan(OrphanArtifacts{
 		BackupID:   "20260320080000",
 		Components: []string{types.ComponentZeebe, types.ComponentOperate},
 	})
@@ -1819,7 +1863,7 @@ func TestDeleteOrphan_TreatsMissingArtifactAsDeleted(t *testing.T) {
 func TestDeleteOrphan_RequiresBackupID(t *testing.T) {
 	env := newOrphanTestEnv(t)
 
-	if err := env.mgr.DeleteOrphan("inst-1", OrphanArtifacts{Components: []string{types.ComponentZeebe}}); err == nil {
+	if err := env.deleteOrphan(OrphanArtifacts{Components: []string{types.ComponentZeebe}}); err == nil {
 		t.Fatal("expected an error for an empty backup ID")
 	}
 }
@@ -1828,11 +1872,286 @@ func TestDeleteOrphan_NoInstanceProvider(t *testing.T) {
 	env := newOrphanTestEnv(t)
 	env.mgr.SetInstanceProvider(nil)
 
-	err := env.mgr.DeleteOrphan("inst-1", OrphanArtifacts{
+	err := env.deleteOrphan(OrphanArtifacts{
 		BackupID:   "20260320080000",
 		Components: []string{types.ComponentZeebe},
 	})
 	if !errors.Is(err, utils.ErrInstanceProviderNotConfigured) {
 		t.Fatalf("expected ErrInstanceProviderNotConfigured, got %v", err)
+	}
+}
+
+// --- DeleteOrphan guards ---
+
+// A read failure is not "no record". Reading it as one sends the deletion down a
+// path that applies none of the record's safety guards.
+func TestDeleteOrphan_RefusesWhenRecordLookupFails(t *testing.T) {
+	env := newOrphanTestEnv(t)
+	env.s3.historyErr = errors.New("s3: connection reset")
+
+	err := env.deleteOrphan(OrphanArtifacts{
+		BackupID:   "20260320080000",
+		Components: []string{types.ComponentZeebe},
+	})
+	if err == nil || errors.Is(err, utils.ErrOrphanRecordAppeared) {
+		t.Fatalf("expected a refusal naming the failed confirmation, got %v", err)
+	}
+	if got := env.recorded(); len(got) != 0 {
+		t.Errorf("expected nothing deleted while trackedness is unknown, got %v", got)
+	}
+}
+
+// The Elasticsearch leg of the delete-everywhere invariant, which the
+// component-only failure test does not reach.
+func TestDeleteOrphan_ReportsSurvivingSnapshot(t *testing.T) {
+	env := newOrphanTestEnv(t)
+	env.failComponents(http.StatusInternalServerError)
+
+	err := env.deleteOrphan(OrphanArtifacts{
+		BackupID:      "20260320080000",
+		SnapshotNames: []string{"camunda-20260320080000"},
+		Repository:    "camunda-backup",
+	})
+	if !errors.Is(err, utils.ErrBackupArtifactsRemain) {
+		t.Fatalf("expected ErrBackupArtifactsRemain, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "camunda-20260320080000") {
+		t.Errorf("expected the surviving snapshot to be named, got %v", err)
+	}
+}
+
+// A partial sweep does not describe the full artifact set, so acting on it would
+// delete what it saw and silently strand the rest.
+func TestDeleteOrphan_RefusesPartialReport(t *testing.T) {
+	env := newOrphanTestEnv(t)
+
+	art := env.complete(OrphanArtifacts{
+		BackupID:   "20260320080000",
+		Components: []string{types.ComponentZeebe},
+	})
+	art.Complete = false
+
+	if err := env.mgr.DeleteOrphan(context.Background(), "inst-1", art); !errors.Is(err, utils.ErrOrphanReportPartial) {
+		t.Fatalf("expected ErrOrphanReportPartial, got %v", err)
+	}
+	if got := env.recorded(); len(got) != 0 {
+		t.Errorf("expected nothing deleted from a partial scan, got %v", got)
+	}
+}
+
+// A deletion acts on a description of the world, and an old description is not
+// one: endpoints move and backups appear in between.
+func TestDeleteOrphan_RefusesStaleReport(t *testing.T) {
+	env := newOrphanTestEnv(t)
+
+	art := env.complete(OrphanArtifacts{
+		BackupID:   "20260320080000",
+		Components: []string{types.ComponentZeebe},
+	})
+	art.SweptAt = time.Now().Add(-2 * maxReportAge)
+
+	if err := env.mgr.DeleteOrphan(context.Background(), "inst-1", art); !errors.Is(err, utils.ErrOrphanReportStale) {
+		t.Fatalf("expected ErrOrphanReportStale, got %v", err)
+	}
+	if got := env.recorded(); len(got) != 0 {
+		t.Errorf("expected nothing deleted from a stale scan, got %v", got)
+	}
+}
+
+// An orphan has no record to read a RUNNING status from, and a live backup whose
+// initial record write failed is indistinguishable from one.
+func TestDeleteOrphan_RefusesWhileBackupRunning(t *testing.T) {
+	env := newOrphanTestEnv(t)
+	env.mgr.SetBackupRunningFunc(func() bool { return true })
+
+	err := env.deleteOrphan(OrphanArtifacts{
+		BackupID:   "20260320080000",
+		Components: []string{types.ComponentZeebe},
+	})
+	if !errors.Is(err, utils.ErrCannotDeleteRunningBackup) {
+		t.Fatalf("expected ErrCannotDeleteRunningBackup, got %v", err)
+	}
+	if got := env.recorded(); len(got) != 0 {
+		t.Errorf("expected nothing deleted while a backup is in flight, got %v", got)
+	}
+}
+
+// Backup IDs are timestamps, so the same ID exists in several instances. A
+// record under another instance is proof this artifact is not ours.
+func TestDeleteOrphan_RefusesWhenAnotherInstanceHasTheRecord(t *testing.T) {
+	env := newOrphanTestEnv(t)
+	env.instances.instances["inst-2"] = &models.CamundaInstance{ID: "inst-2"}
+	env.s3.addBackup("inst-2", "20260320080000", types.BackupStatusCompleted, time.Now())
+
+	err := env.deleteOrphan(OrphanArtifacts{
+		BackupID:   "20260320080000",
+		Components: []string{types.ComponentZeebe},
+	})
+	if !errors.Is(err, utils.ErrOrphanOwnershipUnverified) {
+		t.Fatalf("expected ErrOrphanOwnershipUnverified, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "inst-2") {
+		t.Errorf("expected the owning instance to be named, got %v", err)
+	}
+	if got := env.recorded(); len(got) != 0 {
+		t.Errorf("expected nothing deleted, got %v", got)
+	}
+}
+
+// Two instances behind one component endpoint cannot be told apart at all, so
+// neither may delete from it on the strength of its own missing record.
+func TestDeleteOrphan_RefusesWhenComponentEndpointIsShared(t *testing.T) {
+	env := newOrphanTestEnv(t)
+	env.instances.instances["inst-2"] = &models.CamundaInstance{
+		ID:                  "inst-2",
+		ZeebeBackupEndpoint: env.instance.ZeebeBackupEndpoint,
+	}
+
+	err := env.deleteOrphan(OrphanArtifacts{
+		BackupID:   "20260320080000",
+		Components: []string{types.ComponentZeebe},
+	})
+	if !errors.Is(err, utils.ErrOrphanOwnershipUnverified) {
+		t.Fatalf("expected ErrOrphanOwnershipUnverified, got %v", err)
+	}
+	if got := env.recorded(); len(got) != 0 {
+		t.Errorf("expected nothing deleted, got %v", got)
+	}
+}
+
+// The default configuration puts every instance in one repository with no name
+// prefix, which is exactly the case the reason catalogue warns about.
+func TestDeleteOrphan_RefusesWhenSnapshotRepositoryIsShared(t *testing.T) {
+	env := newOrphanTestEnv(t)
+	env.instances.instances["inst-2"] = &models.CamundaInstance{
+		ID:                    "inst-2",
+		ElasticsearchEndpoint: env.instance.ElasticsearchEndpoint,
+	}
+
+	err := env.deleteOrphan(OrphanArtifacts{
+		BackupID:      "20260320080000",
+		SnapshotNames: []string{"20260320080000"},
+		Repository:    "camunda-backup",
+	})
+	if !errors.Is(err, utils.ErrOrphanOwnershipUnverified) {
+		t.Fatalf("expected ErrOrphanOwnershipUnverified, got %v", err)
+	}
+	if got := env.recorded(); len(got) != 0 {
+		t.Errorf("expected nothing deleted, got %v", got)
+	}
+}
+
+// A second instance that shares nothing must not block a deletion.
+func TestDeleteOrphan_AllowsWhenOtherInstanceIsSeparate(t *testing.T) {
+	env := newOrphanTestEnv(t)
+	env.instances.instances["inst-2"] = &models.CamundaInstance{
+		ID:                    "inst-2",
+		ZeebeBackupEndpoint:   "http://other-zeebe:9600/actuator/backups",
+		ElasticsearchEndpoint: "http://other-es:9200",
+	}
+
+	if err := env.deleteOrphan(OrphanArtifacts{
+		BackupID:   "20260320080000",
+		Components: []string{types.ComponentZeebe},
+	}); err != nil {
+		t.Fatalf("expected the deletion to proceed, got %v", err)
+	}
+	if got := env.recorded(); len(got) != 1 {
+		t.Errorf("expected the Zeebe backup to be deleted, got %v", got)
+	}
+}
+
+// The sweep records where it found the backup. Deleting at the currently
+// configured endpoint instead would send the DELETE somewhere that never
+// reported it, where the same timestamp ID can name a live backup.
+func TestDeleteOrphan_RefusesOnEndpointDrift(t *testing.T) {
+	env := newOrphanTestEnv(t)
+
+	art := env.complete(OrphanArtifacts{
+		BackupID:   "20260320080000",
+		Components: []string{types.ComponentZeebe},
+	})
+	art.Endpoints = map[string]string{types.ComponentZeebe: "http://zeebe-before-the-migration:9600/actuator/backups"}
+
+	err := env.mgr.DeleteOrphan(context.Background(), "inst-1", art)
+	if !errors.Is(err, utils.ErrOrphanEndpointDrift) {
+		t.Fatalf("expected ErrOrphanEndpointDrift, got %v", err)
+	}
+	if got := env.recorded(); len(got) != 0 {
+		t.Errorf("expected nothing deleted after an endpoint moved, got %v", got)
+	}
+}
+
+// Credentials are stripped from the report's endpoints, so a byte comparison
+// against live config would report drift that is not there.
+func TestDeleteOrphan_IgnoresCredentialsWhenComparingEndpoints(t *testing.T) {
+	env := newOrphanTestEnv(t)
+	withCreds := strings.Replace(env.instance.ZeebeBackupEndpoint, "http://", "http://user:pass@", 1)
+	env.instance.ZeebeBackupEndpoint = withCreds
+
+	art := env.complete(OrphanArtifacts{
+		BackupID:   "20260320080000",
+		Components: []string{types.ComponentZeebe},
+	})
+	art.Endpoints = map[string]string{types.ComponentZeebe: stripUserinfo(withCreds)}
+
+	if err := env.mgr.DeleteOrphan(context.Background(), "inst-1", art); err != nil {
+		t.Fatalf("expected credentials to be ignored, got %v", err)
+	}
+}
+
+// Elasticsearch forbids these characters in a snapshot name, so a name carrying
+// one did not come from a healthy listing — and once path-cleaned it addresses
+// something else entirely.
+func TestDeleteOrphan_RefusesUnaddressableSnapshotName(t *testing.T) {
+	for _, name := range []string{
+		"camunda_operate_20260320080000_../../../_all",
+		"camunda-*",
+		"a,b",
+		"..",
+	} {
+		env := newOrphanTestEnv(t)
+
+		err := env.deleteOrphan(OrphanArtifacts{
+			BackupID:      "20260320080000",
+			SnapshotNames: []string{name},
+			Repository:    "camunda-backup",
+		})
+		if !errors.Is(err, utils.ErrBackupArtifactsRemain) {
+			t.Fatalf("%q: expected the deletion to be refused, got %v", name, err)
+		}
+		if !strings.Contains(err.Error(), "not addressable") {
+			t.Errorf("%q: expected an addressability message, got %v", name, err)
+		}
+		if got := env.recorded(); len(got) != 0 {
+			t.Errorf("%q: expected no request to be sent, got %v", name, got)
+		}
+	}
+}
+
+// The alert path on the orphan side, which had no equivalent of the tracked
+// path's coverage.
+func TestDeleteOrphan_AlertsOnSurvivingArtifacts(t *testing.T) {
+	var alerts int32
+	alertServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&alerts, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer alertServer.Close()
+
+	env := newOrphanTestEnv(t)
+	env.mgr.SetAlerter(utils.NewAlerter(alertServer.URL, utils.NewLogger("error")))
+	env.failComponents(http.StatusInternalServerError)
+
+	if err := env.deleteOrphan(OrphanArtifacts{
+		BackupID:   "20260320080000",
+		Components: []string{types.ComponentZeebe},
+	}); !errors.Is(err, utils.ErrBackupArtifactsRemain) {
+		t.Fatalf("expected ErrBackupArtifactsRemain, got %v", err)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+	if atomic.LoadInt32(&alerts) < 1 {
+		t.Error("expected a cleanup alert for surviving orphan artifacts")
 	}
 }

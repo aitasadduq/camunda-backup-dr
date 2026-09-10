@@ -68,6 +68,20 @@ type BackupIssue struct {
 	// SnapshotNames are the exact snapshots this backup's findings name, for
 	// building remediation commands.
 	SnapshotNames []string `json:"snapshot_names,omitempty"`
+	// AllSnapshotNames is every snapshot observed for this backup ID, whether or
+	// not a finding was reported for it.
+	//
+	// The two differ, and deletion needs this one. Implication rules and the A3
+	// rule deliberately suppress findings that a more specific finding already
+	// explains — a component snapshot is not reported separately while the
+	// component still tracks the backup, because that is the A1 finding. That is
+	// a reporting decision, not a statement that the snapshot does not exist.
+	// Deleting from SnapshotNames alone would leave those snapshots behind while
+	// reporting the backup fully deleted.
+	//
+	// Empty when Elasticsearch could not be enumerated, which is why a deletion
+	// also checks the report was complete.
+	AllSnapshotNames []string `json:"all_snapshot_names,omitempty"`
 }
 
 // Report is one reconciliation sweep over one Camunda instance.
