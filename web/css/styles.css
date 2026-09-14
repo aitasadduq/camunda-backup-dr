@@ -162,6 +162,34 @@
     transition: opacity 0.3s ease, transform 0.3s ease;
 }
 
+/* A toast carrying a details block is a column, not a centred single line. */
+.toast-has-details {
+    align-items: flex-start;
+}
+
+.toast-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+    min-width: 0;
+}
+
+.toast-details {
+    margin: 0;
+    padding: 0.5rem;
+    border-radius: 0.25rem;
+    background-color: rgba(255, 255, 255, 0.7);
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.75rem;
+    line-height: 1.25rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 12rem;
+    overflow: auto;
+    user-select: text;
+}
+
 .toast.removing {
     opacity: 0;
     transform: translateX(100%);

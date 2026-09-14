@@ -20,10 +20,16 @@ promoted to CRITICAL should be one that loses or strands data.
 | Date | Origin | Passes |
 |---|---|---|
 | 2026-09-09 | Pre-landing review of [PR #38](https://github.com/aitasadduq/camunda-backup-dr/pull/38) (orphan + bulk backup deletion) | 6 specialists (testing, maintainability, security, performance, api-contract, design), red team, Claude adversarial, Codex cross-model |
+| 2026-09-13 | Pre-landing review of [PR #39](https://github.com/aitasadduq/camunda-backup-dr/pull/39) (outbound notifications) | 6 specialists (testing, maintainability, security, performance, api-contract, simplification) |
 
 Forty-four findings in total. Ten mechanical ones were fixed during the review
 and are not listed. The ten criticals were fixed on 2026-09-10 and are
 summarised below. The twenty-four informational findings remain open.
+
+The PR #39 review produced twenty-two findings; twenty were fixed during the
+review. The two that remain, I25 and I26, are security design points shared
+with `exporting_endpoint` and deferred so they can be fixed once, for every
+admin-configured URL, rather than for notifications alone.
 
 ---
 
@@ -207,6 +213,57 @@ whose only gate is a header. Largely mitigated by the `IsBackupIDShaped` check
 further down the path, but the S3 lookups in `DeleteBackup` happen first.
 
 **Fix:** reject any ID longer than 14 characters in `validateBulkDeleteIDs`.
+
+### I25 — Admin-configured URLs are SSRF-guarded only at save time
+
+`internal/api/handlers.go` (`validateNotifications`, `validateExportingEndpoint`);
+`internal/notify/notifier.go` (`NewNotifier`); `internal/orchestrator/orchestrator.go`
+(`callExportingEndpoint`)
+
+Both the notification URL and `exporting_endpoint` are checked against
+private/loopback ranges when the instance is saved, by resolving the hostname
+once (`isBlockedHost`). The request itself is sent later through a plain
+`http.Client`. A hostname that resolves publicly at save time and privately when
+a backup finishes lands an admin-shaped request on an internal address, and a
+hostname that fails to resolve at save time is accepted outright — the guard
+fails open because the probe endpoint it was written for has a follow-up
+request to catch it, and these paths do not. The probe client in
+`internal/api/endpoint_check.go` already closes this gap for itself with a
+dial-time IP check on the connected `RemoteAddr`.
+
+This is the existing threat model for every admin-configured URL, and the
+person who can save an instance can already point S3 and Elasticsearch
+anywhere, which is why it was deferred rather than fixed for one call site.
+
+**Fix:** move `isPrivateIP`, `privateIPNets` and `isSSRFCheckDisabled` out of
+`internal/api` into a shared package and build one guarded `http.Client`
+(dial-time `RemoteAddr` check, `PROBE_ALLOW_PRIVATE_IPS` escape hatch) used by
+the notifier and by `callExportingEndpoint` alike. Have `validateNotifications`
+and `validateExportingEndpoint` treat a DNS failure as a rejection. The notifier
+tests dial `httptest` servers on loopback and will need
+`t.Setenv("PROBE_ALLOW_PRIVATE_IPS", "true")`.
+
+### I26 — Notification URLs and bodies are stored and served in plaintext
+
+`internal/models/notification.go` (`NotificationRequest`); `internal/storage/file.go`
+(`SaveConfiguration`, mode 0644); `internal/api/handlers.go` (`ListCamundaInstancesHandler`,
+`GetCamundaInstanceHandler`)
+
+The notification URL is redacted before it is logged because webhook URLs
+routinely carry tokens, but the same URL is persisted verbatim in
+`config.json` and returned in full by the unauthenticated list and get
+endpoints. `Validate` also accepts userinfo (`https://user:password@host/...`),
+which Go's client turns into an `Authorization: Basic` header, so a real
+password can be stored in `config.json` — against the rule that credentials go
+to `internal/secrets`, never to config. The body has the same exposure and can
+carry an API key of its own.
+
+**Fix:** treat the URL (or at least its userinfo and a designated secret
+header) like `ElasticsearchPassword`: a write-only field stripped by
+`ClearTransientFields`, stored through `internal/secrets`, resolved by the
+notifier at send time, and reported to the UI only as a `_set` marker. Until
+then, refuse userinfo in `NotificationRequest.Validate` and say in `docs/api.md`
+that notification URLs and bodies are visible to anyone who can read the API.
 
 ## Maintainability
 

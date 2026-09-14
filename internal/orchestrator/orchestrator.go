@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -34,6 +35,14 @@ type LastBackupFunc func(instanceID string, backupTime time.Time, status string)
 // to check the controller's metadata against the artifacts that really exist.
 type ReconcileFunc func(instance *models.CamundaInstance)
 
+// Notifier sends the user-configured HTTP request carrying the controller's
+// message about a finished backup. Implementations bound their own duration;
+// see internal/notify. The orchestrator calls it synchronously once the backup
+// is finished, so that bound is how long the backup slot stays held.
+type Notifier interface {
+	Send(ctx context.Context, req models.NotificationRequest, message string) error
+}
+
 // Orchestrator manages the backup workflow for Camunda instances
 type Orchestrator struct {
 	fileStorage     storage.FileStorage
@@ -49,6 +58,7 @@ type Orchestrator struct {
 	lastBackupFunc  LastBackupFunc
 	reconcileFunc   ReconcileFunc
 	alerter         *utils.Alerter
+	notifier        Notifier
 }
 
 // NewOrchestrator creates a new backup orchestrator
@@ -95,6 +105,14 @@ func (o *Orchestrator) SetAlerter(alerter *utils.Alerter) {
 	o.alerter = alerter
 }
 
+// SetNotifier sets the notifier used for backup outcome notifications.
+// Must be called before any backups are started.
+func (o *Orchestrator) SetNotifier(notifier Notifier) {
+	o.backupMutex.Lock()
+	defer o.backupMutex.Unlock()
+	o.notifier = notifier
+}
+
 // BackupRequest represents a backup request
 type BackupRequest struct {
 	CamundaInstance *models.CamundaInstance
@@ -133,12 +151,23 @@ func (o *Orchestrator) ExecuteBackup(ctx context.Context, req BackupRequest) (*m
 	o.backupRunning.Store(true)
 	o.backupMutex.Unlock()
 
+	// Notify the configured endpoint once the backup reaches a terminal state.
+	// Deferred now that this request owns the backup slot, so every terminal
+	// path is covered exactly once — including the early returns below, which
+	// fail the backup before any component runs. Deferred first of all, so it
+	// runs last: after the last-backup status is persisted and after the
+	// running flag is cleared. A webhook that answers slowly must not hold the
+	// backup slot, and must not make the post-backup sweep believe a backup is
+	// still in flight — that is exactly the sweep that reports an exporter
+	// left paused.
+	defer o.sendNotification(req, execution)
+
 	// Ensure we clear the running flag when done (mutex not held during backup)
 	defer o.backupRunning.Store(false)
 
-	// Persist the last-backup result for the instance on every terminal path
-	// now that this request owns the backup slot. Runs before the running flag
-	// is cleared; reads execution's final status at return time.
+	// Persist the last-backup result for the instance on every terminal path.
+	// Runs before the running flag is cleared; reads execution's final status
+	// at return time.
 	defer func() {
 		if o.lastBackupFunc == nil {
 			return
@@ -844,8 +873,11 @@ func (o *Orchestrator) finalizeBackup(req BackupRequest, execution *models.Backu
 		return
 	}
 
-	// Check component statuses to determine overall status
-	hasFailures := false
+	// Check component statuses to determine overall status. A FAILED already
+	// on the execution came from the exporter refusing to resume: every
+	// component may have completed, but the cluster was left paused, and that
+	// outranks anything the components report.
+	hasFailures := execution.Status == types.BackupStatusFailed
 	allCompleted := true
 
 	for _, status := range execution.ComponentStatus {
@@ -885,24 +917,87 @@ func (o *Orchestrator) finalizeBackup(req BackupRequest, execution *models.Backu
 // can apply keep-last-N policies via pruneFailedBackups.
 // All errors are logged but never propagated — cleanup must not disrupt the main flow.
 func (o *Orchestrator) handleBackupFailure(req BackupRequest, execution *models.BackupExecution) {
-	// Build a summary of failed components for the alert message
-	var failedComponents []string
-	for comp, status := range execution.ComponentStatus {
-		if status == types.ComponentStatusFailed {
-			failedComponents = append(failedComponents, comp)
-		}
-	}
-	failureReason := fmt.Sprintf("failed components: %s", strings.Join(failedComponents, ", "))
-	if execution.ErrorMessage != "" {
-		failureReason = execution.ErrorMessage
-	}
+	reason := failureReason(execution)
 
-	o.writeLog(req.CamundaInstance.ID, execution.BackupID, fmt.Sprintf("Backup failed: %s", failureReason))
+	o.writeLog(req.CamundaInstance.ID, execution.BackupID, fmt.Sprintf("Backup failed: %s", reason))
 
 	// Send alert for the backup failure
 	if o.alerter != nil {
-		o.alerter.AlertBackupFailed(req.CamundaInstance.ID, execution.BackupID, failureReason)
+		o.alerter.AlertBackupFailed(req.CamundaInstance.ID, execution.BackupID, reason)
 	}
+}
+
+// sendNotification sends the request the user configured for this backup's
+// outcome. Failures are logged and never propagated: the backup itself is
+// already finished, and a notification that could not be delivered must not
+// change its recorded result.
+func (o *Orchestrator) sendNotification(req BackupRequest, execution *models.BackupExecution) {
+	if o.notifier == nil || req.CamundaInstance == nil {
+		return
+	}
+
+	cfg, terminal := req.CamundaInstance.Notifications.For(execution.Status)
+	if !terminal || !cfg.Enabled {
+		return
+	}
+
+	if err := o.notifier.Send(context.Background(), cfg, notificationMessage(req, execution)); err != nil {
+		o.logger.Error("Failed to notify %s about backup %s (instance %s): %v",
+			cfg.RedactedURL(), execution.BackupID, req.CamundaInstance.ID, err)
+		return
+	}
+	o.logger.Info("Notified %s about backup %s (instance %s): %s",
+		cfg.RedactedURL(), execution.BackupID, req.CamundaInstance.ID, execution.Status)
+}
+
+// notificationMessage builds the message the controller writes into the body
+// field the user named.
+func notificationMessage(req BackupRequest, execution *models.BackupExecution) string {
+	subject := fmt.Sprintf("Backup %s of Camunda instance %s (%s)",
+		execution.BackupID, req.CamundaInstance.Name, req.CamundaInstance.ID)
+
+	if execution.Status == types.BackupStatusCompleted {
+		return fmt.Sprintf("%s completed successfully.", subject)
+	}
+	return fmt.Sprintf("%s finished with status %s: %s", subject, execution.Status, failureReason(execution))
+}
+
+// failureReason explains why a backup did not complete: the recorded error
+// when there is one, otherwise the components that failed, otherwise the ones
+// that never finished.
+func failureReason(execution *models.BackupExecution) string {
+	if execution.ErrorMessage != "" {
+		return execution.ErrorMessage
+	}
+	if failed := failedComponents(execution); len(failed) > 0 {
+		return fmt.Sprintf("failed components: %s", strings.Join(failed, ", "))
+	}
+	if unfinished := componentsWhere(execution, func(s types.ComponentStatus) bool {
+		return s == types.ComponentStatusPending || s == types.ComponentStatusRunning
+	}); len(unfinished) > 0 {
+		return fmt.Sprintf("unfinished components: %s", strings.Join(unfinished, ", "))
+	}
+	return "no reason recorded"
+}
+
+// failedComponents lists the components that reported a failure.
+func failedComponents(execution *models.BackupExecution) []string {
+	return componentsWhere(execution, func(s types.ComponentStatus) bool {
+		return s == types.ComponentStatusFailed
+	})
+}
+
+// componentsWhere lists the components whose status matches, sorted so the
+// message is stable across runs.
+func componentsWhere(execution *models.BackupExecution, match func(types.ComponentStatus) bool) []string {
+	var names []string
+	for comp, status := range execution.ComponentStatus {
+		if match(status) {
+			names = append(names, comp)
+		}
+	}
+	sort.Strings(names)
+	return names
 }
 
 // createBackupHistory creates a backup history record from execution

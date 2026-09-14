@@ -103,6 +103,13 @@ func TestCheckEndpointHandler_SSRFBlocksPrivateIPs(t *testing.T) {
 		{"private-192", "http://192.168.1.1:8080"},
 		{"link-local", "http://169.254.1.1:8080"},
 		{"ipv6-loopback", "http://[::1]:8080"},
+		// Each of these dials this machine without naming a listed range.
+		{"unspecified-v4", "http://0.0.0.0:8080"},
+		{"unspecified-v6", "http://[::]:8080"},
+		{"v4-mapped-loopback", "http://[::ffff:127.0.0.1]:8080"},
+		{"v4-mapped-unspecified", "http://[::ffff:0.0.0.0]:8080"},
+		{"zoned-link-local", "http://[fe80::1%25eth0]:8080"},
+		{"empty-host", "http://:8080/hook"},
 	}
 
 	for _, tc := range tests {

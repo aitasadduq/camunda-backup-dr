@@ -12,6 +12,7 @@ const BACKUP_POLLING_INTERVAL_MS = 5000;
 const MODAL_TRANSITION_MS = 200;
 const TOAST_REMOVAL_ANIMATION_MS = 300;
 const TOAST_DURATION_MS = 5000;
+const TOAST_DETAILS_DURATION_MS = 20000;
 
 /**
  * Canonical list of Camunda component names with endpoint support.
@@ -826,6 +827,109 @@ async function checkInstanceListEndpoints(instances) {
 // ============================================================
 // Instance Form (Modal)
 // ============================================================
+const NOTIFICATION_METHODS = ['POST', 'PUT', 'PATCH', 'GET', 'DELETE'];
+
+/**
+ * Renders one notification request form (success or failure). The four inputs
+ * are the whole contract: method, endpoint, body, and the body field the
+ * controller writes its message into.
+ */
+function notificationFieldsHtml(prefix, title, cfg) {
+    const conf = cfg || {};
+    const method = (conf.method || 'POST').toUpperCase();
+    return `
+        <div class="border-t border-gray-100 pt-3 space-y-3">
+            <label class="flex items-center gap-2 text-sm font-medium text-gray-700">
+                <input type="checkbox" name="${prefix}_enabled" ${conf.enabled ? 'checked' : ''} class="rounded border-gray-300 text-blue-600 focus:ring-blue-500">
+                ${title}
+            </label>
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Request Type</label>
+                    <select name="${prefix}_method" class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        ${NOTIFICATION_METHODS.map(m => `<option value="${m}" ${m === method ? 'selected' : ''}>${m}</option>`).join('')}
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Message Field</label>
+                    <input type="text" name="${prefix}_message_field" value="${escapeAttr(conf.message_field || '')}"
+                        class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="text">
+                    <p class="mt-1 text-xs text-gray-400">Optional. Body field for the message; dotted paths nest, e.g. payload.text</p>
+                </div>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Endpoint</label>
+                <input type="text" name="${prefix}_url" value="${escapeAttr(conf.url || '')}"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="https://hooks.example.com:8443/backup-events">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Body</label>
+                <textarea name="${prefix}_body" rows="3"
+                    class="w-full px-3 py-2 border border-gray-300 rounded-md text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder='{"channel": "backups"}'>${escapeHtml(conf.body || '')}</textarea>
+                <p class="mt-1 text-xs text-gray-400">Optional, but must be a JSON object when given. Sent as the request body.</p>
+            </div>
+        </div>`;
+}
+
+/** Reads one notification request out of the instance form. */
+function notificationPayload(fd, prefix) {
+    // The body is kept byte for byte: with no message field the server sends
+    // it exactly as written. Trimming only decides whether it is empty.
+    const body = fd.get(`${prefix}_body`) || '';
+    return {
+        enabled: fd.get(`${prefix}_enabled`) === 'on',
+        method: fd.get(`${prefix}_method`) || 'POST',
+        url: (fd.get(`${prefix}_url`) || '').trim(),
+        body: body.trim() === '' ? '' : body,
+        message_field: (fd.get(`${prefix}_message_field`) || '').trim(),
+    };
+}
+
+/**
+ * Validates one notification request before it is submitted. Returns null when
+ * the request is fine, otherwise `{ message, details }` — details carries the
+ * body that caused the problem, so the user is shown the JSON to fix rather
+ * than just being told it is wrong. A disabled request is never sent, so it is
+ * never checked.
+ */
+function notificationError(label, cfg) {
+    if (!cfg.enabled) return null;
+    if (!cfg.url) return { message: `${label} notification needs an endpoint` };
+    if (!/^https?:\/\//i.test(cfg.url)) return { message: `${label} notification endpoint must start with http:// or https://` };
+    // Same rule as the server: a body, when given, is a JSON object regardless
+    // of the message field.
+    if (cfg.body) {
+        let parsed;
+        try {
+            parsed = JSON.parse(cfg.body);
+        } catch (e) {
+            return {
+                message: `${label} notification body is not valid JSON: ${e.message}`,
+                details: cfg.body,
+            };
+        }
+        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            return {
+                message: `${label} notification body must be a JSON object, not ${jsonKindOf(parsed)}`,
+                details: cfg.body,
+            };
+        }
+    }
+    if (!cfg.message_field) return null;
+    if (cfg.message_field.split('.').some(seg => seg === '')) return { message: `${label} notification message field has an empty path segment` };
+    return null;
+}
+
+/** Names what a parsed JSON body turned out to be, for the error message. */
+function jsonKindOf(value) {
+    if (value === null) return 'null';
+    if (Array.isArray(value)) return 'an array';
+    return `a ${typeof value}`;
+}
+
 async function openInstanceForm(existingInstance) {
     const isEdit = !!existingInstance;
     let instance = existingInstance || {};
@@ -1091,6 +1195,19 @@ async function openInstanceForm(existingInstance) {
                         </div>
                     </div>
                 </div>
+
+                <!-- Notifications (collapsed) -->
+                <div class="border border-gray-200 rounded-lg">
+                    <button type="button" class="accordion-toggle w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-gray-700" onclick="toggleAccordion(this)">
+                        Notifications
+                        <svg class="accordion-icon w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
+                    </button>
+                    <div class="accordion-content px-4 pb-4 space-y-4">
+                        <p class="text-xs text-gray-500">Send an HTTP request when a backup of this instance finishes. Name a body field and the controller writes its message there; leave both the body and the field empty and the request itself is the signal.</p>
+                        ${notificationFieldsHtml('notify_success', 'On Success', (instance.notifications || {}).on_success)}
+                        ${notificationFieldsHtml('notify_failure', 'On Failure', (instance.notifications || {}).on_failure)}
+                    </div>
+                </div>
             </form>
             <div class="px-6 py-4 border-t border-gray-200 flex justify-end gap-2">
                 <button onclick="closeModal()" class="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50">
@@ -1122,6 +1239,17 @@ async function saveInstance(event, editId) {
         return;
     }
 
+    const notifications = {
+        on_success: notificationPayload(fd, 'notify_success'),
+        on_failure: notificationPayload(fd, 'notify_failure'),
+    };
+    const notifyError = notificationError('Success', notifications.on_success)
+        || notificationError('Failure', notifications.on_failure);
+    if (notifyError) {
+        showToast(notifyError.message, 'error', notifyError.details);
+        return;
+    }
+
     const payload = {
         id: editId || fd.get('id'),
         name: fd.get('name'),
@@ -1143,6 +1271,7 @@ async function saveInstance(event, editId) {
         s3_accesskey: fd.get('s3_accesskey') || '',
         exporting_endpoint: fd.get('exporting_endpoint') || '',
         soft_export_pause: fd.get('soft_export_pause') === 'on',
+        notifications: notifications,
     };
 
     // Secrets are omitted unless the user typed a new value or cleared the saved one
@@ -2176,7 +2305,7 @@ function resolveConfirm(result) {
 // ============================================================
 // Toast Notifications
 // ============================================================
-function showToast(message, type = 'info') {
+function showToast(message, type = 'info', details = '') {
     const container = document.getElementById('toast-container');
     if (!container) return;
 
@@ -2188,15 +2317,17 @@ function showToast(message, type = 'info') {
     };
 
     const toast = document.createElement('div');
-    toast.className = `toast toast-${type}`;
-    toast.innerHTML = `${icons[type] || icons.info}<span class="text-sm">${escapeHtml(message)}</span>`;
+    toast.className = `toast toast-${type}${details ? ' toast-has-details' : ''}`;
+    const detailsHtml = details ? `<pre class="toast-details">${escapeHtml(details)}</pre>` : '';
+    toast.innerHTML = `${icons[type] || icons.info}<div class="toast-body"><span class="text-sm">${escapeHtml(message)}</span>${detailsHtml}</div>`;
     container.appendChild(toast);
 
-    // Auto-remove after timeout
+    // Auto-remove after timeout. A toast showing details stays up longer —
+    // it exists to be read and copied out, which takes more than a glance.
     setTimeout(() => {
         toast.classList.add('removing');
         setTimeout(() => toast.remove(), TOAST_REMOVAL_ANIMATION_MS);
-    }, TOAST_DURATION_MS);
+    }, details ? TOAST_DETAILS_DURATION_MS : TOAST_DURATION_MS);
 }
 
 // ============================================================

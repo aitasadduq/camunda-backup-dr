@@ -256,7 +256,19 @@ Creates a new Camunda instance configuration. The ID is automatically lowercased
   "elasticsearch_endpoint": "https://es.prod.example.com:9200",
   "elasticsearch_username": "elastic",
   "s3_endpoint": "https://s3.us-east-1.amazonaws.com",
-  "s3_accesskey": "AKIAIOSFODNN7EXAMPLE"
+  "s3_accesskey": "AKIAIOSFODNN7EXAMPLE",
+  "notifications": {
+    "on_success": {
+      "enabled": true,
+      "method": "POST",
+      "url": "https://hooks.example.com:8443/backup-events",
+      "body": "{\"channel\": \"backups\"}",
+      "message_field": "text"
+    },
+    "on_failure": {
+      "enabled": false
+    }
+  }
 }
 ```
 
@@ -314,6 +326,77 @@ Creates a new Camunda instance configuration. The ID is automatically lowercased
 
 ---
 
+#### Notifications
+
+Each instance can send an HTTP request of its own when one of its backups
+finishes. The request is fully described by the user: the method, the endpoint,
+and — both optional — the body and the field inside that body where the
+controller writes its message.
+
+| Field | Meaning |
+|---|---|
+| `enabled` | Whether this request is sent at all. A disabled request is never validated, so a half-filled form still saves. |
+| `method` | `GET`, `POST`, `PUT`, `PATCH` or `DELETE`. Defaults to `POST`. |
+| `url` | The endpoint, including the port when it is not the scheme default. `http` and `https` only. |
+| `body` | Optional, but when given it must be a JSON **object** — whether or not `message_field` names a place inside it — and at most 64 KiB. It is a *string* containing JSON, not a nested object: `"body": "{\"channel\": \"backups\"}"`. |
+| `message_field` | Optional. Where in `body` the controller writes its message. A dotted path nests: `payload.text` produces `{"payload": {"text": "..."}}`. Missing intermediate objects are created; an existing non-object in the path is an error. |
+
+Both are optional, which gives four shapes:
+
+| `body` | `message_field` | What is sent |
+|---|---|---|
+| set | set | the body with the message written into that field |
+| empty | set | just the message in that field: `{"text": "..."}` |
+| set | empty | the body byte for byte as it was written, key order and formatting intact |
+| empty | empty | no body and no `Content-Type`: the request arriving is the whole signal |
+
+Anything with a body is sent as `application/json`. The body is validated the
+same way in every shape, so a body that saves with the message field blank still
+saves once it is filled in — a trailing comma is rejected either way rather than
+slipping through in one case and failing in the other.
+
+`on_success` fires for a `COMPLETED` backup. `on_failure` fires for `FAILED` and
+for `INCOMPLETE` — an interrupted backup left artifacts nobody asked for, so it
+is reported as a failure rather than passed over in silence. A backup that never
+reached a terminal state notifies nothing.
+
+The body, when there is one, is sent whatever the method, and the request is
+given 10 seconds. Redirects are not followed: a `3xx` is reported as a failure
+with its status code, because following one would turn a POST into a bodiless
+GET and report a delivery whose message never arrived. A notification that
+cannot be delivered is logged and dropped: the backup has already finished, and
+its recorded result never depends on whether the endpoint answered.
+
+`PUT /api/camundas/{id}` replaces the whole instance, so `notifications` must be
+sent on every update — an update that omits it clears both requests.
+
+**Example.** With `body` `{"channel": "backups"}` and `message_field` `payload.text`,
+a successful backup sends:
+
+```json
+{
+  "channel": "backups",
+  "payload": {
+    "text": "Backup 20260910020000 of Camunda instance Production Cluster (prod-cluster) completed successfully."
+  }
+}
+```
+
+A failed one sends the same shape with the failure in place of the message:
+
+```json
+{
+  "channel": "backups",
+  "payload": {
+    "text": "Backup 20260910020000 of Camunda instance Production Cluster (prod-cluster) finished with status FAILED: failed components: operate, zeebe"
+  }
+}
+```
+
+An enabled notification whose endpoint resolves to a private or loopback address
+is rejected with `400`, the same guard that applies to `exporting_endpoint`. Set
+`PROBE_ALLOW_PRIVATE_IPS=true` to notify a service inside the cluster.
+
 #### `GET /api/camundas/{id}` — Get Instance
 
 Returns a single Camunda instance by ID.
@@ -337,6 +420,10 @@ Returns a single Camunda instance by ID.
     { "name": "elasticsearch", "enabled": true }
   ],
   "parallel_execution": false,
+  "notifications": {
+    "on_success": { "enabled": false },
+    "on_failure": { "enabled": false }
+  },
   "elasticsearch_endpoint": "https://es.prod.example.com:9200",
   "elasticsearch_username": "elastic",
   "s3_endpoint": "https://s3.us-east-1.amazonaws.com",
@@ -360,7 +447,9 @@ Returns a single Camunda instance by ID.
 
 #### `PUT /api/camundas/{id}` — Update Instance
 
-Updates an existing Camunda instance. Provide only the fields you want to change.
+Updates an existing Camunda instance. The body replaces the stored instance in
+full, so send every field you want to keep — a field that is omitted is reset,
+not preserved.
 
 **Headers:** `X-Requested-With: XMLHttpRequest`
 

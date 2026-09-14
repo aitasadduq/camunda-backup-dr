@@ -13,6 +13,7 @@ import (
 	"github.com/aitasadduq/camunda-backup-dr/internal/camunda"
 	"github.com/aitasadduq/camunda-backup-dr/internal/config"
 	"github.com/aitasadduq/camunda-backup-dr/internal/models"
+	"github.com/aitasadduq/camunda-backup-dr/internal/notify"
 	"github.com/aitasadduq/camunda-backup-dr/internal/orchestrator"
 	"github.com/aitasadduq/camunda-backup-dr/internal/reconcile"
 	"github.com/aitasadduq/camunda-backup-dr/internal/retention"
@@ -179,6 +180,12 @@ func main() {
 	}
 	backupOrchestrator.SetAlerter(alerter)
 	retentionManager.SetAlerter(alerter)
+
+	// Per-instance outbound notifications: the request each instance sends when
+	// one of its backups succeeds or fails. Configured in the UI, so nothing is
+	// sent until an instance enables one.
+	backupOrchestrator.SetNotifier(notify.NewNotifier(logger))
+	logger.Info("Backup notifier initialized")
 
 	// Create backup executor adapter for scheduler
 	backupExecutor := &backupExecutorAdapter{orchestrator: backupOrchestrator}

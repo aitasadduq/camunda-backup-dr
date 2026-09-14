@@ -45,6 +45,9 @@ type CamundaInstance struct {
 	Components        []CamundaComponentConfig `json:"components"`
 	ParallelExecution bool                     `json:"parallel_execution"`
 
+	// Outbound notifications sent when a backup reaches a terminal state
+	Notifications NotificationConfig `json:"notifications"`
+
 	// External Systems
 	ElasticsearchEndpoint           string `json:"elasticsearch_endpoint"`
 	ElasticsearchUsername           string `json:"elasticsearch_username"`
@@ -154,6 +157,9 @@ func (ci *CamundaInstance) Validate() error {
 		return utils.ErrInvalidCamundaInstance
 	}
 	if ci.ElasticsearchSnapshotRepository != "" && !validSnapshotRepoPattern.MatchString(ci.ElasticsearchSnapshotRepository) {
+		return utils.ErrInvalidCamundaInstance
+	}
+	if err := ci.Notifications.Validate(); err != nil {
 		return utils.ErrInvalidCamundaInstance
 	}
 
