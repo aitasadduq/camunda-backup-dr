@@ -3,9 +3,11 @@ package notify
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/models"
@@ -23,9 +25,19 @@ type Notifier struct {
 }
 
 // NewNotifier creates a Notifier with the default request timeout.
+//
+// Redirects are not followed. Go's client turns a redirected POST into a GET
+// and drops the body on 301, 302 and 303, so following one would report a
+// delivery whose message never arrived; a 3xx is reported as a failure
+// instead, with its status code, so the user can fix the URL.
 func NewNotifier(logger *utils.Logger) *Notifier {
 	return &Notifier{
-		client: &http.Client{Timeout: DefaultTimeout},
+		client: &http.Client{
+			Timeout: DefaultTimeout,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 		logger: logger,
 	}
 }
@@ -49,24 +61,19 @@ func (n *Notifier) Send(ctx context.Context, cfg models.NotificationRequest, mes
 		return err
 	}
 
-	// A request with neither a body nor a message field carries no body at all:
-	// its arrival is the whole signal.
-	var payload io.Reader = http.NoBody
-	if len(body) > 0 {
-		payload = bytes.NewReader(body)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, cfg.NormalizedMethod(), cfg.URL, payload)
+	// A nil body yields a zero-length reader, which NewRequestWithContext turns
+	// into http.NoBody: a request with nothing to say carries no body at all.
+	req, err := http.NewRequestWithContext(ctx, cfg.NormalizedMethod(), cfg.URL, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("failed to build notification request: %w", err)
+		return fmt.Errorf("failed to build notification request to %s: %w", cfg.RedactedURL(), redactedErr(err))
 	}
-	if contentType := cfg.ContentType(); contentType != "" {
-		req.Header.Set("Content-Type", contentType)
+	if len(body) > 0 {
+		req.Header.Set("Content-Type", "application/json")
 	}
 
 	resp, err := n.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to send notification: %w", err)
+		return fmt.Errorf("failed to send notification to %s: %w", cfg.RedactedURL(), redactedErr(err))
 	}
 	defer resp.Body.Close()
 	// Drain so the connection can be reused.
@@ -80,4 +87,15 @@ func (n *Notifier) Send(ctx context.Context, cfg models.NotificationRequest, mes
 		n.logger.Debug("Notification delivered to %s (%s)", cfg.RedactedURL(), cfg.NormalizedMethod())
 	}
 	return nil
+}
+
+// redactedErr strips the *url.Error wrapper net/http puts around transport
+// failures. That wrapper prints the full URL, path and query included, which
+// would undo the redaction every caller applies before logging.
+func redactedErr(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return urlErr.Err
+	}
+	return err
 }

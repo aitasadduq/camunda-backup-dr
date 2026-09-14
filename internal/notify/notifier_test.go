@@ -3,10 +3,13 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/models"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
@@ -155,9 +158,6 @@ func TestNotifierSendRefusesNonJSONBody(t *testing.T) {
 	server, captured := newCapturingServer(t, http.StatusOK)
 	notifier := NewNotifier(utils.NewLogger("test"))
 
-	// A body with no message field is never written into, but it is still
-	// checked: a trailing comma that only failed once a message field was
-	// filled in would be a trap.
 	cfg := models.NotificationRequest{
 		Enabled: true,
 		Method:  "POST",
@@ -191,8 +191,123 @@ func TestNotifierSendDisabled(t *testing.T) {
 	}
 }
 
-func TestNotifierSendErrorStatus(t *testing.T) {
-	server, _ := newCapturingServer(t, http.StatusInternalServerError)
+func TestNotifierSendStatusBoundary(t *testing.T) {
+	tests := []struct {
+		status  int
+		wantErr bool
+	}{
+		{http.StatusOK, false},
+		{http.StatusNoContent, false},
+		{299, false},
+		{http.StatusMultipleChoices, true},
+		{http.StatusBadRequest, true},
+		{http.StatusUnauthorized, true},
+		{http.StatusNotFound, true},
+		{http.StatusInternalServerError, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprint(tt.status), func(t *testing.T) {
+			server, _ := newCapturingServer(t, tt.status)
+			notifier := NewNotifier(utils.NewLogger("test"))
+			cfg := models.NotificationRequest{
+				Enabled:      true,
+				Method:       "POST",
+				URL:          server.URL + "/hook?token=secret",
+				MessageField: "text",
+			}
+
+			err := notifier.Send(context.Background(), cfg, "backup finished")
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("status %d: wantErr=%v, got %v", tt.status, tt.wantErr, err)
+			}
+			if err != nil && !strings.Contains(err.Error(), fmt.Sprint(tt.status)) {
+				t.Errorf("Expected the error to name status %d, got: %v", tt.status, err)
+			}
+			if err != nil && strings.Contains(err.Error(), "token=secret") {
+				t.Errorf("Error leaked the URL query: %v", err)
+			}
+		})
+	}
+}
+
+func TestNotifierSendDoesNotFollowRedirects(t *testing.T) {
+	var seen []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		if r.URL.Path == "/hook" {
+			http.Redirect(w, r, "/moved", http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	notifier := NewNotifier(utils.NewLogger("test"))
+
+	cfg := models.NotificationRequest{
+		Enabled:      true,
+		Method:       "POST",
+		URL:          server.URL + "/hook",
+		MessageField: "text",
+	}
+
+	// Following the redirect would turn the POST into a bodiless GET and then
+	// report success for a message that never arrived.
+	err := notifier.Send(context.Background(), cfg, "backup finished")
+	if err == nil {
+		t.Fatal("Expected a 302 to be reported as a failure")
+	}
+	if !strings.Contains(err.Error(), "302") {
+		t.Errorf("Expected the error to name the status, got: %v", err)
+	}
+	if len(seen) != 1 || seen[0] != "POST /hook" {
+		t.Errorf("Expected exactly the original POST and no follow-up, got %v", seen)
+	}
+}
+
+func TestNotifierSendRedactsURLInTransportErrors(t *testing.T) {
+	server, _ := newCapturingServer(t, http.StatusOK)
+	dead := server.URL
+	server.Close()
+
+	notifier := NewNotifier(utils.NewLogger("test"))
+	cfg := models.NotificationRequest{
+		Enabled:      true,
+		Method:       "POST",
+		URL:          dead + "/services/T0/B0/SECRET-TOKEN?key=abc",
+		MessageField: "text",
+	}
+
+	err := notifier.Send(context.Background(), cfg, "backup finished")
+	if err == nil {
+		t.Fatal("Expected an error when the endpoint is unreachable")
+	}
+	for _, leak := range []string{"SECRET-TOKEN", "key=abc", "/services/"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Errorf("Error leaked %q from the URL: %v", leak, err)
+		}
+	}
+	if !strings.Contains(err.Error(), cfg.RedactedURL()) {
+		t.Errorf("Expected the error to name the redacted endpoint %s, got: %v", cfg.RedactedURL(), err)
+	}
+}
+
+func TestNotifierSendHonoursContextDeadline(t *testing.T) {
+	// The handler drains the body first: net/http only notices a client
+	// hanging up once the request body has been read, and server.Close waits
+	// for the handler. The release channel keeps cleanup from ever blocking.
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	t.Cleanup(func() {
+		close(release)
+		server.Close()
+	})
 	notifier := NewNotifier(utils.NewLogger("test"))
 
 	cfg := models.NotificationRequest{
@@ -202,9 +317,15 @@ func TestNotifierSendErrorStatus(t *testing.T) {
 		MessageField: "text",
 	}
 
-	err := notifier.Send(context.Background(), cfg, "backup finished")
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := notifier.Send(ctx, cfg, "backup finished")
 	if err == nil {
-		t.Fatal("Expected an error for a 500 response")
+		t.Fatal("Expected an error when the endpoint never answers")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("Send ignored the context deadline and waited %s", elapsed)
 	}
 }
 

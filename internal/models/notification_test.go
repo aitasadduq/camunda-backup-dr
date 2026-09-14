@@ -3,6 +3,7 @@ package models
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/aitasadduq/camunda-backup-dr/pkg/types"
@@ -46,6 +47,20 @@ func TestNotificationRequestValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "url with a port but no host dials this machine",
+			request: NotificationRequest{Enabled: true, Method: "POST", URL: "http://:8080/events", MessageField: "text"},
+			wantErr: true,
+		},
+		{
+			name:    "body at the size cap",
+			request: NotificationRequest{Enabled: true, Method: "POST", URL: "https://hooks.example.com/events", Body: `{"pad":"` + strings.Repeat("x", MaxNotificationBodyBytes-10) + `"}`},
+		},
+		{
+			name:    "body over the size cap",
+			request: NotificationRequest{Enabled: true, Method: "POST", URL: "https://hooks.example.com/events", Body: `{"pad":"` + strings.Repeat("x", MaxNotificationBodyBytes) + `"}`},
+			wantErr: true,
+		},
+		{
 			name:    "body that is not JSON",
 			request: NotificationRequest{Enabled: true, Method: "POST", URL: "https://hooks.example.com/events", Body: "not json", MessageField: "text"},
 			wantErr: true,
@@ -68,6 +83,26 @@ func TestNotificationRequestValidate(t *testing.T) {
 		{
 			name:    "a JSON array body is refused with no message field",
 			request: NotificationRequest{Enabled: true, Method: "POST", URL: "https://hooks.example.com/events", Body: `[{"env":"prod"}]`},
+			wantErr: true,
+		},
+		{
+			name:    "a JSON null body is refused with no message field",
+			request: NotificationRequest{Enabled: true, Method: "POST", URL: "https://hooks.example.com/events", Body: "null"},
+			wantErr: true,
+		},
+		{
+			name:    "a JSON null body is refused with a message field",
+			request: NotificationRequest{Enabled: true, Method: "POST", URL: "https://hooks.example.com/events", Body: "null", MessageField: "text"},
+			wantErr: true,
+		},
+		{
+			name:    "trailing content after the object is refused",
+			request: NotificationRequest{Enabled: true, Method: "POST", URL: "https://hooks.example.com/events", Body: `{"env":"prod"} {"again":true}`},
+			wantErr: true,
+		},
+		{
+			name:    "a stray closing bracket after the object is refused",
+			request: NotificationRequest{Enabled: true, Method: "POST", URL: "https://hooks.example.com/events", Body: `{"env":"prod"}]`},
 			wantErr: true,
 		},
 		{
@@ -156,6 +191,17 @@ func TestNotificationRequestRenderBody(t *testing.T) {
 			},
 		},
 		{
+			name:    "large integers and float notation survive the round trip",
+			request: NotificationRequest{Body: `{"id": 9007199254740993, "big": 12345678901234567890, "ratio": 1.0}`, MessageField: "text"},
+			message: "backup done",
+			want: map[string]interface{}{
+				"id":    json.Number("9007199254740993"),
+				"big":   json.Number("12345678901234567890"),
+				"ratio": json.Number("1.0"),
+				"text":  "backup done",
+			},
+		},
+		{
 			name:    "dotted path through a non-object is refused",
 			request: NotificationRequest{Body: `{"payload":"a string"}`, MessageField: "payload.text"},
 			message: "backup done",
@@ -182,15 +228,15 @@ func TestNotificationRequestRenderBody(t *testing.T) {
 				t.Fatalf("Expected no error, got: %v", err)
 			}
 
-			var got map[string]interface{}
-			if err := json.Unmarshal(raw, &got); err != nil {
-				t.Fatalf("Rendered body is not valid JSON: %v", err)
+			if !json.Valid(raw) {
+				t.Fatalf("Rendered body is not valid JSON: %s", raw)
 			}
 
+			// Marshal sorts map keys, so comparing the encoded forms compares
+			// content without re-parsing the rendered numbers into floats.
 			wantJSON, _ := json.Marshal(tt.want)
-			gotJSON, _ := json.Marshal(got)
-			if string(wantJSON) != string(gotJSON) {
-				t.Errorf("Expected body %s, got %s", wantJSON, gotJSON)
+			if string(wantJSON) != string(raw) {
+				t.Errorf("Expected body %s, got %s", wantJSON, raw)
 			}
 		})
 	}
@@ -240,37 +286,21 @@ func TestNotificationRequestRenderBodyWithoutMessageField(t *testing.T) {
 	}
 }
 
-func TestNotificationRequestContentType(t *testing.T) {
+func TestNotificationRequestHostname(t *testing.T) {
 	tests := []struct {
-		name    string
-		request NotificationRequest
-		want    string
+		name string
+		url  string
+		want string
 	}{
-		{
-			name:    "no body and no message field",
-			request: NotificationRequest{},
-			want:    "",
-		},
-		{
-			name:    "a message field always makes it JSON",
-			request: NotificationRequest{MessageField: "text"},
-			want:    "application/json",
-		},
-		{
-			name:    "a JSON body with no message field",
-			request: NotificationRequest{Body: `{"event":"backup"}`},
-			want:    "application/json",
-		},
-		{
-			name:    "a blank body with no message field",
-			request: NotificationRequest{Body: "   "},
-			want:    "",
-		},
+		{"host without port", "https://hooks.example.com/events", "hooks.example.com"},
+		{"port is stripped", "https://hooks.example.com:8443/events", "hooks.example.com"},
+		{"literal IP", "http://10.0.0.5:9000/hook", "10.0.0.5"},
+		{"unparseable url", "://nope", ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.request.ContentType(); got != tt.want {
+			if got := (NotificationRequest{URL: tt.url}).Hostname(); got != tt.want {
 				t.Errorf("Expected %q, got %q", tt.want, got)
 			}
 		})

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strings"
@@ -20,6 +21,8 @@ import (
 	awshttp "github.com/aws/smithy-go/transport/http"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+
+	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
 )
 
 // EndpointCheckRequest represents a request to check endpoint connectivity
@@ -113,7 +116,7 @@ func (h *Handlers) CheckEndpointHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	h.logger.Info("Checking endpoint: type=%q url=%q instance_id=%q", req.Type, redactURL(req.URL), req.InstanceID)
+	h.logger.Info("Checking endpoint: type=%q url=%q instance_id=%q", req.Type, utils.RedactURL(req.URL), req.InstanceID)
 
 	if req.URL == "" {
 		h.logger.Debug("Endpoint check rejected: empty URL")
@@ -134,7 +137,7 @@ func (h *Handlers) CheckEndpointHandler(w http.ResponseWriter, r *http.Request) 
 
 	// Only allow http and https schemes
 	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		h.logger.Debug("Endpoint check rejected: unsupported scheme %q in URL %q", parsedURL.Scheme, redactURL(req.URL))
+		h.logger.Debug("Endpoint check rejected: unsupported scheme %q in URL %q", parsedURL.Scheme, utils.RedactURL(req.URL))
 		writeJSON(w, http.StatusOK, EndpointCheckResponse{
 			Status:  EndpointStatusUnreachable,
 			Message: "Only http and https URLs are supported",
@@ -144,7 +147,7 @@ func (h *Handlers) CheckEndpointHandler(w http.ResponseWriter, r *http.Request) 
 
 	// SSRF protection: block private, loopback, and link-local addresses
 	if isBlockedHost(parsedURL.Hostname()) {
-		h.logger.Warn("Endpoint check blocked (SSRF): %q — set PROBE_ALLOW_PRIVATE_IPS=true to allow private/loopback targets", redactURL(req.URL))
+		h.logger.Warn("Endpoint check blocked (SSRF): %q — set PROBE_ALLOW_PRIVATE_IPS=true to allow private/loopback targets", utils.RedactURL(req.URL))
 		writeError(w, http.StatusBadRequest, "validation_error", "URLs targeting private or loopback addresses are not allowed (set PROBE_ALLOW_PRIVATE_IPS=true to allow)")
 		return
 	}
@@ -171,7 +174,7 @@ func (h *Handlers) CheckEndpointHandler(w http.ResponseWriter, r *http.Request) 
 		result = probeGeneric(req.URL)
 	}
 
-	h.logger.Info("Endpoint check result: type=%q url=%q status=%q message=%q", req.Type, redactURL(req.URL), result.Status, result.Message)
+	h.logger.Info("Endpoint check result: type=%q url=%q status=%q message=%q", req.Type, utils.RedactURL(req.URL), result.Status, result.Message)
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -428,16 +431,6 @@ func basicAuth(username, password string) string {
 	return base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
 }
 
-// redactURL returns a sanitized URL string safe for logging (scheme + host only,
-// userinfo and query parameters stripped to avoid leaking credentials).
-func redactURL(rawURL string) string {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return "<invalid-url>"
-	}
-	return fmt.Sprintf("%s://%s", u.Scheme, u.Host)
-}
-
 // summarizeError extracts a user-friendly message from a network error.
 func summarizeError(err error) string {
 	if err == nil {
@@ -463,11 +456,13 @@ func summarizeError(err error) string {
 // privateIPNets defines CIDR ranges that should be blocked for SSRF protection.
 var privateIPNets = func() []*net.IPNet {
 	cidrs := []string{
+		"0.0.0.0/8",      // unspecified: dials this machine
 		"127.0.0.0/8",    // loopback
 		"10.0.0.0/8",     // RFC 1918
 		"172.16.0.0/12",  // RFC 1918
 		"192.168.0.0/16", // RFC 1918
 		"169.254.0.0/16", // link-local
+		"::/128",         // IPv6 unspecified: dials this machine
 		"::1/128",        // IPv6 loopback
 		"fc00::/7",       // IPv6 unique local
 		"fe80::/10",      // IPv6 link-local
@@ -488,9 +483,15 @@ var isBlockedHost = func(hostname string) bool {
 		return false
 	}
 
-	// Try parsing as a literal IP first
-	if ip := net.ParseIP(hostname); ip != nil {
-		return isPrivateIP(ip)
+	// An empty host ("http://:8080/") dials this machine.
+	if hostname == "" {
+		return true
+	}
+
+	// Try parsing as a literal IP first. netip accepts zoned and IPv4-mapped
+	// forms that net.ParseIP would hand to DNS instead.
+	if addr, err := netip.ParseAddr(hostname); err == nil {
+		return isPrivateIP(net.IP(addr.Unmap().WithZone("").AsSlice()))
 	}
 	// Resolve the hostname
 	addrs, err := net.LookupHost(hostname)

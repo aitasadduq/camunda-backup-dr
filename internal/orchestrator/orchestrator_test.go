@@ -1161,8 +1161,9 @@ func TestExecuteBackup_ContextCancellation_Parallel(t *testing.T) {
 // Test 6: Error scenarios during backup history storage
 type failingS3Storage struct {
 	*mockS3Storage
-	failStoreHistory bool
-	failUpdateStatus bool
+	failStoreHistory        bool
+	failUpdateStatus        bool
+	failStoreLatestBackupID bool
 }
 
 func newFailingS3Storage(failStoreHistory, failUpdateStatus bool) *failingS3Storage {
@@ -1171,6 +1172,13 @@ func newFailingS3Storage(failStoreHistory, failUpdateStatus bool) *failingS3Stor
 		failStoreHistory: failStoreHistory,
 		failUpdateStatus: failUpdateStatus,
 	}
+}
+
+func (f *failingS3Storage) StoreLatestBackupID(camundaInstanceID, backupID string) error {
+	if f.failStoreLatestBackupID {
+		return fmt.Errorf("simulated S3 failure")
+	}
+	return f.mockS3Storage.StoreLatestBackupID(camundaInstanceID, backupID)
 }
 
 func (f *failingS3Storage) StoreBackupHistory(history *models.BackupHistory) error {

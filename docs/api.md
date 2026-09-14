@@ -338,7 +338,7 @@ controller writes its message.
 | `enabled` | Whether this request is sent at all. A disabled request is never validated, so a half-filled form still saves. |
 | `method` | `GET`, `POST`, `PUT`, `PATCH` or `DELETE`. Defaults to `POST`. |
 | `url` | The endpoint, including the port when it is not the scheme default. `http` and `https` only. |
-| `body` | Optional, but when given it must be a JSON **object** — whether or not `message_field` names a place inside it. |
+| `body` | Optional, but when given it must be a JSON **object** — whether or not `message_field` names a place inside it — and at most 64 KiB. It is a *string* containing JSON, not a nested object: `"body": "{\"channel\": \"backups\"}"`. |
 | `message_field` | Optional. Where in `body` the controller writes its message. A dotted path nests: `payload.text` produces `{"payload": {"text": "..."}}`. Missing intermediate objects are created; an existing non-object in the path is an error. |
 
 Both are optional, which gives four shapes:
@@ -361,9 +361,14 @@ is reported as a failure rather than passed over in silence. A backup that never
 reached a terminal state notifies nothing.
 
 The body, when there is one, is sent whatever the method, and the request is
-given 15 seconds. A notification that cannot be delivered is logged and dropped:
-the backup has already finished, and its recorded result never depends on
-whether the endpoint answered.
+given 10 seconds. Redirects are not followed: a `3xx` is reported as a failure
+with its status code, because following one would turn a POST into a bodiless
+GET and report a delivery whose message never arrived. A notification that
+cannot be delivered is logged and dropped: the backup has already finished, and
+its recorded result never depends on whether the endpoint answered.
+
+`PUT /api/camundas/{id}` replaces the whole instance, so `notifications` must be
+sent on every update — an update that omits it clears both requests.
 
 **Example.** With `body` `{"channel": "backups"}` and `message_field` `payload.text`,
 a successful backup sends:
@@ -415,6 +420,10 @@ Returns a single Camunda instance by ID.
     { "name": "elasticsearch", "enabled": true }
   ],
   "parallel_execution": false,
+  "notifications": {
+    "on_success": { "enabled": false },
+    "on_failure": { "enabled": false }
+  },
   "elasticsearch_endpoint": "https://es.prod.example.com:9200",
   "elasticsearch_username": "elastic",
   "s3_endpoint": "https://s3.us-east-1.amazonaws.com",
@@ -438,7 +447,9 @@ Returns a single Camunda instance by ID.
 
 #### `PUT /api/camundas/{id}` — Update Instance
 
-Updates an existing Camunda instance. Provide only the fields you want to change.
+Updates an existing Camunda instance. The body replaces the stored instance in
+full, so send every field you want to keep — a field that is omitted is reset,
+not preserved.
 
 **Headers:** `X-Requested-With: XMLHttpRequest`
 

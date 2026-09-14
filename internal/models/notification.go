@@ -3,12 +3,18 @@ package models
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
 
+	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
 	"github.com/aitasadduq/camunda-backup-dr/pkg/types"
 )
+
+// MaxNotificationBodyBytes caps the stored body. It lives in config.json,
+// which is re-read on every API call, and is sent on every backup.
+const MaxNotificationBodyBytes = 64 << 10
 
 // notificationMethods are the HTTP methods a notification request may use.
 var notificationMethods = map[string]bool{
@@ -69,15 +75,21 @@ func (nr NotificationRequest) NormalizedMethod() string {
 	return strings.ToUpper(nr.Method)
 }
 
-// RedactedURL returns the endpoint reduced to scheme and host. Notification
-// URLs routinely carry tokens in the path or query, so only this form is safe
-// to log.
+// RedactedURL returns the endpoint reduced to scheme and host, the only form
+// safe to log.
 func (nr NotificationRequest) RedactedURL() string {
+	return utils.RedactURL(nr.URL)
+}
+
+// Hostname returns the endpoint's host without the port, or "" when the URL
+// does not parse. Validate has already proven it parses by the time anything
+// needs this, so callers can skip a second parse.
+func (nr NotificationRequest) Hostname() string {
 	u, err := url.Parse(nr.URL)
 	if err != nil {
-		return "<invalid-url>"
+		return ""
 	}
-	return fmt.Sprintf("%s://%s", u.Scheme, u.Host)
+	return u.Hostname()
 }
 
 // Validate checks a notification request. A disabled request is never sent, so
@@ -91,42 +103,34 @@ func (nr NotificationRequest) Validate() error {
 		return fmt.Errorf("notification method %q is not supported", nr.Method)
 	}
 
+	// The parse error is not wrapped: url.Error prints the whole URL, which
+	// the send path logs, and RedactedURL exists to keep that out of logs.
 	u, err := url.Parse(nr.URL)
 	if err != nil {
-		return fmt.Errorf("notification url is not a valid URL: %w", err)
+		return fmt.Errorf("notification url is not a valid URL")
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("notification url must use http or https")
 	}
-	if u.Host == "" {
+	// Hostname, not Host: "http://:8080/" has a Host and dials this machine.
+	if u.Hostname() == "" {
 		return fmt.Errorf("notification url must include a host")
 	}
 
-	if _, err := nr.decodeBody(); err != nil {
-		return err
+	if len(nr.Body) > MaxNotificationBodyBytes {
+		return fmt.Errorf("notification body exceeds %d bytes", MaxNotificationBodyBytes)
 	}
 
 	if nr.MessageField == "" {
-		return nil
-	}
-	if err := validateMessageField(nr.MessageField); err != nil {
+		_, err := nr.decodeBody()
 		return err
 	}
 
-	// Rendering proves the message path is writable. A path running through a
-	// string could never deliver, and finding that out at save time beats
-	// finding out when a backup finishes.
+	// Rendering proves the body parses and the message path is writable. A
+	// path running through a string could never deliver, and finding that out
+	// at save time beats finding out when a backup finishes.
 	_, err = nr.RenderBody("")
 	return err
-}
-
-// ContentType returns the media type of the rendered body, or "" when the
-// request has no body to send. Every body this package accepts is JSON.
-func (nr NotificationRequest) ContentType() string {
-	if nr.MessageField == "" && strings.TrimSpace(nr.Body) == "" {
-		return ""
-	}
-	return "application/json"
 }
 
 // RenderBody produces the request body with message written to MessageField.
@@ -172,16 +176,25 @@ func (nr NotificationRequest) RenderBody(message string) ([]byte, error) {
 }
 
 // decodeBody parses Body as a JSON object. An empty body is an empty object.
+// Numbers are kept as json.Number so re-encoding after the message is written
+// in cannot round a large ID or turn 1.0 into 1.
 func (nr NotificationRequest) decodeBody() (map[string]interface{}, error) {
 	if strings.TrimSpace(nr.Body) == "" {
 		return map[string]interface{}{}, nil
 	}
+	dec := json.NewDecoder(strings.NewReader(nr.Body))
+	dec.UseNumber()
 	var body map[string]interface{}
-	if err := json.Unmarshal([]byte(nr.Body), &body); err != nil {
+	if err := dec.Decode(&body); err != nil {
 		return nil, fmt.Errorf("notification body must be a JSON object: %w", err)
 	}
 	if body == nil {
-		return map[string]interface{}{}, nil
+		return nil, fmt.Errorf("notification body must be a JSON object, not null")
+	}
+	// Unlike json.Unmarshal, a Decoder stops at the end of the first value, so
+	// trailing content has to be refused by hand.
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, fmt.Errorf("notification body must be a single JSON object")
 	}
 	return body, nil
 }

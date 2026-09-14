@@ -335,22 +335,24 @@ func validateExportingEndpoint(endpoint string) error {
 // The model rejects the same requests, but only as a generic invalid-instance
 // error — this reports which field the user has to fix.
 func validateNotifications(nc models.NotificationConfig) error {
-	for label, nr := range map[string]models.NotificationRequest{
-		"on_success": nc.OnSuccess,
-		"on_failure": nc.OnFailure,
-	} {
-		if !nr.Enabled {
+	// A slice, not a map: when both are wrong the error must name the same
+	// field every time.
+	requests := []struct {
+		label string
+		nr    models.NotificationRequest
+	}{
+		{"on_success", nc.OnSuccess},
+		{"on_failure", nc.OnFailure},
+	}
+	for _, r := range requests {
+		if !r.nr.Enabled {
 			continue
 		}
-		if err := nr.Validate(); err != nil {
-			return utils.NewValidationError("notifications." + label + ": " + err.Error())
+		if err := r.nr.Validate(); err != nil {
+			return utils.NewValidationError("notifications." + r.label + ": " + err.Error())
 		}
-		u, err := url.Parse(nr.URL)
-		if err != nil {
-			return utils.NewValidationError("notifications." + label + ": url is not a valid URL")
-		}
-		if isBlockedHost(u.Hostname()) {
-			return utils.NewValidationError("notifications." + label + ": url must not target private or loopback addresses (set PROBE_ALLOW_PRIVATE_IPS=true to allow)")
+		if isBlockedHost(r.nr.Hostname()) {
+			return utils.NewValidationError("notifications." + r.label + ": url must not target private or loopback addresses (set PROBE_ALLOW_PRIVATE_IPS=true to allow)")
 		}
 	}
 	return nil

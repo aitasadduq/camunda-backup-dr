@@ -2406,7 +2406,18 @@ func TestCreateCamundaInstanceHandler_ESSnapshotRepositoryEmpty(t *testing.T) {
 	}
 }
 
+// allowAllHosts disables the DNS-backed SSRF guard for a test, the same way
+// endpoint_check_test.go does, so validation tests stay hermetic.
+func allowAllHosts(t *testing.T) {
+	t.Helper()
+	orig := isBlockedHost
+	isBlockedHost = func(string) bool { return false }
+	t.Cleanup(func() { isBlockedHost = orig })
+}
+
 func TestCreateCamundaInstanceHandler_Notifications(t *testing.T) {
+	allowAllHosts(t)
+
 	tests := []struct {
 		name          string
 		notifications models.NotificationConfig
@@ -2511,6 +2522,7 @@ func TestCreateCamundaInstanceHandler_Notifications(t *testing.T) {
 }
 
 func TestUpdateCamundaInstanceHandler_RejectsInvalidNotification(t *testing.T) {
+	allowAllHosts(t)
 	handlers, cm, _, _, _, _, _ := newTestHandlers()
 
 	cm.instances = []models.CamundaInstance{
@@ -2534,5 +2546,88 @@ func TestUpdateCamundaInstanceHandler_RejectsInvalidNotification(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected status %d, got %d: %s", http.StatusBadRequest, w.Code, w.Body.String())
+	}
+}
+
+func TestNotificationHandlers_RejectBlockedHost(t *testing.T) {
+	orig := isBlockedHost
+	isBlockedHost = func(string) bool { return true }
+	t.Cleanup(func() { isBlockedHost = orig })
+
+	notifications := models.NotificationConfig{
+		OnSuccess: models.NotificationRequest{Enabled: true, Method: "POST", URL: "http://10.0.0.5/hook", MessageField: "text"},
+	}
+
+	t.Run("create", func(t *testing.T) {
+		handlers, cm, _, _, _, _, _ := newTestHandlers()
+		instance := models.CamundaInstance{
+			ID:                  "notify-instance",
+			Name:                "Notify Instance",
+			BaseURL:             "http://localhost:8080",
+			BackupIDS3Endpoint:  "https://s3.example.com",
+			BackupIDS3AccessKey: "AKIAIOSFODNN7EXAMPLE",
+			Notifications:       notifications,
+		}
+		body, _ := json.Marshal(instance)
+		req := httptest.NewRequest(http.MethodPost, "/api/camundas", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		handlers.CreateCamundaInstanceHandler(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, w.Code, w.Body.String())
+		}
+		for _, want := range []string{"notifications.on_success", "private or loopback"} {
+			if !strings.Contains(w.Body.String(), want) {
+				t.Errorf("expected the error to contain %q, got %s", want, w.Body.String())
+			}
+		}
+		if len(cm.instances) != 0 {
+			t.Errorf("expected nothing to be created, got %d instance(s)", len(cm.instances))
+		}
+	})
+
+	t.Run("update", func(t *testing.T) {
+		handlers, cm, _, _, _, _, _ := newTestHandlers()
+		cm.instances = []models.CamundaInstance{{ID: "test-1", Name: "Test Instance 1"}}
+		updates := models.CamundaInstance{Name: "Test Instance 1", BaseURL: "http://localhost:8080", Notifications: notifications}
+		body, _ := json.Marshal(updates)
+		req := httptest.NewRequest(http.MethodPut, "/api/camundas/test-1", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		handlers.UpdateCamundaInstanceHandler(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, w.Code, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "notifications.on_success") {
+			t.Errorf("expected the error to name the field, got %s", w.Body.String())
+		}
+	})
+}
+
+func TestValidateNotifications_NamesTheField(t *testing.T) {
+	allowAllHosts(t)
+
+	bad := models.NotificationRequest{Enabled: true, Method: "TRACE", URL: "https://hooks.example.com/e"}
+	tests := []struct {
+		name string
+		nc   models.NotificationConfig
+		want string
+	}{
+		{"failure only", models.NotificationConfig{OnFailure: bad}, "notifications.on_failure:"},
+		{"success only", models.NotificationConfig{OnSuccess: bad}, "notifications.on_success:"},
+		{"both invalid reports on_success first", models.NotificationConfig{OnSuccess: bad, OnFailure: bad}, "notifications.on_success:"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateNotifications(tt.nc)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected an error naming %q, got %v", tt.want, err)
+			}
+		})
 	}
 }

@@ -876,11 +876,14 @@ function notificationFieldsHtml(prefix, title, cfg) {
 
 /** Reads one notification request out of the instance form. */
 function notificationPayload(fd, prefix) {
+    // The body is kept byte for byte: with no message field the server sends
+    // it exactly as written. Trimming only decides whether it is empty.
+    const body = fd.get(`${prefix}_body`) || '';
     return {
         enabled: fd.get(`${prefix}_enabled`) === 'on',
         method: fd.get(`${prefix}_method`) || 'POST',
         url: (fd.get(`${prefix}_url`) || '').trim(),
-        body: (fd.get(`${prefix}_body`) || '').trim(),
+        body: body.trim() === '' ? '' : body,
         message_field: (fd.get(`${prefix}_message_field`) || '').trim(),
     };
 }
@@ -896,10 +899,8 @@ function notificationError(label, cfg) {
     if (!cfg.enabled) return null;
     if (!cfg.url) return { message: `${label} notification needs an endpoint` };
     if (!/^https?:\/\//i.test(cfg.url)) return { message: `${label} notification endpoint must start with http:// or https://` };
-    // The body is optional, but a body that is given must be a JSON object
-    // whether or not a message field names a place inside it — one rule either
-    // way, so filling the message field never rejects a body that was fine
-    // without it.
+    // Same rule as the server: a body, when given, is a JSON object regardless
+    // of the message field.
     if (cfg.body) {
         let parsed;
         try {
