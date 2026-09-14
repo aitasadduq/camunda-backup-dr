@@ -10,7 +10,7 @@ const (
 	// ConfigVersion is the version of the configuration schema
 	ConfigVersion = "1.0"
 	// ControllerVersion is the version of the backup controller application
-	ControllerVersion = "0.1.0"
+	ControllerVersion = "1.1.0"
 )
 
 // GetDefaultComponents returns the default list of components for a new Camunda instance
