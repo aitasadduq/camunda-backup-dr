@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -109,7 +110,8 @@ func (r *Reconciler) collect(ctx context.Context, instance *models.CamundaInstan
 	}()
 
 	// Component backup APIs.
-	for name, endpoint := range componentEndpoints(instance) {
+	endpoints := componentEndpoints(instance)
+	for name, endpoint := range endpoints {
 		if endpoint == "" {
 			setSource(SourceStatus{Name: name, Skipped: true})
 			continue
@@ -117,7 +119,9 @@ func (r *Reconciler) collect(ctx context.Context, instance *models.CamundaInstan
 		wg.Add(1)
 		go func(component, ep string) {
 			defer wg.Done()
-			listed, err := r.backupLister.ListBackups(ctx, ep)
+			listCtx, cancel := bareListContext(ctx)
+			defer cancel()
+			listed, err := r.backupLister.ListBackups(listCtx, ep)
 			if err != nil {
 				setSource(SourceStatus{Name: component, Error: err.Error()})
 				return
@@ -187,7 +191,114 @@ func (r *Reconciler) collect(ctx context.Context, instance *models.CamundaInstan
 	}
 
 	wg.Wait()
+
+	// Fallback for components whose unfiltered GET /actuator/backups failed
+	// (for example, Zeebe backed by S3/OCI with hundreds or thousands of backups
+	// where S3BackupStore.list("*") times out or returns 500, or older Camunda
+	// versions that require a prefix or backup ID path segment).
+	if candidateLister, ok := r.backupLister.(camunda.CandidateBackupLister); ok && ctx.Err() == nil {
+		candidates := candidateBackupIDs(ev)
+		var fallbackWG sync.WaitGroup
+		for name, endpoint := range endpoints {
+			if endpoint == "" {
+				continue
+			}
+			status, exists := ev.sources[name]
+			if !exists || status.Reachable || status.Skipped {
+				continue
+			}
+			fallbackWG.Add(1)
+			go func(component, ep string) {
+				defer fallbackWG.Done()
+				listed, err := candidateLister.ListBackupsByCandidates(ctx, ep, candidates)
+				if err != nil {
+					return
+				}
+				byID := make(map[string]camunda.ComponentBackupRecord, len(listed))
+				for _, rec := range listed {
+					byID[rec.BackupID] = rec
+				}
+				mu.Lock()
+				ev.componentBackups[component] = byID
+				mu.Unlock()
+				setSource(SourceStatus{Name: component, Reachable: true, Count: len(listed)})
+			}(name, endpoint)
+		}
+		fallbackWG.Wait()
+	}
+
 	return ev
+}
+
+// bareListContext bounds the initial unfiltered ListBackups attempt so that if a
+// component's full-bucket listing times out, at least half of the sweep's
+// remaining time budget stays available for prefix/per-ID fallback queries.
+func bareListContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return context.WithCancel(ctx)
+	}
+	remaining := time.Until(deadline)
+	budget := remaining / 2
+	if budget > 45*time.Second {
+		budget = 45 * time.Second
+	}
+	if budget < 5*time.Second {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, budget)
+}
+
+// candidateBackupIDs collects every backup ID observed in the reachable sources,
+// placing tracked backup IDs first (newest first) followed by untracked backup
+// IDs (newest first).
+func candidateBackupIDs(ev *evidence) []string {
+	trackedSet := make(map[string]struct{}, len(ev.records))
+	var tracked []string
+	for _, rec := range ev.records {
+		if rec.BackupID == "" {
+			continue
+		}
+		if _, dup := trackedSet[rec.BackupID]; !dup {
+			trackedSet[rec.BackupID] = struct{}{}
+			tracked = append(tracked, rec.BackupID)
+		}
+	}
+	sort.Slice(tracked, func(i, j int) bool { return tracked[i] > tracked[j] })
+
+	untrackedSet := make(map[string]struct{})
+	addUntracked := func(id string) {
+		if id == "" {
+			return
+		}
+		if _, isTracked := trackedSet[id]; isTracked {
+			return
+		}
+		untrackedSet[id] = struct{}{}
+	}
+
+	for _, snap := range ev.snapshots {
+		owner, backupID, _ := elasticsearch.ClassifySnapshot(snap.Name, ev.namePrefix)
+		if owner != elasticsearch.OwnerForeign && backupID != "" {
+			addUntracked(backupID)
+		}
+	}
+	for _, byID := range ev.componentBackups {
+		for id := range byID {
+			addUntracked(id)
+		}
+	}
+	for id := range ev.logBackupIDs {
+		addUntracked(id)
+	}
+
+	untracked := make([]string, 0, len(untrackedSet))
+	for id := range untrackedSet {
+		untracked = append(untracked, id)
+	}
+	sort.Slice(untracked, func(i, j int) bool { return untracked[i] > untracked[j] })
+
+	return append(tracked, untracked...)
 }
 
 // backupIDFromLogFile extracts a backup ID from a log file name. Log files are

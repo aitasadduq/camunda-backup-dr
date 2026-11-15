@@ -234,13 +234,36 @@ func (h *Handlers) orphanIndexFor(instanceID string) *orphanIndex {
 	idx.repository = report.SnapshotRepository
 	idx.endpoints = report.ComponentEndpoints
 	idx.sweptAt = report.FinishedAt
-	idx.complete = report.AllSourcesReachable()
+	idx.complete = orphanSweepComplete(report.SourcesChecked)
 	for _, issue := range report.BackupIssues {
 		if !issue.Tracked {
 			idx.issues[issue.BackupID] = issue
 		}
 	}
 	return idx
+}
+
+// orphanSweepComplete reports whether the sweep reached the sources required to
+// safely delete an orphan from the sources it found it in.
+//
+// Controller S3 metadata must have been reachable so tracked backups are never
+// misclassified as orphans, and Elasticsearch (when configured) must have been
+// reachable so AllSnapshotNames includes any component-owned snapshots backing
+// an Operate, Tasklist or Optimize backup. An unreachable component API does not
+// block deleting from the sources that were reached: its artifacts survive there
+// and the next sweep reports them again once the component is reachable.
+func orphanSweepComplete(sources map[string]reconcile.SourceStatus) bool {
+	if len(sources) == 0 {
+		return false
+	}
+	s3, ok := sources[reconcile.SourceControllerS3]
+	if !ok || (!s3.Reachable && !s3.Skipped) {
+		return false
+	}
+	if es, hasES := sources[reconcile.SourceElasticsearch]; hasES && !es.Reachable && !es.Skipped {
+		return false
+	}
+	return true
 }
 
 // deleteBackupEverywhere deletes one backup, tracked or orphaned, choosing the

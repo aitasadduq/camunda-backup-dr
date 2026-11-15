@@ -39,6 +39,33 @@ func TestClassifySnapshot(t *testing.T) {
 			wantBackupID: "20260713102006",
 		},
 		{
+			name:         "camunda zeebe records backup convention with empty prefix",
+			snapshot:     "camunda_zeebe_records_backup_20260111154511",
+			namePrefix:   "",
+			wantOwner:    OwnerController,
+			wantBackupID: "20260111154511",
+		},
+		{
+			name:         "camunda zeebe records backup with empty id is foreign",
+			snapshot:     "camunda_zeebe_records_backup_",
+			namePrefix:   "",
+			wantOwner:    OwnerForeign,
+		},
+		{
+			name:         "configured prefix joined with underscore",
+			snapshot:     "prod_20260713102006",
+			namePrefix:   "prod",
+			wantOwner:    OwnerController,
+			wantBackupID: "20260713102006",
+		},
+		{
+			name:         "configured prefix with trailing underscore",
+			snapshot:     "camunda_zeebe_records_backup_20260713102006",
+			namePrefix:   "camunda_zeebe_records_backup_",
+			wantOwner:    OwnerController,
+			wantBackupID: "20260713102006",
+		},
+		{
 			name:         "operate part, verified naming",
 			snapshot:     "camunda_operate_20260713102006_8.6.0_part_1_of_6",
 			wantOwner:    OwnerComponent,

@@ -1590,7 +1590,9 @@ function renderBackupsTable(instanceId, backups, opts = {}) {
                             </td>
                             <td class="hidden lg:table-cell">${b.trigger_type ? `<span class="badge badge-${b.trigger_type.toLowerCase()}">${b.trigger_type}</span>` : '<span class="text-xs text-gray-400">—</span>'}</td>
                             <td class="hidden md:table-cell text-xs text-gray-500">
-                                ${b.backup_stats ? `<span class="text-green-600">${b.backup_stats.successful_components}</span>/<span class="text-red-600">${b.backup_stats.failed_components}</span>/<span>${b.backup_stats.total_components}</span>` : '—'}
+                                ${b.backup_stats
+                                    ? `<span class="text-green-600">${b.backup_stats.successful_components}</span>/<span class="text-red-600">${b.backup_stats.failed_components}</span>/<span>${b.backup_stats.total_components}</span>`
+                                    : (b._orphan?.present_in?.length ? b._orphan.present_in.map(s => escapeHtml(s)).join(', ') : '—')}
                             </td>
                             <td>
                                 <div class="flex items-center gap-1">

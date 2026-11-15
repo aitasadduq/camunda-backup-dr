@@ -430,6 +430,25 @@ func TestOrphanArtifactsFor_MarksPartialSweep(t *testing.T) {
 	}
 }
 
+// An unreachable component API (such as Zeebe timing out during a scan) must
+// not block deleting an orphan from the sources that were reached, as long as
+// controller S3 metadata and Elasticsearch were enumerated.
+func TestOrphanArtifactsFor_AllowsUnreachableComponentWhenCoreSourcesReached(t *testing.T) {
+	handlers, _, rec, _ := deleteTestSetup(t)
+	rec.report.SourcesChecked[reconcile.SourceZeebe] = reconcile.SourceStatus{
+		Name:  reconcile.SourceZeebe,
+		Error: "500 Internal Server Error",
+	}
+
+	art, err := orphanArtifactsFor(handlers.orphanIndexFor("test-1"), "20260320080000")
+	if err != nil {
+		t.Fatalf("orphanArtifactsFor: %v", err)
+	}
+	if !art.Complete {
+		t.Error("expected the sweep to remain usable for orphan deletion when controller_s3 and elasticsearch were reachable")
+	}
+}
+
 // SnapshotNames is de-duplicated for display and omits snapshots another finding
 // already explains. Deleting from it would leave those behind.
 func TestOrphanArtifactsFor_UsesEveryObservedSnapshot(t *testing.T) {

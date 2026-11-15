@@ -622,10 +622,7 @@ func missingSnapshots(rec camunda.ComponentBackupRecord, idx *evidenceIndex) []s
 }
 
 func expectedSnapshotName(backupID, namePrefix string) string {
-	if namePrefix == "" {
-		return backupID
-	}
-	return namePrefix + "-" + backupID
+	return elasticsearch.BuildSnapshotName(namePrefix, backupID)
 }
 
 func containsString(list []string, want string) bool {

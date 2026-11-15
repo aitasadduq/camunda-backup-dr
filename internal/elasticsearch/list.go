@@ -46,6 +46,13 @@ type SnapshotInfo struct {
 // The backup ID is the third segment; the version and part counters vary.
 var componentSnapshotPattern = regexp.MustCompile(`^camunda_(operate|tasklist|optimize)_([0-9]+)_.+$`)
 
+// zeebeRecordsSnapshotPrefixes are the standard Camunda naming prefixes for
+// Elasticsearch snapshots of exported Zeebe records (camunda_zeebe_records_backup_<id>).
+var zeebeRecordsSnapshotPrefixes = []string{
+	"camunda_zeebe_records_backup_",
+	"camunda_zeebe_records_backup-",
+}
+
 // ListSnapshots returns every snapshot in a repository.
 //
 // It uses the _cat API rather than GET /_snapshot/{repo}/_all: _all reads full
@@ -120,13 +127,27 @@ func ClassifySnapshot(name, namePrefix string) (SnapshotOwner, string, string) {
 		return OwnerComponent, m[2], m[1]
 	}
 
-	candidate := name
-	if namePrefix != "" {
-		prefix := namePrefix + "-"
-		if !strings.HasPrefix(name, prefix) {
+	for _, p := range zeebeRecordsSnapshotPrefixes {
+		if strings.HasPrefix(name, p) {
+			candidate := strings.TrimPrefix(name, p)
+			if camunda.IsBackupIDShaped(candidate) {
+				return OwnerController, candidate, ""
+			}
 			return OwnerForeign, "", ""
 		}
-		candidate = strings.TrimPrefix(name, prefix)
+	}
+
+	candidate := name
+	if namePrefix != "" {
+		base := strings.TrimRight(namePrefix, "-_")
+		switch {
+		case strings.HasPrefix(name, base+"-"):
+			candidate = strings.TrimPrefix(name, base+"-")
+		case strings.HasPrefix(name, base+"_"):
+			candidate = strings.TrimPrefix(name, base+"_")
+		default:
+			return OwnerForeign, "", ""
+		}
 	}
 
 	if camunda.IsBackupIDShaped(candidate) {

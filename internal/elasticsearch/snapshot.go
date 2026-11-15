@@ -7,7 +7,21 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
+
+// BuildSnapshotName builds the Elasticsearch snapshot name for a backup ID and
+// optional prefix. If the prefix already ends with "-" or "_", no extra
+// separator is added; otherwise "-" is placed between the prefix and backup ID.
+func BuildSnapshotName(namePrefix, backupID string) string {
+	if namePrefix == "" {
+		return backupID
+	}
+	if strings.HasSuffix(namePrefix, "-") || strings.HasSuffix(namePrefix, "_") {
+		return namePrefix + backupID
+	}
+	return namePrefix + "-" + backupID
+}
 
 // SnapshotState represents Elasticsearch snapshot state.
 type SnapshotState string

@@ -68,6 +68,24 @@ func TestParseBackupList(t *testing.T) {
 			wantState: BackupStateCompleted,
 		},
 		{
+			name:      "operate shard failure objects inside details.failures",
+			body:      `[{"backupId":20260713102006,"state":"FAILED","failureReason":"shard failed","details":[{"snapshotName":"camunda_operate_20260713102006_8.6.0_part_1_of_6","state":"FAILED","failures":[{"index":"operate-list-view","shardId":0,"reason":"IndexShardSnapshotFailedException","status":"INTERNAL_SERVER_ERROR"}]}]}]`,
+			wantIDs:   []string{"20260713102006"},
+			wantState: BackupStateFailed,
+			wantSnaps: 1,
+		},
+		{
+			name:      "single backup object response from per-ID endpoint",
+			body:      `{"backupId":20260713102006,"state":"COMPLETED","details":[{"partitionId":1,"state":"COMPLETED"}]}`,
+			wantIDs:   []string{"20260713102006"},
+			wantState: BackupStateCompleted,
+		},
+		{
+			name:        "DOES_NOT_EXIST single backup response is ignored",
+			body:        `{"backupId":20260713102006,"state":"DOES_NOT_EXIST","details":[]}`,
+			wantEmptyOK: true,
+		},
+		{
 			name:    "malformed json is an error",
 			body:    `{not json`,
 			wantErr: true,
@@ -199,5 +217,61 @@ func TestComponentBackupRecordHelpers(t *testing.T) {
 	}
 	if n := len(rec.SnapshotNames()); n != 1 {
 		t.Errorf("got %d snapshot names, want 1", n)
+	}
+}
+
+func TestListBackupsByCandidates_PrefixWildcardFallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/actuator/backups":
+			// Simulate unfiltered listing failing on a large bucket.
+			w.WriteHeader(http.StatusInternalServerError)
+		case "/actuator/backups/202611*":
+			_, _ = w.Write([]byte(`[{"backupId":20261111110001,"state":"COMPLETED"}]`))
+		case "/actuator/backups/202601*":
+			_, _ = w.Write([]byte(`[{"backupId":20260111154511,"state":"COMPLETED"}]`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	got, err := newTestClient(t).ListBackupsByCandidates(
+		context.Background(),
+		server.URL+"/actuator/backups",
+		[]string{"20261111110001", "20260111154511"},
+	)
+	if err != nil {
+		t.Fatalf("ListBackupsByCandidates: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 backups from prefix fallback, got %d: %+v", len(got), got)
+	}
+}
+
+func TestListBackupsByCandidates_PerIDFallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/actuator/backups/20261111110001":
+			_, _ = w.Write([]byte(`{"backupId":20261111110001,"state":"COMPLETED"}`))
+		case "/actuator/backups/20261111103001":
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			// Reject wildcard queries so Tier 2 per-ID fallback is exercised.
+			w.WriteHeader(http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	got, err := newTestClient(t).ListBackupsByCandidates(
+		context.Background(),
+		server.URL+"/actuator/backups",
+		[]string{"20261111110001", "20261111103001"},
+	)
+	if err != nil {
+		t.Fatalf("ListBackupsByCandidates: %v", err)
+	}
+	if len(got) != 1 || got[0].BackupID != "20261111110001" {
+		t.Fatalf("expected [20261111110001], got %+v", got)
 	}
 }

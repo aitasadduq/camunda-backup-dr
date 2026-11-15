@@ -308,11 +308,7 @@ func (m *Manager) deleteESSnapshot(ctx context.Context, instance *models.Camunda
 	}
 	if snapshotName == "" {
 		namePrefix := m.cfg.GetElasticsearchSnapshotNamePrefix(instance.ID)
-		if namePrefix != "" {
-			snapshotName = fmt.Sprintf("%s-%s", namePrefix, backup.BackupID)
-		} else {
-			snapshotName = backup.BackupID
-		}
+		snapshotName = elasticsearch.BuildSnapshotName(namePrefix, backup.BackupID)
 	}
 
 	return m.deleteSnapshot(ctx, instance, repository, snapshotName, backup.BackupID)
