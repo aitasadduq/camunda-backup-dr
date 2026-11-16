@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/camunda"
-	"github.com/aitasadduq/camunda-backup-dr/internal/config"
 	"github.com/aitasadduq/camunda-backup-dr/internal/elasticsearch"
 	"github.com/aitasadduq/camunda-backup-dr/internal/models"
 	"github.com/aitasadduq/camunda-backup-dr/pkg/types"
@@ -54,26 +53,6 @@ func TestIsBackupRunningDefaultsToFalse(t *testing.T) {
 	}
 }
 
-type fakeCandidateBackupLister struct {
-	listErr    map[string]error
-	byEndpoint map[string][]camunda.ComponentBackupRecord
-	byCand     map[string][]camunda.ComponentBackupRecord
-}
-
-func (f *fakeCandidateBackupLister) ListBackups(_ context.Context, endpoint string) ([]camunda.ComponentBackupRecord, error) {
-	if err := f.listErr[endpoint]; err != nil {
-		return nil, err
-	}
-	return f.byEndpoint[endpoint], nil
-}
-
-func (f *fakeCandidateBackupLister) ListBackupsByCandidates(_ context.Context, endpoint string, _ []string) ([]camunda.ComponentBackupRecord, error) {
-	if recs, ok := f.byCand[endpoint]; ok {
-		return recs, nil
-	}
-	return nil, errors.New("candidate lookup failed")
-}
-
 func TestClassify_CamundaZeebeRecordsBackupSnapshotsBecomeOrphanedIssues(t *testing.T) {
 	ev := newEvidence().
 		snapshot("camunda_zeebe_records_backup_20260111154511", elasticsearch.SnapshotStateSuccess).
@@ -115,5 +94,4 @@ func TestCandidateBackupIDs_OrdersTrackedFirstThenNewestUntracked(t *testing.T) 
 			t.Errorf("index %d: got %q, want %q", i, got[i], want[i])
 		}
 	}
-	_ = config.Config{}
 }
