@@ -27,6 +27,10 @@ type SourceStatus struct {
 	Error     string `json:"error,omitempty"`
 	Count     int    `json:"count"`
 	Skipped   bool   `json:"skipped,omitempty"` // not configured for this instance
+	// Note says how a reachable source was read when that limits what its count
+	// means; for example that a repository was listed by day, so snapshots no
+	// prefix claims were not looked for.
+	Note string `json:"note,omitempty"`
 }
 
 // Finding is a single detected inconsistency.

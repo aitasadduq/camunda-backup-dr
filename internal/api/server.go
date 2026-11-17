@@ -28,6 +28,12 @@ func (s *Server) SetSecretStore(store SecretStore) {
 	s.handlers.SetSecretStore(store)
 }
 
+// SetLifetimeContext registers the context that is cancelled when the process is
+// shutting down, which work that outlives a request is bound to.
+func (s *Server) SetLifetimeContext(ctx context.Context) {
+	s.handlers.SetLifetimeContext(ctx)
+}
+
 // SetReconciler registers the reconciler backing the reconcile endpoints.
 func (s *Server) SetReconciler(r Reconciler) {
 	s.handlers.SetReconciler(r)

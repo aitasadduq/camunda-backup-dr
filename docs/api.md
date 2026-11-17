@@ -1078,15 +1078,22 @@ This is **report-only** and never deletes anything.
 - The range matches the date in each backup ID (`YYYYMMDD…`), not wall-clock
   time. The controller stamps IDs in UTC.
 - Zeebe is listed one day at a time (`GET {endpoint}/{YYYYMMDD}*`); the other
-  sources are listed in full and filtered. If Elasticsearch's full listing
-  fails, it falls back to one request per day.
+  sources are listed in full and filtered. Elasticsearch is listed by day
+  (one request per day and name prefix) for ranges up to 31 days, and for longer
+  ones when its full listing fails. A repository listed by day holds only
+  snapshots a known prefix claims, which the source's `note` says.
+- Per-day listings stop at the first failed request.
 - The report records the range as `window`. Backups outside it were **not
   assessed**: they are in no finding, and an orphan outside it cannot be deleted
   (`outside_scan_window`).
 
 The sweep runs independently of the request: if the client disconnects, or a
 gateway times the request out, the sweep still finishes and stores its report,
-which `GET` then returns.
+which `GET` then returns. It is cancelled when the server shuts down, and a
+cancelled sweep stores nothing.
+
+The body overrides `?from=&to=` field by field. The list endpoints read the
+query only.
 
 | Error Code | Condition |
 |---|---|

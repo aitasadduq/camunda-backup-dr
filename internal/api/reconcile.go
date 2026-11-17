@@ -37,6 +37,21 @@ func (h *Handlers) reconcileTimeout() time.Duration {
 	return defaultReconcileTimeout
 }
 
+// SetLifetimeContext registers the context that is cancelled when the server
+// shuts down. Work that outlives a request, such as a sweep, is bound to it.
+func (h *Handlers) SetLifetimeContext(ctx context.Context) {
+	h.lifetime = ctx
+}
+
+// lifetimeContext is the server's lifetime, or a background context when none
+// was registered.
+func (h *Handlers) lifetimeContext() context.Context {
+	if h.lifetime != nil {
+		return h.lifetime
+	}
+	return context.Background()
+}
+
 // SetReconciler registers the reconciler used by the reconcile endpoints.
 func (h *Handlers) SetReconciler(r Reconciler) {
 	h.reconciler = r
@@ -104,7 +119,7 @@ func (h *Handlers) RunReconcileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	window, err := windowFromRequest(r)
+	window, err := windowFromPost(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 		return
@@ -112,11 +127,12 @@ func (h *Handlers) RunReconcileHandler(w http.ResponseWriter, r *http.Request) {
 
 	// The sweep must not die with the request. A browser tab closing, or an
 	// ingress with a shorter timeout than the sweep, cancels r.Context(), and a
-	// sweep tied to it records every source in flight as "context canceled" and
-	// stores that as the latest report. Detached, the sweep runs to its own
-	// deadline and stores a real result; a client that has gone simply does not
-	// read the response, and fetches the report afterwards.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), h.reconcileTimeout())
+	// sweep tied to it records every source in flight as "context canceled".
+	// It is tied to the server's lifetime instead: it runs to its own deadline
+	// and stores a real result whatever the client does, and is cancelled (and
+	// its partial result discarded) when the server shuts down, so a shutdown
+	// never waits on it.
+	ctx, cancel := context.WithTimeout(h.lifetimeContext(), h.reconcileTimeout())
 	defer cancel()
 
 	report, err := h.reconciler.Reconcile(ctx, instance, window)
@@ -140,10 +156,17 @@ func (h *Handlers) ReasonCatalogHandler(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, reconcile.Catalog())
 }
 
-// windowFromRequest reads the optional date range of a request: a JSON body
-// {"from":"YYYY-MM-DD","to":"YYYY-MM-DD"} on POST, or the same names as query
-// parameters. Neither means all time.
-func windowFromRequest(r *http.Request) (*reconcile.Window, error) {
+// windowFromQuery reads the optional date range from ?from=&to=. Neither means
+// all time. The list endpoints use it: a GET carries no body to read.
+func windowFromQuery(r *http.Request) (*reconcile.Window, error) {
+	return reconcile.NewWindow(r.URL.Query().Get("from"), r.URL.Query().Get("to"))
+}
+
+// windowFromPost reads the optional date range of a POST: the query parameters,
+// with a JSON body {"from":"YYYY-MM-DD","to":"YYYY-MM-DD"} overriding them field
+// by field. A body that sets only one field therefore keeps the other from the
+// query, and both must be present in the end, or neither for all time.
+func windowFromPost(r *http.Request) (*reconcile.Window, error) {
 	from, to := r.URL.Query().Get("from"), r.URL.Query().Get("to")
 
 	if r.Body != nil && r.ContentLength != 0 {
@@ -155,14 +178,19 @@ func windowFromRequest(r *http.Request) (*reconcile.Window, error) {
 		if err := dec.Decode(&body); err != nil && !errors.Is(err, io.EOF) {
 			return nil, fmt.Errorf("request body must be JSON like {\"from\":\"2026-11-01\",\"to\":\"2026-11-17\"}: %w", err)
 		}
-		if body.From != "" || body.To != "" {
-			from, to = body.From, body.To
+		// Anything after the first object is a malformed request, not something
+		// to ignore: it may be a second range the caller meant.
+		var extra json.RawMessage
+		if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+			return nil, fmt.Errorf("request body must hold a single JSON object")
+		}
+		if body.From != "" {
+			from = body.From
+		}
+		if body.To != "" {
+			to = body.To
 		}
 	}
 
-	window, err := reconcile.NewWindow(from, to)
-	if err != nil {
-		return nil, err
-	}
-	return window, nil
+	return reconcile.NewWindow(from, to)
 }

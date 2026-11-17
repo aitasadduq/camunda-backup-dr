@@ -2972,7 +2972,7 @@ function renderReconcileHeader(report) {
     const unreachable = sources.filter(s => !s.reachable && !s.skipped).map(s => s.name);
 
     const chips = sources.map(s => {
-        let cls = 'source-chip-ok', mark = '\u2713', title = `${s.count} found`;
+        let cls = 'source-chip-ok', mark = '\u2713', title = `${s.count} found${s.note ? ' \u2014 ' + s.note : ''}`;
         if (s.skipped) {
             cls = 'source-chip-skipped'; mark = '\u2013'; title = 'Not configured for this instance';
         } else if (!s.reachable) {
@@ -3030,10 +3030,17 @@ function renderReconcileHeader(report) {
         </details>
     ` : '';
 
+    // How a reachable source was read, when that limits what it can say, e.g.
+    // a repository listed by day holds only the snapshots a known prefix claims.
+    const notes = sources.filter(s => s.reachable && s.note)
+        .map(s => `<div class="text-xs text-gray-500 mb-2"><strong>${escapeHtml(s.name)}:</strong> ${escapeHtml(s.note)}</div>`)
+        .join('');
+
     return `
         <div class="mb-4">
             <div class="text-sm text-gray-600 mb-2">Last scanned ${escapeHtml(formatTime(report.finished_at))}</div>
             ${renderScanCoverage(report)}
+            ${notes}
             <div class="flex flex-wrap gap-1 mb-3">${chips}</div>
             ${partial}
             ${instanceBanners}

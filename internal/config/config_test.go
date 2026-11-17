@@ -1,7 +1,9 @@
 package config
 
 import (
+	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
@@ -325,6 +327,17 @@ func TestValidate(t *testing.T) {
 			if err := cfg.Validate(); (err == nil) != valid {
 				t.Errorf("ReconcileWindowDays=%d: Validate() = %v, want valid=%v", days, err, valid)
 			}
+		}
+	})
+	t.Run("a bad window names the variable", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.ReconcileWindowDays = 400
+		err := cfg.Validate()
+		if !errors.Is(err, utils.ErrInvalidConfiguration) {
+			t.Fatalf("Validate() = %v, want ErrInvalidConfiguration", err)
+		}
+		if !strings.Contains(err.Error(), "RECONCILE_WINDOW_DAYS") || !strings.Contains(err.Error(), "400") {
+			t.Errorf("the error should say which setting and what value, got: %v", err)
 		}
 	})
 	t.Run("component list timeout must be positive", func(t *testing.T) {

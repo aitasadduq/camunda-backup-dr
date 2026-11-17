@@ -130,6 +130,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, instance *models.CamundaInst
 	r.logger.Info("[reconcile] Starting sweep for instance %s (%s)", instance.ID, window)
 
 	ev := r.collect(ctx, instance, window)
+
+	// A sweep cancelled part-way, as the server shutting down does, has recorded
+	// every source in flight as "context canceled". That is not a description of
+	// anything, and storing it would replace the last real report with it. A
+	// deadline running out is different: the partial report says what could not
+	// be checked, and is stored.
+	if errors.Is(ctx.Err(), context.Canceled) {
+		r.logger.Warn("[reconcile] Sweep for %s was cancelled; its partial result is discarded and the last report is kept", instance.ID)
+		return nil, ctx.Err()
+	}
+
 	findings := classify(ev, r.opts)
 	if inFlight := ev.untrackedInFlight(); len(inFlight) > 0 {
 		ids := make([]string, 0, len(inFlight))
@@ -215,6 +226,9 @@ func (r *Reconciler) LatestReport(camundaInstanceID string) (*Report, error) {
 	var report Report
 	if err := json.Unmarshal(data, &report); err != nil {
 		return nil, fmt.Errorf("failed to parse stored reconcile report: %w", err)
+	}
+	if err := report.Window.Validate(); err != nil {
+		return nil, fmt.Errorf("stored reconcile report has an unusable date range: %w", err)
 	}
 	return &report, nil
 }

@@ -221,7 +221,7 @@ Credentials are set per Camunda instance using a naming convention. The instance
 | `ELASTICSEARCH_PASSWORD_<ID>` | Elasticsearch password for the instance (falls back to `DEFAULT_ELASTICSEARCH_PASSWORD`) |
 | `ELASTICSEARCH_SNAPSHOT_REPOSITORY_<ID>` | Snapshot repository override (falls back to default) |
 | `ELASTICSEARCH_SNAPSHOT_NAME_PREFIX_<ID>` | Snapshot name prefix override (falls back to default) |
-| `ELASTICSEARCH_EXTERNAL_SNAPSHOT_PREFIXES_<ID>` | Comma-separated snapshot name prefixes of **another backup job** for this instance, e.g. `camunda_zeebe_records_backup_`. Matched literally (include the separator) and only when followed by a `YYYYMMDDHHMMSS` backup ID. Declared snapshots are listed with their backup on the Orphaned tab and deleted with it. No global default: it lets the controller delete snapshots it did not create. See [Orphaned Backup Detection](orphaned-backups.md#external-backup-jobs). |
+| `ELASTICSEARCH_EXTERNAL_SNAPSHOT_PREFIXES_<ID>` | Comma-separated snapshot name prefixes of **other backup jobs** for this instance, e.g. `camunda_zeebe_records_backup_,nightly-`; any number, each checked on its own. Matched literally (include the separator) and only when followed by a `YYYYMMDDHHMMSS` backup ID. Declared snapshots are listed with their backup on the Orphaned tab and deleted with it. No global default: it lets the controller delete snapshots it did not create. See [Orphaned Backup Detection](orphaned-backups.md#external-backup-jobs). |
 | `S3_SECRETKEY_<ID>` | S3 secret key for the instance (falls back to `DEFAULT_S3_SECRETKEY`) |
 
 **Example** for an instance named `prod-cluster`:

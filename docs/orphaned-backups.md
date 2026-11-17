@@ -353,11 +353,23 @@ How the range becomes queries:
 |---|---|
 | Zeebe | One prefix query per day, `GET {endpoint}/{YYYYMMDD}*`, four at a time, merged. It counts as reachable only if every day succeeded; the error names the days that failed. |
 | Operate, Tasklist, Optimize | Listed in full, then filtered. They do not accept a prefix, so they have no per-day form. |
-| Elasticsearch | Listed in full first, using at most half the scan's time. If that fails, one `GET /_snapshot/{repo}/{pattern},…` per day, with a wildcard per prefix: the controller's, each component's, and each declared external job's. |
+| Elasticsearch | Up to 31 days: listed by day straight away. Longer: listed in full first, using at most two thirds of the scan's time, and by day if that fails. By day means one `GET /_snapshot/{repo}/{prefix}{YYYYMMDD}*` for each day and each prefix: the controller's, each component's, and **each declared external job's, checked one by one**. |
 | Controller records and log files | Listed, then filtered. |
 
 With **All time** there are no days to enumerate, so none of these fall back:
-a listing that fails stays failed, and the error suggests choosing a range.
+a listing that fails stays failed, and the error suggests a range (in the UI, or
+`RECONCILE_WINDOW_DAYS` for automatic scans).
+
+A repository **listed by day holds only the snapshots a known prefix claims**.
+Names no prefix claims (another tool's, or any name without a backup ID) are not
+looked for, so the source carries a note saying so, and the "snapshots from
+another tool" finding (`A4`) and count are not reported for that scan. To have a
+job's snapshots managed, declare its prefix: several are allowed, comma
+separated, and each is checked on its own.
+
+Per-day listings stop at the first failed request: the listing is unusable
+after that, so the remaining days are not asked for, and the error says which
+request failed and how far the run got.
 
 What a ranged scan concludes is about the range only:
 
@@ -366,8 +378,10 @@ What a ranged scan concludes is about the range only:
 - The latest-backup pointer is not judged when it names a backup outside the
   range. Other instance-level checks compare the in-range records with the
   in-range Zeebe listing, so they stay meaningful.
-- The report carries the range (`window`), and **an orphan outside it cannot be
-  deleted** (`409 outside_scan_window`), on top of every other guard in
+- The report carries the range (`window`), and a stored report whose range cannot
+  be read is refused when it is loaded, not treated as "everything is outside
+  it". **An orphan outside the range cannot be deleted**
+  (`409 outside_scan_window`), on top of every other guard in
   [§7](#7-acting-on-findings).
 - Scanning one range after another, deleting what is found in each, is how a
   large backlog is cleared without ever listing it all at once.
@@ -404,7 +418,9 @@ findings (a sweep ran and found nothing) — they are genuinely different answer
 - **On demand**, via the endpoint or the refresh button on the Backups tab. The
   sweep runs independently of the request: if the browser disconnects or a
   gateway times the request out, it still finishes and stores its report, and the
-  UI then waits for that report instead of failing.
+  UI then waits for that report instead of failing. It does not outlive the
+  server: on shutdown it is cancelled, and a cancelled sweep stores nothing, so
+  the last report is kept.
 - **After every backup**, on all terminal states. This is hooked to the orchestrator rather than to retention on purpose: retention runs only for `COMPLETED` and `FAILED`, and an `INCOMPLETE` backup is exactly the case that leaves artifacts behind with no metadata.
 
 Sweeps run asynchronously with their own timeout and can never delay or fail a

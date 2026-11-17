@@ -98,7 +98,43 @@ func TestLastDaysEndsTomorrowUTC(t *testing.T) {
 	if LastDays(0, now) != nil || LastDays(-1, now) != nil {
 		t.Error("zero or negative days means all time")
 	}
-	if w := LastDays(100000, now); len(w.Days()) > maxWindowDays {
-		t.Errorf("window not capped: %d days", len(w.Days()))
+}
+
+func TestWindowValidate(t *testing.T) {
+	var none *Window
+	if err := none.Validate(); err != nil {
+		t.Errorf("a nil window is all time and valid, got %v", err)
+	}
+	valid := &Window{From: "2026-11-01", To: "2026-11-17"}
+	if err := valid.Validate(); err != nil {
+		t.Errorf("got %v", err)
+	}
+	for _, w := range []*Window{
+		{}, {From: "2026-11-01"}, {To: "2026-11-01"},
+		{From: "garbage", To: "2026-11-01"}, {From: "2026-11-17", To: "2026-11-01"},
+	} {
+		if err := w.Validate(); !errors.Is(err, ErrInvalidWindow) {
+			t.Errorf("%+v: expected ErrInvalidWindow, got %v", w, err)
+		}
+	}
+}
+
+// Contains compares text and parses nothing, so it must order exactly as dates do.
+func TestWindowContainsOrdersLikeDates(t *testing.T) {
+	w := &Window{From: "2026-02-27", To: "2026-03-02"}
+	days := map[string]bool{
+		"20260226": false, "20260227": true, "20260228": true,
+		"20260301": true, "20260302": true, "20260303": false,
+	}
+	for day, want := range days {
+		if got := w.Contains(day + "120000"); got != want {
+			t.Errorf("Contains(%s...) = %v, want %v", day, got, want)
+		}
+	}
+	// Exactly eight digits are needed to place an ID, and only digits.
+	for _, id := range []string{"2026030", "2026-3-01", "abcdefgh", "2026030X120000"} {
+		if w.Contains(id) {
+			t.Errorf("%q cannot be placed in a date, so it must be excluded", id)
+		}
 	}
 }

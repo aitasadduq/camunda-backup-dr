@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -335,5 +336,112 @@ func TestTrackedListsFilterByWindow(t *testing.T) {
 				t.Errorf("half a range: status %d, want 400", code)
 			}
 		})
+	}
+}
+
+func postReconcile(handlers *Handlers, query, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/api/camundas/prod/backups/reconcile"+query, strings.NewReader(body))
+	w := httptest.NewRecorder()
+	handlers.RunReconcileHandler(w, req)
+	return w
+}
+
+// The body overrides the query field by field, so a body that sets one date
+// keeps the other from the query. It used to discard the query's date and fail.
+func TestRunReconcileHandlerMergesBodyOverQuery(t *testing.T) {
+	handlers, rec := reconcileTestSetup(t)
+
+	if w := postReconcile(handlers, "?to=2026-11-17", `{"from":"2026-11-01"}`); w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	if rec.lastWindow == nil || rec.lastWindow.From != "2026-11-01" || rec.lastWindow.To != "2026-11-17" {
+		t.Errorf("window = %+v, want 2026-11-01..2026-11-17", rec.lastWindow)
+	}
+
+	// The body wins where both set a field.
+	postReconcile(handlers, "?from=2026-01-01&to=2026-01-31", `{"from":"2026-11-01","to":"2026-11-17"}`)
+	if rec.lastWindow == nil || rec.lastWindow.From != "2026-11-01" {
+		t.Errorf("window = %+v, want the body's range", rec.lastWindow)
+	}
+
+	// The query alone works for a POST with no body.
+	postReconcile(handlers, "?from=2026-11-01&to=2026-11-03", "")
+	if rec.lastWindow == nil || rec.lastWindow.To != "2026-11-03" {
+		t.Errorf("window = %+v, want the query's range", rec.lastWindow)
+	}
+}
+
+// Anything after the first JSON object may be a second range the caller meant.
+func TestRunReconcileHandlerRefusesDataAfterTheBodyObject(t *testing.T) {
+	handlers, rec := reconcileTestSetup(t)
+	for _, body := range []string{
+		`{"from":"2026-11-01","to":"2026-11-02"}{"from":"2026-01-01","to":"2026-01-02"}`,
+		`{"from":"2026-11-01","to":"2026-11-02"} garbage`,
+	} {
+		if w := postReconcile(handlers, "", body); w.Code != http.StatusBadRequest {
+			t.Errorf("body %q: status = %d, want 400", body, w.Code)
+		}
+	}
+	if rec.sweepCalls != 0 {
+		t.Errorf("a refused request ran %d sweeps", rec.sweepCalls)
+	}
+}
+
+// The list endpoints are GETs: a body is not read, so one attached by a proxy
+// cannot turn a plain request into a 400 or override the query.
+func TestListEndpointsIgnoreARequestBody(t *testing.T) {
+	handlers, cm, _, hist, _, _, _ := newTestHandlers()
+	cm.instances = []models.CamundaInstance{{ID: "test-1", Name: "Test"}}
+	hist.history = []*models.BackupHistory{
+		{BackupID: "20261111080000", CamundaInstanceID: "test-1"},
+		{BackupID: "20261120080000", CamundaInstanceID: "test-1"},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/camundas/test-1/backups?from=2026-11-10&to=2026-11-12",
+		strings.NewReader(`{"from":"2026-01-01"} not json`))
+	w := httptest.NewRecorder()
+	handlers.ListBackupHistoryHandler(w, req)
+
+	var got []*models.BackupHistory
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if w.Code != http.StatusOK || len(got) != 1 || got[0].BackupID != "20261111080000" {
+		t.Errorf("status %d, %v; want the query's range applied and the body ignored", w.Code, got)
+	}
+}
+
+// An instance with no backups answers [] whether or not a range was given.
+func TestListEndpointsEncodeAnEmptyListAsAnArray(t *testing.T) {
+	handlers, cm, _, hist, _, _, _ := newTestHandlers()
+	cm.instances = []models.CamundaInstance{{ID: "test-1", Name: "Test"}}
+	hist.history = nil
+
+	for _, query := range []string{"", "?from=2026-11-01&to=2026-11-02"} {
+		w := httptest.NewRecorder()
+		handlers.ListBackupHistoryHandler(w, httptest.NewRequest(http.MethodGet, "/api/camundas/test-1/backups"+query, nil))
+		if got := strings.TrimSpace(w.Body.String()); got != "[]" {
+			t.Errorf("query %q: body = %s, want []", query, got)
+		}
+	}
+}
+
+// A sweep outlives its request but not the server: when the server is shutting
+// down its context is cancelled, so a shutdown never waits on a sweep.
+func TestRunReconcileHandlerSweepEndsWithTheServer(t *testing.T) {
+	handlers, rec := reconcileTestSetup(t)
+
+	lifetime, cancel := context.WithCancel(context.Background())
+	handlers.SetLifetimeContext(lifetime)
+
+	if w := runReconcile(handlers, ""); w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if rec.ctxErr != nil {
+		t.Errorf("a running server's sweep was already %v", rec.ctxErr)
+	}
+
+	cancel() // the server is shutting down
+	runReconcile(handlers, "")
+	if !errors.Is(rec.ctxErr, context.Canceled) {
+		t.Errorf("sweep context error = %v, want context.Canceled once the server is shutting down", rec.ctxErr)
 	}
 }

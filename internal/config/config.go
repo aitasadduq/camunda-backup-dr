@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 	"strconv"
@@ -198,7 +199,8 @@ func (c *Config) Validate() error {
 	}
 
 	if c.ReconcileWindowDays < 0 || c.ReconcileWindowDays > 366 {
-		return utils.ErrInvalidConfiguration
+		return fmt.Errorf("%w: RECONCILE_WINDOW_DAYS must be between 0 (all time) and 366, got %d",
+			utils.ErrInvalidConfiguration, c.ReconcileWindowDays)
 	}
 
 	if c.ComponentListTimeoutSeconds <= 0 {

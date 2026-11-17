@@ -3,6 +3,7 @@ package reconcile
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -64,23 +65,39 @@ func NewWindow(from, to string) (*Window, error) {
 }
 
 // LastDays is the window of the last n days of backup IDs, ending tomorrow (UTC).
+// n is at most maxWindowDays; configuration rejects anything larger.
 // Tomorrow is included because a job running ahead of UTC stamps IDs with the
 // next date for part of every night.
 func LastDays(n int, now time.Time) *Window {
 	if n <= 0 {
 		return nil
 	}
-	if n > maxWindowDays {
-		n = maxWindowDays
-	}
 	to := now.UTC().AddDate(0, 0, 1)
 	from := to.AddDate(0, 0, -(n - 1))
 	return &Window{From: from.Format(dateLayout), To: to.Format(dateLayout)}
 }
 
+// Validate checks a window that did not come through NewWindow, such as one
+// read back from a stored report. A window that cannot be read must be an
+// error where it is loaded: Contains would otherwise say "outside the window"
+// for every backup, which reads as a statement about the backups.
+func (w *Window) Validate() error {
+	if w == nil {
+		return nil
+	}
+	if w.From == "" || w.To == "" {
+		return fmt.Errorf("%w: a stored window needs both from and to", ErrInvalidWindow)
+	}
+	_, err := NewWindow(w.From, w.To)
+	return err
+}
+
 // Contains reports whether a backup ID is dated inside the window. A nil window
-// contains every ID. An ID that does not start with a valid date cannot be
+// contains every ID. An ID that does not start with eight digits cannot be
 // placed, so a window excludes it.
+//
+// It compares the YYYYMMDD text, which orders the same as the dates, so it
+// parses nothing: it runs for every record, snapshot and component entry.
 func (w *Window) Contains(backupID string) bool {
 	if w == nil {
 		return true
@@ -88,16 +105,18 @@ func (w *Window) Contains(backupID string) bool {
 	if len(backupID) < len(idDateLayout) {
 		return false
 	}
-	day, err := time.Parse(idDateLayout, backupID[:len(idDateLayout)])
-	if err != nil {
-		return false
+	day := backupID[:len(idDateLayout)]
+	for i := 0; i < len(day); i++ {
+		if day[i] < '0' || day[i] > '9' {
+			return false
+		}
 	}
-	f, errF := time.Parse(dateLayout, w.From)
-	t, errT := time.Parse(dateLayout, w.To)
-	if errF != nil || errT != nil {
-		return false
-	}
-	return !day.Before(f) && !day.After(t)
+	return day >= compactDate(w.From) && day <= compactDate(w.To)
+}
+
+// compactDate turns YYYY-MM-DD into YYYYMMDD.
+func compactDate(d string) string {
+	return strings.ReplaceAll(d, "-", "")
 }
 
 // Days lists every date in the window as YYYYMMDD, the prefix of an ID that

@@ -489,9 +489,9 @@ func TestListBackupsByDays(t *testing.T) {
 
 // One failed day must fail the whole listing and say which day. Returning what
 // the other days held would read as "no backups on that day".
-func TestListBackupsByDaysFailsNamingTheDays(t *testing.T) {
+func TestListBackupsByDaysFailsNamingTheDay(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "20261111*") || strings.HasSuffix(r.URL.Path, "20261113*") {
+		if strings.HasSuffix(r.URL.Path, "20261111*") {
 			w.WriteHeader(http.StatusGatewayTimeout)
 			_, _ = w.Write([]byte("broker timed out"))
 			return
@@ -505,11 +505,106 @@ func TestListBackupsByDaysFailsNamingTheDays(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected an error, got %+v", got)
 	}
-	for _, want := range []string{"2 of 4 days", "20261111", "20261113", "broker timed out"} {
+	for _, want := range []string{"20261111", "of 4 days", "broker timed out"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error should mention %q, got: %v", want, err)
 		}
 	}
+}
+
+// After the first failure the listing is unusable, so the remaining days are
+// not asked for: a service that is down or slow is not queried another few
+// hundred times until the scan's deadline.
+func TestListBackupsByDaysStopsAfterTheFirstFailure(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	days := make([]string, 200)
+	for i := range days {
+		days[i] = fmt.Sprintf("2026%02d%02d", i/28+1, i%28+1)
+	}
+	_, err := newTestClient(t).ListBackupsByDays(context.Background(), server.URL, days)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if n := calls.Load(); n > int32(dayQueryWorkers)*2 {
+		t.Errorf("%d of 200 days were requested after the first failure; want about %d at most", n, dayQueryWorkers)
+	}
+	if !strings.Contains(err.Error(), "of 200 days") {
+		t.Errorf("the error should say how far the run got, got: %v", err)
+	}
+}
+
+func TestListBackupsByDaysStopsWhenTheScanEnds(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		time.Sleep(20 * time.Millisecond)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	days := make([]string, 300)
+	for i := range days {
+		days[i] = fmt.Sprintf("2026%02d%02d", i/28+1, i%28+1)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := newTestClient(t).ListBackupsByDays(ctx, server.URL, days); err == nil {
+		t.Fatal("a listing the scan ran out of time on must fail")
+	}
+	if n := calls.Load(); n > 60 {
+		t.Errorf("%d requests were made after the scan's deadline; dispatch must stop", n)
+	}
+}
+
+func TestForEachBounded(t *testing.T) {
+	items := []string{"a", "b", "c", "d", "e"}
+	label := func(s string) string { return s }
+
+	t.Run("runs every item and reports none failed", func(t *testing.T) {
+		var n atomic.Int32
+		started, failures := ForEachBounded(context.Background(), items, 2, label,
+			func(context.Context, string) error { n.Add(1); return nil })
+		if started != 5 || len(failures) != 0 || n.Load() != 5 {
+			t.Errorf("started %d, failures %v, ran %d", started, failures, n.Load())
+		}
+	})
+
+	t.Run("stops handing out items after a failure, and labels it", func(t *testing.T) {
+		started, failures := ForEachBounded(context.Background(), items, 1, label,
+			func(_ context.Context, s string) error {
+				if s == "b" {
+					return fmt.Errorf("boom")
+				}
+				return nil
+			})
+		if started != 2 {
+			t.Errorf("started %d, want 2 (a, then the failing b)", started)
+		}
+		if len(failures) != 1 || failures[0].Label != "b" || failures[0].Err.Error() != "boom" {
+			t.Errorf("failures = %+v", failures)
+		}
+	})
+
+	t.Run("a cancelled context is a failure, never a clean run", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		started, failures := ForEachBounded(ctx, items, 2, label, func(context.Context, string) error { return nil })
+		if started != 0 || len(failures) != 1 || failures[0].Label != "a" || !errors.Is(failures[0].Err, context.Canceled) {
+			t.Errorf("started %d, failures %+v; want none started and the first item named", started, failures)
+		}
+	})
+
+	t.Run("no items", func(t *testing.T) {
+		if started, failures := ForEachBounded(context.Background(), nil, 4, label, func(context.Context, string) error { return nil }); started != 0 || failures != nil {
+			t.Errorf("started %d, failures %v", started, failures)
+		}
+	})
 }
 
 // Each day's query hits the component's backup store, so they are bounded.

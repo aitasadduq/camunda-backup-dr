@@ -78,6 +78,8 @@ type SecretStore interface {
 
 // Handlers contains HTTP request handlers
 type Handlers struct {
+	// lifetime is cancelled when the server shuts down; see SetLifetimeContext.
+	lifetime         context.Context
 	camundaManager   CamundaManager
 	orchestrator     BackupOrchestrator
 	historyProvider  BackupHistoryProvider
@@ -746,7 +748,7 @@ func (h *Handlers) ListBackupHistoryHandler(w http.ResponseWriter, r *http.Reque
 		status = types.BackupStatus(strings.ToUpper(statusFilter))
 	}
 
-	window, werr := windowFromRequest(r)
+	window, werr := windowFromQuery(r)
 	if werr != nil {
 		writeError(w, http.StatusBadRequest, "validation_error", werr.Error())
 		return
@@ -917,7 +919,7 @@ func (h *Handlers) ListIncompleteBackupsHandler(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	window, werr := windowFromRequest(r)
+	window, werr := windowFromQuery(r)
 	if werr != nil {
 		writeError(w, http.StatusBadRequest, "validation_error", werr.Error())
 		return
@@ -960,7 +962,7 @@ func (h *Handlers) ListFailedBackupsHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	window, werr := windowFromRequest(r)
+	window, werr := windowFromQuery(r)
 	if werr != nil {
 		writeError(w, http.StatusBadRequest, "validation_error", werr.Error())
 		return
@@ -1041,9 +1043,12 @@ func extractIDFromPath(path, prefix string) string {
 }
 
 // filterByWindow keeps the backups whose ID falls in the window. A nil window
-// keeps them all, and the result is never nil so it encodes as [] not null.
+// keeps them all. The result is never nil, so it always encodes as a list.
 func filterByWindow(backups []*models.BackupHistory, window *reconcile.Window) []*models.BackupHistory {
 	if window == nil {
+		if backups == nil {
+			return []*models.BackupHistory{}
+		}
 		return backups
 	}
 	out := make([]*models.BackupHistory, 0, len(backups))
