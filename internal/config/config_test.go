@@ -1040,3 +1040,29 @@ func TestSecretProviderPrecedence(t *testing.T) {
 		}
 	})
 }
+
+func TestGetElasticsearchExternalSnapshotPrefixes(t *testing.T) {
+	cfg := validConfig()
+
+	t.Run("unset declares nothing", func(t *testing.T) {
+		if got := cfg.GetElasticsearchExternalSnapshotPrefixes("umrah-camunda"); len(got) != 0 {
+			t.Errorf("got %v, want none", got)
+		}
+	})
+
+	t.Run("comma-separated, trimmed, separators kept, empties dropped", func(t *testing.T) {
+		t.Setenv("ELASTICSEARCH_EXTERNAL_SNAPSHOT_PREFIXES_UMRAH_CAMUNDA", " camunda_zeebe_records_backup_ ,, nightly- ")
+		got := cfg.GetElasticsearchExternalSnapshotPrefixes("umrah-camunda")
+		want := []string{"camunda_zeebe_records_backup_", "nightly-"}
+		if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("one instance's declaration does not apply to another", func(t *testing.T) {
+		t.Setenv("ELASTICSEARCH_EXTERNAL_SNAPSHOT_PREFIXES_UMRAH_CAMUNDA", "camunda_zeebe_records_backup_")
+		if got := cfg.GetElasticsearchExternalSnapshotPrefixes("hajj-camunda"); len(got) != 0 {
+			t.Errorf("got %v, want none", got)
+		}
+	})
+}

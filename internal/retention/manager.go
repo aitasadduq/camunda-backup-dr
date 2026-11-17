@@ -795,8 +795,9 @@ func (m *Manager) verifyOrphanOwnership(camundaInstanceID string, instance *mode
 // A shared snapshot repository is only ambiguous while the two instances write
 // indistinguishable names: with distinct, non-empty name prefixes the
 // controller-owned snapshots separate cleanly. Component-owned snapshot names
-// carry no instance identifier at all, so a shared repository stays ambiguous
-// for those whenever this deletion would touch one.
+// carry no instance identifier at all, and neither do a declared external job's
+// (the same job, or the same naming, may serve both instances), so a shared
+// repository stays ambiguous whenever this deletion would touch either.
 func (m *Manager) sharedSurface(instance, other *models.CamundaInstance, art OrphanArtifacts) string {
 	for _, component := range art.Components {
 		endpoint, known := componentEndpoint(instance, component)
@@ -821,21 +822,23 @@ func (m *Manager) sharedSurface(instance, other *models.CamundaInstance, art Orp
 
 	prefix := m.cfg.GetElasticsearchSnapshotNamePrefix(instance.ID)
 	otherPrefix := m.cfg.GetElasticsearchSnapshotNamePrefix(other.ID)
-	if prefix != "" && otherPrefix != "" && prefix != otherPrefix && !anyComponentSnapshot(art.SnapshotNames) {
+	if prefix != "" && otherPrefix != "" && prefix != otherPrefix && allControllerSnapshots(art.SnapshotNames, prefix) {
 		return ""
 	}
 	return "the Elasticsearch snapshot repository"
 }
 
-// anyComponentSnapshot reports whether any name is a component-owned snapshot.
-// Those carry no instance identifier, so a name prefix cannot separate them.
-func anyComponentSnapshot(names []string) bool {
+// allControllerSnapshots reports whether every name is one this controller
+// wrote under its own name prefix — the only kind a distinct prefix can tell
+// apart from another instance's. Component and external snapshots carry no
+// instance identifier.
+func allControllerSnapshots(names []string, prefix string) bool {
 	for _, name := range names {
-		if owner, _, _ := elasticsearch.ClassifySnapshot(name, ""); owner == elasticsearch.OwnerComponent {
-			return true
+		if owner, _, _ := elasticsearch.ClassifySnapshot(name, prefix); owner != elasticsearch.OwnerController {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // verifyEndpointsUnchanged refuses when a component's backup endpoint has moved

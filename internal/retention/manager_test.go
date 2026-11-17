@@ -2064,6 +2064,51 @@ func TestDeleteOrphan_RefusesWhenSnapshotRepositoryIsShared(t *testing.T) {
 	}
 }
 
+// Distinct name prefixes separate the controller's own snapshots in a shared
+// repository, so those may be deleted...
+func TestDeleteOrphan_AllowsControllerSnapshotsInSharedRepositoryWithDistinctPrefixes(t *testing.T) {
+	env := newOrphanTestEnv(t)
+	env.instances.instances["inst-2"] = &models.CamundaInstance{
+		ID:                    "inst-2",
+		ElasticsearchEndpoint: env.instance.ElasticsearchEndpoint,
+	}
+	t.Setenv("ELASTICSEARCH_SNAPSHOT_NAME_PREFIX_INST_1", "one")
+	t.Setenv("ELASTICSEARCH_SNAPSHOT_NAME_PREFIX_INST_2", "two")
+
+	if err := env.deleteOrphan(OrphanArtifacts{
+		BackupID:      "20260320080000",
+		SnapshotNames: []string{"one-20260320080000"},
+		Repository:    "camunda-backup",
+	}); err != nil {
+		t.Fatalf("expected the deletion to proceed, got %v", err)
+	}
+}
+
+// ...but a declared external job's snapshot names carry no instance at all,
+// so distinct controller prefixes prove nothing about who owns them.
+func TestDeleteOrphan_RefusesExternalSnapshotInSharedRepository(t *testing.T) {
+	env := newOrphanTestEnv(t)
+	env.instances.instances["inst-2"] = &models.CamundaInstance{
+		ID:                    "inst-2",
+		ElasticsearchEndpoint: env.instance.ElasticsearchEndpoint,
+	}
+	t.Setenv("ELASTICSEARCH_SNAPSHOT_NAME_PREFIX_INST_1", "one")
+	t.Setenv("ELASTICSEARCH_SNAPSHOT_NAME_PREFIX_INST_2", "two")
+	t.Setenv("ELASTICSEARCH_EXTERNAL_SNAPSHOT_PREFIXES_INST_1", "camunda_zeebe_records_backup_")
+
+	err := env.deleteOrphan(OrphanArtifacts{
+		BackupID:      "20260320080000",
+		SnapshotNames: []string{"camunda_zeebe_records_backup_20260320080000"},
+		Repository:    "camunda-backup",
+	})
+	if !errors.Is(err, utils.ErrOrphanOwnershipUnverified) {
+		t.Fatalf("expected ErrOrphanOwnershipUnverified, got %v", err)
+	}
+	if got := env.recorded(); len(got) != 0 {
+		t.Errorf("expected nothing deleted, got %v", got)
+	}
+}
+
 // A second instance that shares nothing must not block a deletion.
 func TestDeleteOrphan_AllowsWhenOtherInstanceIsSeparate(t *testing.T) {
 	env := newOrphanTestEnv(t)

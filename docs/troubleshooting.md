@@ -454,13 +454,23 @@ never offered for deletion. The scan logs how many snapshots fell into each
 group and up to five sample names:
 
 ```
-[reconcile] umrah: repository "zeebe-umrah-oci" holds 570 snapshot(s): 0 named like this controller's ("<backupID>"), 1 component-owned (camunda_<component>_<id>_...), 569 match neither
+[reconcile] umrah: repository "zeebe-umrah-oci" holds 570 snapshot(s): 0 named like this controller's ("<backupID>"), 1 component-owned (camunda_<component>_<id>_...), 0 from declared external jobs (none declared), 569 match none
 ```
 
-If another job is still taking backups of the same cluster, its component
-backups (Operate, Tasklist, Zeebe) carry no marker of who took them and appear
-on the Orphaned tab. Check the backup IDs against that job's schedule before
-deleting any.
+If those snapshots belong to a backup job you want to manage from the
+controller, declare its prefix for the instance:
+
+```bash
+ELASTICSEARCH_EXTERNAL_SNAPSHOT_PREFIXES_UMRAH_CAMUNDA=camunda_zeebe_records_backup_
+```
+
+After the next scan they move from "Other artifacts" onto the Orphaned tab,
+grouped with the Operate/Zeebe parts of the same backup ID and marked
+"external job", and deleting a row removes all of them. See
+[External backup jobs](orphaned-backups.md#external-backup-jobs).
+
+If that job is still running, check the backup IDs against its schedule before
+deleting any: the controller cannot know which of them the job still needs.
 
 ---
 

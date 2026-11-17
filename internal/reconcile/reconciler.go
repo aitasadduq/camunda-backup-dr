@@ -183,7 +183,7 @@ func observedSnapshots(ev *evidence) map[string][]string {
 
 	byBackup := make(map[string][]string)
 	for _, snap := range ev.snapshots {
-		owner, backupID, _ := elasticsearch.ClassifySnapshot(snap.Name, ev.namePrefix)
+		owner, backupID, _ := ev.naming().Classify(snap.Name)
 		if backupID == "" || owner == elasticsearch.OwnerForeign {
 			continue
 		}

@@ -210,8 +210,8 @@ func TestBuildSnapshotNameRoundTripsThroughClassify(t *testing.T) {
 }
 
 // Snapshots following Camunda's manual backup procedure belong to whatever job
-// runs that procedure, not to this controller. They must stay foreign so they
-// are reported for information and never offered for deletion.
+// runs that procedure, not to this controller. Undeclared, they must stay
+// foreign: reported for information and never offered for deletion.
 func TestClassifySnapshot_ZeebeRecordsSnapshotsFromAnotherToolStayForeign(t *testing.T) {
 	for _, prefix := range []string{"", "hajj"} {
 		for _, name := range []string{
@@ -222,5 +222,42 @@ func TestClassifySnapshot_ZeebeRecordsSnapshotsFromAnotherToolStayForeign(t *tes
 				t.Errorf("prefix %q: %q classified as %v, want foreign", prefix, name, owner)
 			}
 		}
+	}
+}
+
+func TestSnapshotNamingClassify(t *testing.T) {
+	naming := SnapshotNaming{Prefix: "hajj", ExternalPrefixes: []string{"camunda_zeebe_records_backup_", ""}}
+	tests := []struct {
+		name      string
+		snapshot  string
+		wantOwner SnapshotOwner
+		wantID    string
+	}{
+		{"declared external job", "camunda_zeebe_records_backup_20260111154511", OwnerExternal, "20260111154511"},
+		{"external prefix with no backup ID stays foreign", "camunda_zeebe_records_backup_", OwnerForeign, ""},
+		{"external prefix with a non-ID remainder stays foreign", "camunda_zeebe_records_backup_latest", OwnerForeign, ""},
+		{"external prefix is matched literally, no separator added", "camunda_zeebe_records_backup-20260111154511", OwnerForeign, ""},
+		{"controller's own name still wins", "hajj-20260111154511", OwnerController, "20260111154511"},
+		{"component snapshot still wins", "camunda_operate_20260111154511_8.6.0_part_1_of_6", OwnerComponent, "20260111154511"},
+		// An empty declared prefix would claim every bare backup ID.
+		{"empty external prefix is ignored", "20260111154511", OwnerForeign, ""},
+		{"undeclared naming is foreign", "nightly-slm-2026.01.11", OwnerForeign, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			owner, id, _ := naming.Classify(tt.snapshot)
+			if owner != tt.wantOwner || id != tt.wantID {
+				t.Errorf("Classify(%q) = (%v, %q), want (%v, %q)", tt.snapshot, owner, id, tt.wantOwner, tt.wantID)
+			}
+		})
+	}
+}
+
+// Declaring an external prefix must never take a snapshot away from the
+// controller, even when the two conventions overlap.
+func TestSnapshotNamingControllerBeatsOverlappingExternalPrefix(t *testing.T) {
+	naming := SnapshotNaming{Prefix: "backup", ExternalPrefixes: []string{"backup-"}}
+	if owner, id, _ := naming.Classify("backup-20260111154511"); owner != OwnerController || id != "20260111154511" {
+		t.Errorf("got (%v, %q), want the controller's snapshot", owner, id)
 	}
 }

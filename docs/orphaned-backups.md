@@ -63,10 +63,52 @@ and 84 Operate parts. Names are classified in this order:
 
 1. `camunda_{operate|tasklist|optimize}_{id}_*` → a **component** snapshot
 2. `{namePrefix-}{YYYYMMDDHHMMSS}` → the **controller's** own
-3. anything else → **foreign** (an SLM policy, another cluster, another tool)
+3. `{externalPrefix}{YYYYMMDDHHMMSS}` for a prefix declared in
+   `ELASTICSEARCH_EXTERNAL_SNAPSHOT_PREFIXES_<ID>` → a declared **external**
+   backup job's (see [External backup jobs](#external-backup-jobs))
+4. anything else → **foreign** (an SLM policy, another cluster, another tool)
 
 The order matters: with no name prefix configured, rule 2 would otherwise
-swallow names that rule 1 should have claimed.
+swallow names that rule 1 should have claimed, and putting rule 2 before rule 3
+means declaring an external prefix can never take a snapshot away from the
+controller.
+
+### External backup jobs
+
+Another job may take backups of the same Camunda cluster — typically a cron job
+following Camunda's manual procedure, which backs up Operate, Tasklist and Zeebe
+through their APIs and the exported Zeebe records as an Elasticsearch snapshot
+named `camunda_zeebe_records_backup_<id>`, all under one backup ID.
+
+Its component backups carry no marker of who took them, so they always appear
+as untracked. Its records snapshot matches no convention the controller knows,
+so by default it is `A4_FOREIGN_SNAPSHOT`: reported once, and **not** among what
+deleting that backup removes.
+
+Declaring the job's prefix for the instance changes that:
+
+```bash
+ELASTICSEARCH_EXTERNAL_SNAPSHOT_PREFIXES_UMRAH_CAMUNDA=camunda_zeebe_records_backup_
+```
+
+- Each records snapshot becomes `A6_EXTERNAL_BACKUP` and joins its backup's row
+  on the Orphaned tab, alongside that backup's Operate/Tasklist/Zeebe parts.
+  Those parts are labelled `A6_EXTERNAL_BACKUP` too, rather than
+  `D4_RETENTION_RESIDUE`.
+- Deleting the row removes every part, records snapshot included, under every
+  guard in [§7](#7-acting-on-findings): a complete and recent scan, no backup
+  in flight, an unmoved endpoint, and an unambiguous owner. A shared snapshot
+  repository always refuses for external snapshots, because their names do not
+  identify an instance.
+- The prefix is matched literally — `camunda_zeebe_records_backup_` does not
+  match `camunda_zeebe_records_backup-<id>` — and only with a backup ID after
+  it, so a malformed `camunda_zeebe_records_backup_` stays foreign.
+- Backups younger than `RECONCILE_GRACE_PERIOD_MINUTES` are not reported, which
+  keeps a backup the job is still taking off the list. Retention never applies
+  to external backups: the controller has no record of them.
+
+There is no global default. Declaring a prefix authorises the controller to
+delete snapshots it did not create, so it is stated per instance.
 
 ---
 
@@ -85,6 +127,7 @@ backup that looks healthy and is not).
 | `A3_UNTRACKED_APP_ES_SNAPSHOT` | Component snapshots remain, but neither the controller nor the owning component knows the backup | warn |
 | `A4_FOREIGN_SNAPSHOT` | A snapshot matching no known convention | info |
 | `A5_UNTRACKED_LOG_FILE` | A log file with no history record | info |
+| `A6_EXTERNAL_BACKUP` | A backup taken by a declared external job (see [External backup jobs](#external-backup-jobs)) | info |
 
 Usual causes: backups triggered outside the controller; a changed `S3_PREFIX`,
 bucket or instance ID; a wiped metadata bucket.

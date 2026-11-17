@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,9 @@ type evidence struct {
 	now        time.Time
 	repository string
 	namePrefix string
+	// externalPrefixes are the declared external backup jobs' snapshot name
+	// prefixes. See elasticsearch.SnapshotNaming.
+	externalPrefixes []string
 
 	// records keeps duplicates from ListAllBackups on purpose: an ID appearing
 	// twice means it is filed in two directories.
@@ -52,6 +56,11 @@ func (e *evidence) reachable(source string) bool {
 	return ok && s.Reachable
 }
 
+// naming is how this sweep attributes snapshot names to owners.
+func (e *evidence) naming() elasticsearch.SnapshotNaming {
+	return elasticsearch.SnapshotNaming{Prefix: e.namePrefix, ExternalPrefixes: e.externalPrefixes}
+}
+
 // componentEndpoints maps a component name to its configured backup endpoint.
 func componentEndpoints(instance *models.CamundaInstance) map[string]string {
 	return map[string]string{
@@ -72,6 +81,7 @@ func (r *Reconciler) collect(ctx context.Context, instance *models.CamundaInstan
 		now:              r.now(),
 		repository:       r.cfg.GetElasticsearchSnapshotRepository(instance.ID, instance.ElasticsearchSnapshotRepository),
 		namePrefix:       r.cfg.GetElasticsearchSnapshotNamePrefix(instance.ID),
+		externalPrefixes: r.cfg.GetElasticsearchExternalSnapshotPrefixes(instance.ID),
 		componentBackups: make(map[string]map[string]camunda.ComponentBackupRecord),
 		logBackupIDs:     make(map[string]bool),
 		sources:          make(map[string]SourceStatus),
@@ -224,28 +234,35 @@ func (r *Reconciler) logSnapshotBreakdown(ev *evidence) {
 		return
 	}
 
-	var controller, component int
+	naming := ev.naming()
+	var controller, component, external int
 	var foreign []string
 	for _, snap := range ev.snapshots {
-		switch owner, _, _ := elasticsearch.ClassifySnapshot(snap.Name, ev.namePrefix); owner {
+		switch owner, _, _ := naming.Classify(snap.Name); owner {
 		case elasticsearch.OwnerController:
 			controller++
 		case elasticsearch.OwnerComponent:
 			component++
+		case elasticsearch.OwnerExternal:
+			external++
 		default:
 			foreign = append(foreign, snap.Name)
 		}
 	}
 
-	r.logger.Info("[reconcile] %s: repository %q holds %d snapshot(s): %d named like this controller's (%q), %d component-owned (camunda_<component>_<id>_...), %d match neither",
+	declared := "none declared"
+	if len(ev.externalPrefixes) > 0 {
+		declared = fmt.Sprintf("%q", ev.externalPrefixes)
+	}
+	r.logger.Info("[reconcile] %s: repository %q holds %d snapshot(s): %d named like this controller's (%q), %d component-owned (camunda_<component>_<id>_...), %d from declared external jobs (%s), %d match none",
 		ev.instance.ID, ev.repository, len(ev.snapshots), controller,
-		elasticsearch.BuildSnapshotName(ev.namePrefix, "<backupID>"), component, len(foreign))
+		elasticsearch.BuildSnapshotName(ev.namePrefix, "<backupID>"), component, external, declared, len(foreign))
 	if len(foreign) > 0 {
 		samples := foreign
 		if len(samples) > snapshotBreakdownSamples {
 			samples = samples[:snapshotBreakdownSamples]
 		}
-		r.logger.Info("[reconcile] %s: snapshots matching neither are left to their owner and never deleted, e.g. %s",
+		r.logger.Info("[reconcile] %s: unmatched snapshots are reported but never deleted; declare their job in ELASTICSEARCH_EXTERNAL_SNAPSHOT_PREFIXES_<ID> to manage them. e.g. %s",
 			ev.instance.ID, strings.Join(samples, ", "))
 	}
 }

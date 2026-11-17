@@ -22,8 +22,13 @@ const (
 	// OwnerComponent is a snapshot Operate, Tasklist or Optimize created as part
 	// of its own backup.
 	OwnerComponent SnapshotOwner = "component"
-	// OwnerForeign is a snapshot matching neither convention: an SLM policy,
-	// another cluster, or a different backup tool sharing the repository.
+	// OwnerExternal is a snapshot written by another backup job that the
+	// operator has declared for this instance by its name prefix (for example
+	// "camunda_zeebe_records_backup_" from Camunda's manual procedure). The
+	// controller did not create it, but has been told it may manage it.
+	OwnerExternal SnapshotOwner = "external"
+	// OwnerForeign is a snapshot matching no convention: an SLM policy,
+	// another cluster, or a backup tool nobody has declared.
 	OwnerForeign SnapshotOwner = "foreign"
 )
 
@@ -32,7 +37,7 @@ type SnapshotInfo struct {
 	Name         string
 	State        SnapshotState
 	Owner        SnapshotOwner
-	BackupID     string // resolved for controller and component snapshots
+	BackupID     string // resolved for controller, component and external snapshots
 	Component    string // operate/tasklist/optimize, for component snapshots
 	StartEpoch   int64
 	FailedShards int
@@ -122,26 +127,53 @@ func BuildSnapshotName(namePrefix, backupID string) string {
 	return namePrefix + "-" + backupID
 }
 
-// ClassifySnapshot resolves a snapshot name to its owner and backup ID.
+// SnapshotNaming is everything that decides who owns a snapshot name for one
+// instance: the controller's own name prefix, and the prefixes of any external
+// backup jobs the operator has declared.
+type SnapshotNaming struct {
+	// Prefix is the controller's configured name prefix (see BuildSnapshotName).
+	Prefix string
+	// ExternalPrefixes are matched literally: a name is external only when it
+	// is exactly one of these followed by a backup-ID-shaped string. Nothing is
+	// inserted between them, so the prefix must include any separator.
+	ExternalPrefixes []string
+}
+
+// ClassifySnapshot resolves a snapshot name to its owner and backup ID, for an
+// instance with no external backup jobs declared.
+func ClassifySnapshot(name, namePrefix string) (SnapshotOwner, string, string) {
+	return SnapshotNaming{Prefix: namePrefix}.Classify(name)
+}
+
+// Classify resolves a snapshot name to its owner, backup ID and (for component
+// snapshots) component.
 //
 // Order matters. The component pattern is checked first because a component
-// snapshot name contains a backup ID and would otherwise be mistaken for a
-// foreign name; the controller pattern is checked second because with an empty
-// name prefix it accepts any bare digit string.
-func ClassifySnapshot(name, namePrefix string) (SnapshotOwner, string, string) {
+// snapshot name contains a backup ID and would otherwise be mistaken for
+// another kind. The controller's own convention is checked before external
+// prefixes, so declaring an external prefix can never take a snapshot away
+// from the controller that wrote it. External prefixes are matched exactly and
+// only with a backup-ID-shaped remainder, so "camunda_zeebe_records_backup_"
+// with nothing after it stays foreign.
+func (n SnapshotNaming) Classify(name string) (SnapshotOwner, string, string) {
 	if m := componentSnapshotPattern.FindStringSubmatch(name); m != nil {
 		return OwnerComponent, m[2], m[1]
 	}
 
 	// The fixed part BuildSnapshotName puts in front of every backup ID.
-	candidate, ok := strings.CutPrefix(name, BuildSnapshotName(namePrefix, ""))
-	if !ok {
-		return OwnerForeign, "", ""
-	}
-
-	if camunda.IsBackupIDShaped(candidate) {
+	if candidate, ok := strings.CutPrefix(name, BuildSnapshotName(n.Prefix, "")); ok && camunda.IsBackupIDShaped(candidate) {
 		return OwnerController, candidate, ""
 	}
+
+	for _, prefix := range n.ExternalPrefixes {
+		if prefix == "" {
+			continue // would claim every bare backup ID; never meaningful
+		}
+		if candidate, ok := strings.CutPrefix(name, prefix); ok && camunda.IsBackupIDShaped(candidate) {
+			return OwnerExternal, candidate, ""
+		}
+	}
+
 	return OwnerForeign, "", ""
 }
 

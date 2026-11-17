@@ -293,6 +293,26 @@ func (c *Config) GetElasticsearchSnapshotNamePrefix(camundaInstanceID string) st
 	return c.DefaultElasticsearchSnapshotNamePrefix
 }
 
+// GetElasticsearchExternalSnapshotPrefixes returns the snapshot name prefixes
+// of external backup jobs the operator has declared for an instance, from the
+// comma-separated ELASTICSEARCH_EXTERNAL_SNAPSHOT_PREFIXES_<INSTANCE_ID>.
+//
+// There is deliberately no global default. Declaring a prefix lets the
+// controller list and delete snapshots it did not create, so it is an explicit
+// per-instance statement about who owns what in that instance's repository.
+func (c *Config) GetElasticsearchExternalSnapshotPrefixes(camundaInstanceID string) []string {
+	raw := os.Getenv("ELASTICSEARCH_EXTERNAL_SNAPSHOT_PREFIXES_" + NormalizeForEnvVar(camundaInstanceID))
+	var out []string
+	for _, p := range strings.Split(raw, ",") {
+		// Only surrounding whitespace is trimmed: a trailing "_" or "-" is part
+		// of the prefix and must survive.
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // GetS3SecretKey retrieves S3 secret key for a specific Camunda instance.
 // Priority: instance-specific env var > UI-stored secret > DefaultS3SecretKey.
 func (c *Config) GetS3SecretKey(camundaInstanceID string) string {

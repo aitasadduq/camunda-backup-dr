@@ -10,7 +10,7 @@ import (
 // description or without a place in the precedence order.
 var allReasonCodes = []ReasonCode{
 	ReasonUntrackedComponentBackup, ReasonUntrackedESSnapshot, ReasonUntrackedAppESSnapshot,
-	ReasonForeignSnapshot, ReasonUntrackedLogFile,
+	ReasonForeignSnapshot, ReasonUntrackedLogFile, ReasonExternalBackup,
 	ReasonDanglingComponentBackup, ReasonDanglingESSnapshot, ReasonDanglingAppESSnapshot,
 	ReasonDanglingLatestPointer, ReasonMissingLogFile,
 	ReasonStateDivergenceComponent, ReasonStateDivergenceES,

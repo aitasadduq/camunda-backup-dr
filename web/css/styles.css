@@ -66,6 +66,11 @@
     color: #92400e;
 }
 
+.badge-external {
+    background-color: #f3f4f6;
+    color: #374151;
+}
+
 .badge-pending {
     background-color: #e0e7ff;
     color: #3730a3;

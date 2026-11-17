@@ -151,6 +151,7 @@ var reasonPrecedence = []ReasonCode{
 	ReasonUntrackedComponentBackup,
 	ReasonUntrackedESSnapshot,
 	ReasonUntrackedAppESSnapshot,
+	ReasonExternalBackup,
 	ReasonStaleRunningRecord,
 	ReasonStaleInProgressComponent,
 	ReasonStaleInProgressES,

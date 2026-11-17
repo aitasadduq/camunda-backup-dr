@@ -68,7 +68,10 @@ type evidenceIndex struct {
 	// backup they belong to.
 	controllerSnapshots map[string]elasticsearch.SnapshotInfo
 	componentSnapshots  map[string][]elasticsearch.SnapshotInfo
-	foreignSnapshots    []elasticsearch.SnapshotInfo
+	// externalSnapshots are those of declared external backup jobs. A slice,
+	// because one ID can match more than one declared prefix.
+	externalSnapshots map[string][]elasticsearch.SnapshotInfo
+	foreignSnapshots  []elasticsearch.SnapshotInfo
 	// allComponentIDs is every backup ID any component reported.
 	allComponentIDs map[string]bool
 	// snapshotNames is every snapshot name in the repository. Membership is
@@ -82,6 +85,7 @@ func indexEvidence(ev *evidence) *evidenceIndex {
 		recordsByID:         make(map[string][]*models.BackupHistory),
 		controllerSnapshots: make(map[string]elasticsearch.SnapshotInfo),
 		componentSnapshots:  make(map[string][]elasticsearch.SnapshotInfo),
+		externalSnapshots:   make(map[string][]elasticsearch.SnapshotInfo),
 		allComponentIDs:     make(map[string]bool),
 		snapshotNames:       make(map[string]struct{}, len(ev.snapshots)),
 	}
@@ -90,9 +94,10 @@ func indexEvidence(ev *evidence) *evidenceIndex {
 		idx.recordsByID[rec.BackupID] = append(idx.recordsByID[rec.BackupID], rec)
 	}
 
+	naming := ev.naming()
 	for _, snap := range ev.snapshots {
 		idx.snapshotNames[snap.Name] = struct{}{}
-		owner, backupID, _ := elasticsearch.ClassifySnapshot(snap.Name, ev.namePrefix)
+		owner, backupID, _ := naming.Classify(snap.Name)
 		snap.Owner = owner
 		snap.BackupID = backupID
 		switch owner {
@@ -100,6 +105,8 @@ func indexEvidence(ev *evidence) *evidenceIndex {
 			idx.controllerSnapshots[backupID] = snap
 		case elasticsearch.OwnerComponent:
 			idx.componentSnapshots[backupID] = append(idx.componentSnapshots[backupID], snap)
+		case elasticsearch.OwnerExternal:
+			idx.externalSnapshots[backupID] = append(idx.externalSnapshots[backupID], snap)
 		default:
 			idx.foreignSnapshots = append(idx.foreignSnapshots, snap)
 		}
@@ -466,6 +473,24 @@ func classifyUntracked(ev *evidence, idx *evidenceIndex, opts Options) []Finding
 		})
 	}
 
+	// A6: a snapshot of a declared external backup job. Reported per backup, so
+	// it joins that backup's component artifacts in one row and is deleted with
+	// them, rather than being stranded when those are removed.
+	for backupID, snaps := range idx.externalSnapshots {
+		if len(idx.recordsByID[backupID]) > 0 || withinGrace(backupID, ev, opts) {
+			continue
+		}
+		for _, snap := range snaps {
+			out = append(out, Finding{
+				BackupID:     backupID,
+				Reason:       ReasonExternalBackup,
+				PresentIn:    []string{SourceElasticsearch},
+				SnapshotName: snap.Name,
+				Detail:       fmt.Sprintf("snapshot %q was written by a declared external backup job", snap.Name),
+			})
+		}
+	}
+
 	// A3: component snapshots whose owning component no longer knows about them.
 	for backupID, snaps := range idx.componentSnapshots {
 		if len(idx.recordsByID[backupID]) > 0 || withinGrace(backupID, ev, opts) {
@@ -532,6 +557,12 @@ func classifyUntracked(ev *evidence, idx *evidenceIndex, opts Options) []Finding
 func untrackedReason(ev *evidence, idx *evidenceIndex, backupID string, fallback ReasonCode) ReasonCode {
 	if !camunda.IsBackupIDShaped(backupID) {
 		return fallback
+	}
+
+	// A declared external job wrote a snapshot under this ID, so its component
+	// backups are that job's too, not residue from the controller's retention.
+	if len(idx.externalSnapshots[backupID]) > 0 {
+		return ReasonExternalBackup
 	}
 
 	// Artifacts spread across several sources with no record between them are
