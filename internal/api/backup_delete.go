@@ -210,6 +210,7 @@ type orphanIndex struct {
 	repository  string
 	endpoints   map[string]string
 	sweptAt     time.Time
+	window      *reconcile.Window
 	complete    bool
 	unreachable []string
 	err         error
@@ -239,6 +240,7 @@ func (h *Handlers) orphanIndexFor(instanceID string) *orphanIndex {
 	idx.repository = report.SnapshotRepository
 	idx.endpoints = report.ComponentEndpoints
 	idx.sweptAt = report.FinishedAt
+	idx.window = report.Window
 	idx.complete = report.AllSourcesReachable()
 	idx.unreachable = report.UnreachableSources()
 	for _, issue := range report.BackupIssues {
@@ -305,6 +307,14 @@ func (h *Handlers) isTracked(instanceID, backupID string) (bool, error) {
 func orphanArtifactsFor(orphans *orphanIndex, backupID string) (retention.OrphanArtifacts, error) {
 	if orphans.err != nil {
 		return retention.OrphanArtifacts{}, orphans.err
+	}
+
+	// A windowed scan describes only its own dates. Outside them the backup was
+	// neither found nor missed, so this says why instead of calling it "not an
+	// orphan", which would be a statement about something never looked at.
+	if !orphans.window.Contains(backupID) {
+		return retention.OrphanArtifacts{}, fmt.Errorf("%w (%s; the scan covered %s)",
+			utils.ErrOrphanOutsideWindow, backupID, orphans.window)
 	}
 
 	issue, found := orphans.issues[backupID]
@@ -384,6 +394,8 @@ func deleteFailureResponse(err error) (int, string, string) {
 		return http.StatusConflict, "unidentifiable", err.Error()
 	case errors.Is(err, utils.ErrOrphanReportPartial):
 		return http.StatusConflict, "report_partial", err.Error()
+	case errors.Is(err, utils.ErrOrphanOutsideWindow):
+		return http.StatusConflict, "outside_scan_window", err.Error()
 	case errors.Is(err, utils.ErrOrphanReportStale):
 		return http.StatusConflict, "report_stale", err.Error()
 	case errors.Is(err, utils.ErrOrphanEndpointDrift):

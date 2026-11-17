@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
@@ -95,10 +97,111 @@ func (c *HTTPClient) ListBackups(ctx context.Context, endpoint string) ([]Compon
 		return nil, fmt.Errorf("backup endpoint is required")
 	}
 
+	return c.listBackupsAt(ctx, strings.TrimRight(endpoint, "/"))
+}
+
+// DayBackupLister lists the backups a component holds for specific dates, by
+// asking for each date's backup-ID prefix.
+//
+// Only a component that answers a prefix query can offer this (Zeebe does,
+// verified against the deployed version; Operate does not). Asking for one day
+// at a time keeps each request small enough to finish inside the limits that
+// make a full listing of a large backup store fail.
+type DayBackupLister interface {
+	ListBackupsByDays(ctx context.Context, endpoint string, days []string) ([]ComponentBackupRecord, error)
+}
+
+// dayQueryWorkers bounds how many day queries run at once against one
+// component. They each make the component read its backup store.
+const dayQueryWorkers = 4
+
+// ListBackupsByDays fetches the backups for each given date (YYYYMMDD) with one
+// prefix query per day: GET <endpoint>/<YYYYMMDD>*.
+//
+// It succeeds only if every day's query did. A missing day would otherwise read
+// as "no backups that day" and turn into false findings, so the error names the
+// days that failed instead of returning what was gathered.
+func (c *HTTPClient) ListBackupsByDays(ctx context.Context, endpoint string, days []string) ([]ComponentBackupRecord, error) {
+	if endpoint == "" {
+		return nil, fmt.Errorf("backup endpoint is required")
+	}
+	base := strings.TrimRight(endpoint, "/")
+
+	type result struct {
+		day  string
+		recs []ComponentBackupRecord
+		err  error
+	}
+	results := make([]result, len(days))
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	workers := dayQueryWorkers
+	if workers > len(days) {
+		workers = len(days)
+	}
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range jobs {
+				day := days[idx]
+				recs, err := c.listBackupsAt(ctx, base+"/"+day+"*")
+				results[idx] = result{day: day, recs: recs, err: err}
+			}
+		}()
+	}
+	for i := range days {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+
+	byID := make(map[string]ComponentBackupRecord)
+	var failed []string
+	var firstErr error
+	for _, r := range results {
+		if r.err != nil {
+			failed = append(failed, r.day)
+			if firstErr == nil {
+				firstErr = r.err
+			}
+			continue
+		}
+		for _, rec := range r.recs {
+			byID[rec.BackupID] = rec
+		}
+	}
+	if len(failed) > 0 {
+		return nil, fmt.Errorf("listing by day failed for %d of %d days (%s): %w",
+			len(failed), len(days), summarizeDays(failed), firstErr)
+	}
+
+	out := make([]ComponentBackupRecord, 0, len(byID))
+	for _, rec := range byID {
+		out = append(out, rec)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].BackupID < out[j].BackupID })
+	return out, nil
+}
+
+// summarizeDays names the first few days in a list.
+func summarizeDays(days []string) string {
+	const shown = 5
+	if len(days) <= shown {
+		return strings.Join(days, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(days[:shown], ", "), len(days)-shown)
+}
+
+// listBackupsAt performs one listing request and decodes it. Both the full
+// listing and each day's query go through it, so they fail with the same
+// diagnostics.
+func (c *HTTPClient) listBackupsAt(ctx context.Context, listURL string) ([]ComponentBackupRecord, error) {
+	endpoint := listURL
 	target := utils.RedactURL(endpoint)
 	started := time.Now()
 
-	resp, err := c.GetListing(ctx, strings.TrimRight(endpoint, "/"), nil)
+	resp, err := c.GetListing(ctx, listURL, nil)
 	if err != nil {
 		return nil, c.DescribeListFailure(ctx, "list backups", err, started)
 	}

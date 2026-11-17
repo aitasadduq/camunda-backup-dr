@@ -3,9 +3,13 @@ package camunda
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -446,5 +450,93 @@ func TestListBackupsKeepsLastAttemptWhenScanBudgetEndsRetries(t *testing.T) {
 	_, err := client.ListBackups(ctx, server.URL)
 	if err == nil || !strings.Contains(err.Error(), "RECONCILE_TIMEOUT_SECONDS") || !strings.Contains(err.Error(), "broker unavailable") {
 		t.Errorf("error should name the scan budget and keep the 503, got: %v", err)
+	}
+}
+
+// One prefix query per day, merged by backup ID.
+func TestListBackupsByDays(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.EscapedPath()) // as sent: "*" must not be %2A
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/actuator/backups/20261110*":
+			_, _ = w.Write([]byte(`[{"backupId":20261110080000,"state":"COMPLETED"},{"backupId":20261110083000,"state":"COMPLETED"}]`))
+		case "/actuator/backups/20261111*":
+			_, _ = w.Write([]byte(`[{"backupId":20261111080000,"state":"COMPLETED"}]`))
+		default:
+			w.WriteHeader(http.StatusNotFound) // a day with no backups
+		}
+	}))
+	defer server.Close()
+
+	got, err := newTestClient(t).ListBackupsByDays(context.Background(), server.URL+"/actuator/backups/",
+		[]string{"20261110", "20261111", "20261112"})
+	if err != nil {
+		t.Fatalf("ListBackupsByDays: %v", err)
+	}
+	if len(got) != 3 || got[0].BackupID != "20261110080000" || got[2].BackupID != "20261111080000" {
+		t.Errorf("got %+v, want the 3 backups, sorted by ID", got)
+	}
+	sort.Strings(paths)
+	want := []string{"/actuator/backups/20261110*", "/actuator/backups/20261111*", "/actuator/backups/20261112*"}
+	if !reflect.DeepEqual(paths, want) {
+		t.Errorf("requested %v, want %v", paths, want)
+	}
+}
+
+// One failed day must fail the whole listing and say which day. Returning what
+// the other days held would read as "no backups on that day".
+func TestListBackupsByDaysFailsNamingTheDays(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "20261111*") || strings.HasSuffix(r.URL.Path, "20261113*") {
+			w.WriteHeader(http.StatusGatewayTimeout)
+			_, _ = w.Write([]byte("broker timed out"))
+			return
+		}
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	got, err := newTestClient(t).ListBackupsByDays(context.Background(), server.URL,
+		[]string{"20261110", "20261111", "20261112", "20261113"})
+	if err == nil {
+		t.Fatalf("expected an error, got %+v", got)
+	}
+	for _, want := range []string{"2 of 4 days", "20261111", "20261113", "broker timed out"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should mention %q, got: %v", want, err)
+		}
+	}
+}
+
+// Each day's query hits the component's backup store, so they are bounded.
+func TestListBackupsByDaysBoundsConcurrency(t *testing.T) {
+	var inFlight, peak atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := inFlight.Add(1)
+		for {
+			p := peak.Load()
+			if n <= p || peak.CompareAndSwap(p, n) {
+				break
+			}
+		}
+		time.Sleep(30 * time.Millisecond)
+		inFlight.Add(-1)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	days := make([]string, 20)
+	for i := range days {
+		days[i] = fmt.Sprintf("202611%02d", i+1)
+	}
+	if _, err := newTestClient(t).ListBackupsByDays(context.Background(), server.URL, days); err != nil {
+		t.Fatal(err)
+	}
+	if p := peak.Load(); p > dayQueryWorkers {
+		t.Errorf("peak concurrency %d exceeds the limit of %d", p, dayQueryWorkers)
 	}
 }

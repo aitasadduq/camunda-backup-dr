@@ -75,6 +75,8 @@ const state = {
     instances: [],
     selectedInstanceId: null,
     backupFilter: 'all',
+    backupRange: null,           // {preset, from, to} for the selected instance; see currentBackupRange()
+    backupRangeInstanceId: null,
     pollingIntervalId: null,
     activeBackupInstanceId: null,
     activeBackupId: null,
@@ -1341,6 +1343,7 @@ async function loadBackupsTab() {
         state.selectedInstanceId = sel;
         const select = document.getElementById('backup-instance-select');
         if (select) select.value = sel;
+        renderRangeRow(); // the range is per instance, and the selection was only just settled
         loadBackups(sel, state.backupFilter);
     } catch (err) {
         const el = document.getElementById('backups-table-container');
@@ -1366,7 +1369,7 @@ function renderBackupsTabControls(instances) {
                 ${instances.map(i => `<option value="${i.id}" ${i.id === state.selectedInstanceId ? 'selected' : ''}>${escapeHtml(i.name)}</option>`).join('')}
             </select>
             <div class="flex gap-1 flex-wrap">
-                ${['all', 'completed', 'failed', 'incomplete', 'orphaned'].map(f => `
+                ${['all', 'completed', 'failed', 'incomplete', 'orphaned', 'external'].map(f => `
                     <button onclick="filterBackups('${f}')"
                         class="px-3 py-1 text-xs font-medium rounded-full transition-colors ${state.backupFilter === f ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}"
                         data-filter="${f}">
@@ -1384,7 +1387,194 @@ function renderBackupsTabControls(instances) {
                 </svg>
             </button>
         </div>
+        <div id="backup-range-row" class="backup-range-row"></div>
     `;
+    renderRangeRow();
+}
+
+// ============================================================
+// Date range
+// ============================================================
+// One range for every tab. It is a range of backup IDs' dates, not wall-clock
+// time: the controller stamps IDs in UTC, and the presets are computed in UTC to
+// match. Tracked tabs filter by it as soon as it changes; the Orphaned and
+// External tabs read a stored scan, which has its own range and is rescanned
+// with this one.
+const RANGE_PRESETS = [
+    { value: 'all', label: 'All time' },
+    { value: '7', label: 'Last 7 days' },
+    { value: '30', label: 'Last 30 days' },
+    { value: 'custom', label: 'Custom\u2026' },
+];
+const RANGE_MAX_DAYS = 366;
+
+function utcDateString(d) { return d.toISOString().slice(0, 10); }
+
+// A preset ends TOMORROW (UTC): a job running ahead of UTC stamps tomorrow's
+// date on IDs for part of every night, and a range ending today would miss them.
+function presetWindow(days) {
+    const to = new Date();
+    to.setUTCDate(to.getUTCDate() + 1);
+    const from = new Date(to);
+    from.setUTCDate(from.getUTCDate() - (days - 1));
+    return { from: utcDateString(from), to: utcDateString(to) };
+}
+
+function loadBackupRange(instanceId) {
+    try {
+        const raw = localStorage.getItem(`backupRange:${instanceId}`);
+        if (raw) {
+            const r = JSON.parse(raw);
+            if (RANGE_PRESETS.some(p => p.value === r.preset)) return r;
+        }
+    } catch (e) { /* storage unavailable: fall through to the default */ }
+    return { preset: 'all' };
+}
+
+function saveBackupRange(instanceId, range) {
+    try { localStorage.setItem(`backupRange:${instanceId}`, JSON.stringify(range)); } catch (e) { /* a convenience only */ }
+}
+
+function currentBackupRange() {
+    if (!state.backupRange || state.backupRangeInstanceId !== state.selectedInstanceId) {
+        state.backupRange = loadBackupRange(state.selectedInstanceId);
+        state.backupRangeInstanceId = state.selectedInstanceId;
+    }
+    return state.backupRange;
+}
+
+// The range as {from, to}, or null for all time (or an incomplete custom range).
+function rangeWindow(range = currentBackupRange()) {
+    if (range.preset === '7' || range.preset === '30') return presetWindow(Number(range.preset));
+    if (range.preset === 'custom' && validateCustomRange(range.from, range.to) === null) {
+        return { from: range.from, to: range.to };
+    }
+    return null;
+}
+
+// null when valid, otherwise a message to show.
+function validateCustomRange(from, to) {
+    if (!from || !to) return 'Choose both dates.';
+    if (from > to) return 'The start date is after the end date.';
+    const days = Math.round((Date.parse(to) - Date.parse(from)) / 86400000) + 1;
+    if (days > RANGE_MAX_DAYS) return `At most ${RANGE_MAX_DAYS} days at a time (this is ${days}).`;
+    return null;
+}
+
+function rangeQuery(win, first = true) {
+    if (!win) return '';
+    return `${first ? '?' : '&'}from=${win.from}&to=${win.to}`;
+}
+
+function rangeLabel(win) {
+    return win ? `${win.from} to ${win.to}` : 'all time';
+}
+
+// Is an ID's date inside a range? A null range holds everything.
+function idInWindow(backupId, win) {
+    if (!win) return true;
+    if (!/^\d{8}/.test(backupId || '')) return false;
+    const day = backupId.slice(0, 8);
+    return day >= win.from.replaceAll('-', '') && day <= win.to.replaceAll('-', '');
+}
+
+// Does a scan's range cover what the user selected? A scan of all time covers
+// everything; otherwise the selection must lie inside it.
+function scanCoversRange(reportWindow, selected) {
+    if (!reportWindow) return true;
+    if (!selected) return false;
+    return selected.from >= reportWindow.from && selected.to <= reportWindow.to;
+}
+
+function sameWindow(a, b) {
+    if (!a || !b) return !a && !b;
+    return a.from === b.from && a.to === b.to;
+}
+
+function renderRangeRow() {
+    const row = document.getElementById('backup-range-row');
+    if (!row) return;
+    const range = currentBackupRange();
+    const custom = range.preset === 'custom';
+    const error = custom ? validateCustomRange(range.from, range.to) : null;
+    row.innerHTML = `
+        <label for="backup-range-select" class="text-xs text-gray-500">Backup dates</label>
+        <select id="backup-range-select" onchange="onBackupRangePreset(this.value)"
+            class="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            ${RANGE_PRESETS.map(p => `<option value="${p.value}" ${p.value === range.preset ? 'selected' : ''}>${p.label}</option>`).join('')}
+        </select>
+        ${custom ? `
+            <input type="date" id="backup-range-from" value="${escapeHtml(range.from || '')}" aria-label="From date"
+                onchange="onBackupRangeCustom()"
+                class="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <span class="text-xs text-gray-500">to</span>
+            <input type="date" id="backup-range-to" value="${escapeHtml(range.to || '')}" aria-label="To date"
+                onchange="onBackupRangeCustom()"
+                class="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+        ` : ''}
+        <span class="backup-range-hint">By backup ID date (UTC for backups made here). Refresh rescans this range.</span>
+        ${error ? `<span class="backup-range-error" role="alert">${escapeHtml(error)}</span>` : ''}
+    `;
+}
+
+function onBackupRangePreset(value) {
+    const prev = currentBackupRange();
+    const next = { preset: value };
+    if (value === 'custom') {
+        // Start from what was showing, so the dates are valid immediately.
+        const w = rangeWindow(prev) || presetWindow(7);
+        next.from = w.from;
+        next.to = w.to;
+    }
+    applyBackupRange(next);
+}
+
+function onBackupRangeCustom() {
+    const from = document.getElementById('backup-range-from')?.value || '';
+    const to = document.getElementById('backup-range-to')?.value || '';
+    applyBackupRange({ preset: 'custom', from, to });
+}
+
+function applyBackupRange(range) {
+    state.backupRange = range;
+    state.backupRangeInstanceId = state.selectedInstanceId;
+    saveBackupRange(state.selectedInstanceId, range);
+    renderRangeRow();
+    // An incomplete or invalid custom range is shown as an error, not applied.
+    if (range.preset === 'custom' && validateCustomRange(range.from, range.to) !== null) return;
+    if (state.selectedInstanceId) loadBackups(state.selectedInstanceId, state.backupFilter);
+}
+
+// A rescan runs on the server independently of this request, so a dropped
+// connection or a gateway timeout does not mean it failed. When the answer did
+// not arrive, ask for the stored report until a newer one appears.
+const SCAN_POLL_INTERVAL_MS = 3000;
+const SCAN_POLL_MAX_MS = 6 * 60 * 1000;
+
+async function runScan(instanceId, win) {
+    const previous = reconcileReport?._instanceId === instanceId ? reconcileReport.finished_at : null;
+    try {
+        return await api.post(`api/camundas/${instanceId}/backups/reconcile`, win || undefined);
+    } catch (err) {
+        const inProgress = err.status === 409 && err.errorType === 'sweep_in_progress';
+        const lostAnswer = [0, 502, 503, 504, 524].includes(err.status);
+        if (!inProgress && !lostAnswer) throw err;
+        showToast(inProgress
+            ? 'A scan is already running; waiting for it to finish\u2026'
+            : 'Lost the connection while scanning; the scan continues on the server. Waiting for it\u2026', 'info');
+    }
+
+    const deadline = Date.now() + SCAN_POLL_MAX_MS;
+    while (Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, SCAN_POLL_INTERVAL_MS));
+        try {
+            const report = await api.get(`api/camundas/${instanceId}/backups/reconcile`);
+            if (report && report.finished_at !== previous) return report;
+        } catch (err) {
+            if (err.status !== 404 && err.status !== 0 && err.status !== 502 && err.status !== 504) throw err;
+        }
+    }
+    throw { status: 0, message: 'The scan is still running after several minutes. Reload the page later to see its result.' };
 }
 
 // The refresh control on the Backups tab. It rescans as well as reloading,
@@ -1399,10 +1589,15 @@ async function refreshBackups() {
     if (btn) btn.disabled = true;
 
     try {
-        const report = await api.post(`api/camundas/${instanceId}/backups/reconcile`);
+        const wanted = rangeWindow();
+        const report = await runScan(instanceId, wanted);
         report._instanceId = instanceId;
         reconcileReport = report;
         await getReasonCatalog();
+        if (!sameWindow(report.window || null, wanted)) {
+            // Waited on a scan another request had started, with another range.
+            showToast(`The scan that finished covers ${rangeLabel(report.window)}, not ${rangeLabel(wanted)}. Refresh again to scan your range.`, 'info');
+        }
     } catch (err) {
         // A failed scan must not block the reload: the backup history is still
         // worth showing, just without fresh orphan data.
@@ -1429,6 +1624,7 @@ function renderBackupsEmptyState() {
 
 function onBackupInstanceChange(instanceId) {
     state.selectedInstanceId = instanceId;
+    renderRangeRow();
     loadBackups(instanceId, state.backupFilter);
 }
 
@@ -1452,18 +1648,20 @@ async function loadBackups(instanceId, filter) {
 
     el.innerHTML = '<div class="flex justify-center py-8"><div class="spinner"></div></div>';
 
+    const selectedRange = rangeWindow();
     let path;
     switch (filter) {
-        case 'completed': path = `api/camundas/${instanceId}/backups?status=COMPLETED`; break;
-        case 'failed': path = `api/camundas/${instanceId}/backups/failed`; break;
-        case 'incomplete': path = `api/camundas/${instanceId}/backups/incomplete`; break;
-        default: path = `api/camundas/${instanceId}/backups`;
+        case 'completed': path = `api/camundas/${instanceId}/backups?status=COMPLETED${rangeQuery(selectedRange, false)}`; break;
+        case 'failed': path = `api/camundas/${instanceId}/backups/failed${rangeQuery(selectedRange)}`; break;
+        case 'incomplete': path = `api/camundas/${instanceId}/backups/incomplete${rangeQuery(selectedRange)}`; break;
+        default: path = `api/camundas/${instanceId}/backups${rangeQuery(selectedRange)}`;
     }
 
     // Orphans have no history record, so they never come back from the backup
     // endpoints. They are folded in from the reconciliation report instead.
-    if (filter === 'orphaned') {
-        await loadOrphanedBackups(instanceId);
+    // Backups of a declared external job are the same kind of row, on their own tab.
+    if (filter === 'orphaned' || filter === 'external') {
+        await loadOrphanedBackups(instanceId, filter);
         return;
     }
 
@@ -1477,7 +1675,8 @@ async function loadBackups(instanceId, filter) {
             // A report can be older than the backup list it is merged into, so a
             // backup recorded since the last scan would otherwise appear twice -
             // once real, once as a stale orphan. The live list always wins.
-            const orphans = (await loadOrphanRows(instanceId)).filter(o => !known.has(o.backup_id));
+            const orphans = (await loadOrphanRows(instanceId))
+                .filter(o => !known.has(o.backup_id) && idInWindow(o.backup_id, selectedRange));
             rows = rows.concat(orphans);
             rows.sort((a, b) => new Date(b.start_time || 0) - new Date(a.start_time || 0));
         }
@@ -1507,8 +1706,9 @@ function renderScanNote() {
         : '';
     return `
         <div class="text-xs text-gray-500 mb-3">
-            Orphaned backups from the scan of ${escapeHtml(formatTime(reconcileReport.finished_at))}.${warn}
+            Orphaned and external backups from the scan of ${escapeHtml(formatTime(reconcileReport.finished_at))}.${warn}
         </div>
+        ${renderScanCoverage(reconcileReport)}
     `;
 }
 
@@ -1530,8 +1730,9 @@ function renderBackupsTable(instanceId, backups, opts = {}) {
         const report = opts.report;
         const partial = report && !Object.values(report.sources_checked || {})
             .every(s => s.reachable || s.skipped);
+        const none = state.backupFilter === 'external' ? 'No external backups found' : 'No orphaned backups found';
         const title = report
-            ? (partial ? 'No issues found in the sources that could be checked' : 'No orphaned backups found')
+            ? (partial ? 'No issues found in the sources that could be checked' : none)
             : 'No Backups Found';
         const sub = report
             ? (partial
@@ -1855,7 +2056,10 @@ function clearBackupSelection(syncDom = false) {
 // ============================================================
 async function confirmDeleteBackup(instanceId, backupId, status) {
     const orphan = status === 'ORPHANED';
-    const message = orphan
+    const external = orphan && isExternalBackupId(backupId);
+    const message = external
+        ? `Delete external backup ${backupId}? It was taken by another backup job, not by this controller. This removes its data from every component and snapshot the last scan found it in, including the snapshots that job wrote. The controller has no record of it, so it cannot be restored afterwards.`
+        : orphan
         ? `Delete orphaned backup ${backupId}? This removes the leftover data from every component and snapshot the last scan found it in. The controller has no record of this backup, so it cannot be restored afterwards.`
         : `Delete backup ${backupId}? This removes the snapshot from Elasticsearch and every Camunda component as well. This action cannot be undone.`;
 
@@ -2633,6 +2837,10 @@ function isExternalBackup(issue) {
     return issue?.primary_reason === 'A6_EXTERNAL_BACKUP';
 }
 
+function isExternalBackupId(backupId) {
+    return isExternalBackup((reconcileReport?.backup_issues || []).find(i => i.backup_id === backupId && !i.tracked));
+}
+
 // Orphans have no history record, so a backup-shaped row is synthesised from the
 // finding. Only the backup ID and its timestamp are real; everything the history
 // record would have supplied is genuinely unknown and left null for the table to
@@ -2679,7 +2887,7 @@ async function loadOrphanRows(instanceId) {
     }
 }
 
-async function loadOrphanedBackups(instanceId) {
+async function loadOrphanedBackups(instanceId, kind = 'orphaned') {
     const el = document.getElementById('backups-table-container');
     if (!el) return;
     el.innerHTML = '<div class="flex justify-center py-8"><div class="spinner"></div></div>';
@@ -2713,8 +2921,13 @@ async function loadOrphanedBackups(instanceId) {
         return;
     }
 
+    // The same rows split in two: those a declared external job took, and the
+    // rest. Both are deleted the same way; they differ in whose they are.
+    const selected = rangeWindow();
     const rows = (report.backup_issues || [])
         .filter(i => !i.tracked && !tracked.has(i.backup_id))
+        .filter(i => isExternalBackup(i) === (kind === 'external'))
+        .filter(i => idInWindow(i.backup_id, selected))
         .map(orphanToBackupRow);
     renderBackupsTable(instanceId, rows, { report });
 }
@@ -2729,6 +2942,25 @@ function renderReconcileNeverRun() {
             <p class="text-sm mt-1">Use the refresh button above to compare this instance's backup records against the data that actually exists in Zeebe, the Camunda components and Elasticsearch.</p>
         </div>
     `;
+}
+
+// What dates the scan covered, and whether that includes what is selected. A
+// scan of a range says nothing about backups outside it; showing less than was
+// asked for without saying so would read as "nothing there".
+function renderScanCoverage(report) {
+    if (!report) return '';
+    const selected = rangeWindow();
+    const scanned = report.window || null;
+    const covers = scanCoversRange(scanned, selected);
+    const note = scanned
+        ? `Scanned backups dated ${escapeHtml(rangeLabel(scanned))}. Backups outside that range were not assessed.`
+        : 'Scanned backups of all dates.';
+    const warn = covers ? '' : `
+        <div class="reconcile-partial">
+            <strong>This scan does not cover the dates you selected (${escapeHtml(rangeLabel(selected))}).</strong>
+            Use the refresh button to scan them.
+        </div>`;
+    return `<div class="text-xs text-gray-500 mb-2">${note}</div>${warn}`;
 }
 
 // A scan that could not reach every source proves nothing about what it did not
@@ -2801,6 +3033,7 @@ function renderReconcileHeader(report) {
     return `
         <div class="mb-4">
             <div class="text-sm text-gray-600 mb-2">Last scanned ${escapeHtml(formatTime(report.finished_at))}</div>
+            ${renderScanCoverage(report)}
             <div class="flex flex-wrap gap-1 mb-3">${chips}</div>
             ${partial}
             ${instanceBanners}

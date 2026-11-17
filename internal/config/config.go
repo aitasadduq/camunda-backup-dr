@@ -46,6 +46,7 @@ type Config struct {
 	// Reconciliation (orphaned backup detection)
 	ReconcileEnabled            bool
 	ReconcileTimeoutSeconds     int
+	ReconcileWindowDays         int // automatic sweeps cover the last N days of backup IDs; 0 = all time
 	ReconcileGracePeriodMinutes int
 	ReconcileStaleAfterMinutes  int
 
@@ -131,6 +132,7 @@ func Load() (*Config, error) {
 		// artifacts that are still being written.
 		ReconcileEnabled:            getEnv("RECONCILE_ENABLED", "true") == "true",
 		ReconcileTimeoutSeconds:     getEnvAsInt("RECONCILE_TIMEOUT_SECONDS", 120),
+		ReconcileWindowDays:         getEnvAsInt("RECONCILE_WINDOW_DAYS", 0),
 		ReconcileGracePeriodMinutes: getEnvAsInt("RECONCILE_GRACE_PERIOD_MINUTES", 15),
 		ReconcileStaleAfterMinutes:  getEnvAsInt("RECONCILE_STALE_AFTER_MINUTES", 30),
 		ComponentListTimeoutSeconds: getEnvAsInt("COMPONENT_LIST_TIMEOUT_SECONDS", 90),
@@ -192,6 +194,10 @@ func (c *Config) Validate() error {
 	}
 
 	if c.DefaultBackupMaxAttempts <= 0 {
+		return utils.ErrInvalidConfiguration
+	}
+
+	if c.ReconcileWindowDays < 0 || c.ReconcileWindowDays > 366 {
 		return utils.ErrInvalidConfiguration
 	}
 

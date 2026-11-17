@@ -294,8 +294,16 @@ duration, trigger, components — show an em dash, because those values are
 genuinely unknown rather than zero. The start time is real: it is decoded from
 the backup ID. A one-line note says which scan the orphan rows came from.
 
-**The Orphaned tab** shows only those rows, plus the scan header: per-source
-health chips and any instance-wide findings.
+**The Orphaned tab** shows only the real orphans, plus the scan header:
+per-source health chips and any instance-wide findings.
+
+**The External tab** shows the backups of a declared
+[external job](#external-backup-jobs) (`A6_EXTERNAL_BACKUP`), so they are not
+mixed in with real orphans. The rows and delete flow are the same; the
+confirmation says the backup was taken by another job.
+
+**The date range**, above the tabs, applies to every tab. See
+[Date ranges](#date-ranges).
 
 **The refresh button**, at the right of the filter row, is present on every tab.
 It runs a fresh scan and then reloads the current view. It rescans rather than
@@ -318,6 +326,52 @@ marker. Its details modal grows an *Issues found by the last scan* section. A
 backup recorded as `COMPLETED` whose data has actually gone should not look
 simply fine.
 
+### Date ranges
+
+A scan can be limited to the backups whose ID falls on a range of dates. This
+is what makes a scan possible when a source holds too many backups to list in
+one request — for example Zeebe, whose gateway gives up on a listing after its
+own 15-second limit (`504 … timed out in PT15S`) once the backup store is large.
+
+The **Backup dates** control above the tabs offers *All time* (the default),
+*Last 7 days*, *Last 30 days* and *Custom…*. It is remembered per instance in the
+browser.
+
+- **Tracked tabs** (All, Completed, Failed, Incomplete) filter by it as soon as
+  it changes.
+- **Orphaned and External** read the stored scan, which has its own range. If the
+  scan does not cover what you selected, the tab says so and the refresh button
+  scans the selected range. It never shows less than you asked for without
+  saying.
+- The dates are **backup-ID dates**, not wall-clock time. The controller stamps
+  IDs in UTC. The presets end *tomorrow* (UTC), because a job running ahead of
+  UTC stamps tomorrow's date on IDs for part of every night.
+
+How the range becomes queries:
+
+| Source | With a range |
+|---|---|
+| Zeebe | One prefix query per day, `GET {endpoint}/{YYYYMMDD}*`, four at a time, merged. It counts as reachable only if every day succeeded; the error names the days that failed. |
+| Operate, Tasklist, Optimize | Listed in full, then filtered. They do not accept a prefix, so they have no per-day form. |
+| Elasticsearch | Listed in full first, using at most half the scan's time. If that fails, one `GET /_snapshot/{repo}/{pattern},…` per day, with a wildcard per prefix: the controller's, each component's, and each declared external job's. |
+| Controller records and log files | Listed, then filtered. |
+
+With **All time** there are no days to enumerate, so none of these fall back:
+a listing that fails stays failed, and the error suggests choosing a range.
+
+What a ranged scan concludes is about the range only:
+
+- A backup outside it is **not assessed**: in no finding, neither present nor
+  missing nor untracked.
+- The latest-backup pointer is not judged when it names a backup outside the
+  range. Other instance-level checks compare the in-range records with the
+  in-range Zeebe listing, so they stay meaningful.
+- The report carries the range (`window`), and **an orphan outside it cannot be
+  deleted** (`409 outside_scan_window`), on top of every other guard in
+  [§7](#7-acting-on-findings).
+- Scanning one range after another, deleting what is found in each, is how a
+  large backlog is cleared without ever listing it all at once.
+
 ### API
 
 ```bash
@@ -327,6 +381,14 @@ curl -s http://localhost:8080/api/camundas/{id}/backups/reconcile
 # Run a sweep now
 curl -s -X POST -H 'X-Requested-With: XMLHttpRequest' \
   http://localhost:8080/api/camundas/{id}/backups/reconcile
+
+# Run a sweep over a range of backup-ID dates
+curl -s -X POST -H 'X-Requested-With: XMLHttpRequest' -H 'Content-Type: application/json' \
+  -d '{"from":"2026-11-01","to":"2026-11-17"}' \
+  http://localhost:8080/api/camundas/{id}/backups/reconcile
+
+# The tracked lists accept the same range
+curl -s 'http://localhost:8080/api/camundas/{id}/backups?from=2026-11-01&to=2026-11-17'
 
 # Reason catalogue: every code with label, impact and remediation
 curl -s http://localhost:8080/api/reconcile/reasons
@@ -339,7 +401,10 @@ findings (a sweep ran and found nothing) — they are genuinely different answer
 
 ### When it runs
 
-- **On demand**, via the endpoint or the refresh button on the Backups tab.
+- **On demand**, via the endpoint or the refresh button on the Backups tab. The
+  sweep runs independently of the request: if the browser disconnects or a
+  gateway times the request out, it still finishes and stores its report, and the
+  UI then waits for that report instead of failing.
 - **After every backup**, on all terminal states. This is hooked to the orchestrator rather than to retention on purpose: retention runs only for `COMPLETED` and `FAILED`, and an `INCOMPLETE` backup is exactly the case that leaves artifacts behind with no metadata.
 
 Sweeps run asynchronously with their own timeout and can never delay or fail a
@@ -352,6 +417,7 @@ quietly if one is already running, and the endpoint answers `409`.
 |---|---|---|
 | `RECONCILE_ENABLED` | `true` | Post-backup sweeps. On-demand stays available when off. |
 | `RECONCILE_TIMEOUT_SECONDS` | `120` | Cap on one sweep. |
+| `RECONCILE_WINDOW_DAYS` | `0` | Limit the automatic post-backup sweep to the last N days of backup IDs (ending tomorrow, UTC). `0` is all time. An on-demand sweep chooses its own range. |
 | `COMPONENT_LIST_TIMEOUT_SECONDS` | `90` | Cap on one complete listing (a component's backups, or the snapshot repository). Not retried when it runs out or a gateway answers 408/504. Keep below `RECONCILE_TIMEOUT_SECONDS`. |
 | `RECONCILE_GRACE_PERIOD_MINUTES` | `15` | Backups younger than this are skipped. Must exceed the polling window. |
 | `RECONCILE_STALE_AFTER_MINUTES` | `30` | How long in-progress may last before it is called stuck. |
@@ -402,6 +468,9 @@ one of these is a refusal rather than a best effort:
   the unreachable-source guard applied to deletion: absence of evidence never
   justifies concluding an artifact is gone, and it never justifies removing one.
 - **A sweep older than an hour authorises nothing** (`409 report_stale`).
+- **A ranged sweep authorises nothing outside its range**
+  (`409 outside_scan_window`).
+  The scan never looked there.
 - **Endpoints must not have moved** (`409 endpoint_drift`). The sweep records
   where it found the backup; the same timestamp ID names a different, live backup
   in another environment.

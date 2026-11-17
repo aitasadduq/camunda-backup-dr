@@ -113,7 +113,10 @@ func (r *Reconciler) now() time.Time {
 // A sweep does not fail because a source is down: the unreachable source is
 // recorded as such and every conclusion that would have depended on it is
 // withheld. The report says what it could not check.
-func (r *Reconciler) Reconcile(ctx context.Context, instance *models.CamundaInstance) (*Report, error) {
+//
+// A non-nil window limits the sweep to the backups whose ID falls in that range
+// of dates, and the report records it. Anything outside it is not assessed.
+func (r *Reconciler) Reconcile(ctx context.Context, instance *models.CamundaInstance, window *Window) (*Report, error) {
 	if instance == nil {
 		return nil, fmt.Errorf("camunda instance is nil")
 	}
@@ -124,9 +127,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, instance *models.CamundaInst
 	defer r.sweepRunning.Store(false)
 
 	started := r.now()
-	r.logger.Info("[reconcile] Starting sweep for instance %s", instance.ID)
+	r.logger.Info("[reconcile] Starting sweep for instance %s (%s)", instance.ID, window)
 
-	ev := r.collect(ctx, instance)
+	ev := r.collect(ctx, instance, window)
 	findings := classify(ev, r.opts)
 	if inFlight := ev.untrackedInFlight(); len(inFlight) > 0 {
 		ids := make([]string, 0, len(inFlight))
@@ -144,6 +147,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, instance *models.CamundaInst
 	}
 
 	report := Rollup(instance.ID, findings, tracked, ev.sources, observedSnapshots(ev), started, r.now())
+	report.Window = window
 	report.SnapshotRepository = ev.repository
 	report.ComponentEndpoints = make(map[string]string)
 	for name, endpoint := range componentEndpoints(instance) {

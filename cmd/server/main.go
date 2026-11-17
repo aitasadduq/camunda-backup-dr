@@ -165,7 +165,7 @@ func main() {
 			sweepCtx, cancel := context.WithTimeout(context.Background(),
 				time.Duration(cfg.ReconcileTimeoutSeconds)*time.Second)
 			defer cancel()
-			if _, err := reconciler.Reconcile(sweepCtx, instance); err != nil {
+			if _, err := reconciler.Reconcile(sweepCtx, instance, reconcile.LastDays(cfg.ReconcileWindowDays, time.Now())); err != nil {
 				if errors.Is(err, reconcile.ErrSweepInProgress) {
 					logger.Info("Skipping post-backup reconciliation for %s: a sweep is already running", instance.ID)
 					return

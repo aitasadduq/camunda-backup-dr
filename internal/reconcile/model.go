@@ -89,6 +89,10 @@ type Report struct {
 	CamundaInstanceID string    `json:"camunda_instance_id"`
 	StartedAt         time.Time `json:"started_at"`
 	FinishedAt        time.Time `json:"finished_at"`
+	// Window is the range of backup IDs this sweep covered, or nil for all time.
+	// Everything outside it was not assessed: absent from the report does not
+	// mean absent from the sources, and an orphan outside it may not be deleted.
+	Window *Window `json:"window,omitempty"`
 	// SnapshotRepository and ComponentEndpoints let a client turn a finding's
 	// generic remediation into a command that can actually be run, instead of
 	// showing the operator a placeholder to fill in by hand.

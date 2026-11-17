@@ -430,6 +430,35 @@ func TestOrphanArtifactsFor_MarksPartialSweep(t *testing.T) {
 	}
 }
 
+// A windowed scan says nothing about what lies outside its dates. Deleting
+// there would act on a description that never covered it, and "not an orphan"
+// would be a claim about something nobody looked at.
+func TestOrphanArtifactsFor_RefusesBackupOutsideTheScanWindow(t *testing.T) {
+	handlers, _, rec, _ := deleteTestSetup(t)
+	rec.report.Window = &reconcile.Window{From: "2026-03-01", To: "2026-03-10"}
+
+	_, err := orphanArtifactsFor(handlers.orphanIndexFor("test-1"), "20260320080000")
+	if !errors.Is(err, utils.ErrOrphanOutsideWindow) {
+		t.Fatalf("expected ErrOrphanOutsideWindow, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "2026-03-01 to 2026-03-10") {
+		t.Errorf("the message should say what the scan covered, got: %v", err)
+	}
+
+	// Inside the window it proceeds as before.
+	rec.report.Window = &reconcile.Window{From: "2026-03-15", To: "2026-03-25"}
+	if _, err := orphanArtifactsFor(handlers.orphanIndexFor("test-1"), "20260320080000"); err != nil {
+		t.Errorf("a backup inside the window should be deletable, got %v", err)
+	}
+}
+
+func TestDeleteFailureResponseMapsOutsideWindow(t *testing.T) {
+	status, code, _ := deleteFailureResponse(fmt.Errorf("%w (x)", utils.ErrOrphanOutsideWindow))
+	if status != http.StatusConflict || code != "outside_scan_window" {
+		t.Errorf("got %d %s, want 409 outside_scan_window", status, code)
+	}
+}
+
 // SnapshotNames is de-duplicated for display and omits snapshots another finding
 // already explains. Deleting from it would leave those behind.
 func TestOrphanArtifactsFor_UsesEveryObservedSnapshot(t *testing.T) {

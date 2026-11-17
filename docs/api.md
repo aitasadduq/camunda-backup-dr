@@ -786,7 +786,8 @@ deleting the record first would strand the artifacts as orphans.
 | 409 | `artifacts_remain` — one or more artifacts could not be deleted; nothing was removed from the controller. For a **tracked** backup: retry, or repeat with `?force=true`. For an **orphan**: `force` does not apply, so resolve the unreachable source and retry |
 | 409 | `stale_report` — the backup was reported as an orphan but has since acquired a record. Re-run the sweep |
 | 409 | `report_partial` — the sweep could not reach every source, so what the backup left behind is not fully known. Re-scan once every source is reachable |
-| 409 | `report_stale` — the sweep is more than an hour old. Re-scan first |
+| 409 | `report_stale` — the sweep is more than an hour old, or a snapshot it named is no longer attributable under the instance's current naming settings. Re-scan first |
+| 409 | `outside_scan_window` — the last scan covered a date range that does not include this backup's date. Re-scan with a range that includes it |
 | 409 | `endpoint_drift` — a component's backup endpoint has changed since the sweep. Re-scan first |
 | 409 | `ownership_unverified` — another configured instance holds a record for this ID, or shares the repository or endpoint the artifacts live behind |
 | 409 | `unidentifiable` — the sweep found the orphan but named no artifact to delete |
@@ -1066,9 +1067,30 @@ This is **report-only** and never deletes anything.
 
 **Headers:** `X-Requested-With: XMLHttpRequest`
 
+**Body (optional):** limit the sweep to a range of backup-ID dates.
+
+```json
+{ "from": "2026-11-01", "to": "2026-11-17" }
+```
+
+- Both dates are inclusive `YYYY-MM-DD`; give both, or neither for all time. The
+  range is at most 366 days. Also accepted as `?from=&to=` query parameters.
+- The range matches the date in each backup ID (`YYYYMMDD…`), not wall-clock
+  time. The controller stamps IDs in UTC.
+- Zeebe is listed one day at a time (`GET {endpoint}/{YYYYMMDD}*`); the other
+  sources are listed in full and filtered. If Elasticsearch's full listing
+  fails, it falls back to one request per day.
+- The report records the range as `window`. Backups outside it were **not
+  assessed**: they are in no finding, and an orphan outside it cannot be deleted
+  (`outside_scan_window`).
+
+The sweep runs independently of the request: if the client disconnects, or a
+gateway times the request out, the sweep still finishes and stores its report,
+which `GET` then returns.
+
 | Error Code | Condition |
 |---|---|
-| 400 | Instance ID missing |
+| 400 | Instance ID missing, or an invalid range (only one date, a malformed date, from after to, more than 366 days, malformed JSON) |
 | 403 | Missing `X-Requested-With` header |
 | 404 | Instance not found |
 | 409 | A sweep is already running for this instance (`sweep_in_progress`) |

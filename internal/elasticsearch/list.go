@@ -7,8 +7,10 @@ import (
 	"io"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/camunda"
@@ -125,6 +127,170 @@ func (c *Client) ListSnapshots(ctx context.Context, repository string) ([]Snapsh
 		info.StartEpoch, _ = strconv.ParseInt(row.StartEpoch, 10, 64)
 		info.FailedShards, _ = strconv.Atoi(row.FailedShards)
 		out = append(out, info)
+	}
+	return out, nil
+}
+
+// DaySnapshotLister is the fallback for a repository whose full listing fails or
+// times out: it asks for the snapshots of specific dates by name pattern.
+type DaySnapshotLister interface {
+	ListSnapshotsByDays(ctx context.Context, repository string, days, prefixes []string) ([]SnapshotInfo, error)
+}
+
+// daySnapshotWorkers bounds how many day requests run at once.
+const daySnapshotWorkers = 4
+
+// SnapshotNamePrefixes is every fixed name prefix a snapshot of interest can
+// start with, in front of its backup ID: the controller's own, each component's,
+// and any declared external job's. A name pattern is prefix + date + "*".
+func SnapshotNamePrefixes(naming SnapshotNaming) []string {
+	prefixes := []string{
+		BuildSnapshotName(naming.Prefix, ""),
+		"camunda_operate_", "camunda_tasklist_", "camunda_optimize_",
+	}
+	for _, p := range naming.ExternalPrefixes {
+		if p != "" {
+			prefixes = append(prefixes, p)
+		}
+	}
+	return prefixes
+}
+
+// ListSnapshotsByDays lists the snapshots whose names are prefix + date + "*",
+// for each date (YYYYMMDD) and each prefix, with one Get snapshot request per
+// date: GET /_snapshot/{repo}/{prefix1}{date}*,{prefix2}{date}*,...
+//
+// It succeeds only if every date's request did, and fails if Elasticsearch says
+// a response was truncated: a short list would read as snapshots that do not
+// exist. The names matched are those ClassifySnapshot would attribute, so what
+// this returns for a date equals what a full listing would hold for it.
+func (c *Client) ListSnapshotsByDays(ctx context.Context, repository string, days, prefixes []string) ([]SnapshotInfo, error) {
+	if repository == "" {
+		return nil, fmt.Errorf("snapshot repository is required")
+	}
+	if c.httpClient == nil {
+		return nil, fmt.Errorf("http client is not configured")
+	}
+
+	type result struct {
+		day   string
+		snaps []SnapshotInfo
+		err   error
+	}
+	results := make([]result, len(days))
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	workers := daySnapshotWorkers
+	if workers > len(days) {
+		workers = len(days)
+	}
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for idx := range jobs {
+				snaps, err := c.listSnapshotsForDay(ctx, repository, days[idx], prefixes)
+				results[idx] = result{day: days[idx], snaps: snaps, err: err}
+			}
+		}()
+	}
+	for i := range days {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+
+	byName := make(map[string]SnapshotInfo)
+	var failed []string
+	var firstErr error
+	for _, r := range results {
+		if r.err != nil {
+			failed = append(failed, r.day)
+			if firstErr == nil {
+				firstErr = r.err
+			}
+			continue
+		}
+		for _, snap := range r.snaps {
+			byName[snap.Name] = snap
+		}
+	}
+	if len(failed) > 0 {
+		shown := failed
+		if len(shown) > 5 {
+			shown = shown[:5]
+		}
+		return nil, fmt.Errorf("listing snapshots by day failed for %d of %d days (%s): %w",
+			len(failed), len(days), strings.Join(shown, ", "), firstErr)
+	}
+
+	out := make([]SnapshotInfo, 0, len(byName))
+	for _, snap := range byName {
+		out = append(out, snap)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func (c *Client) listSnapshotsForDay(ctx context.Context, repository, day string, prefixes []string) ([]SnapshotInfo, error) {
+	patterns := make([]string, 0, len(prefixes))
+	for _, p := range prefixes {
+		// "*" must reach Elasticsearch as itself: PathEscape would send %2A, which
+		// only works if everything between here and Elasticsearch decodes it.
+		patterns = append(patterns, strings.ReplaceAll(url.PathEscape(p+day), "%2A", "*")+"*")
+	}
+	fullURL, err := c.buildURL(fmt.Sprintf("/_snapshot/%s/%s", url.PathEscape(repository), strings.Join(patterns, ",")), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	started := time.Now()
+	resp, err := c.httpClient.GetListing(ctx, fullURL, c.authHeaders())
+	if err != nil {
+		return nil, c.httpClient.DescribeListFailure(ctx, "list snapshots", err, started)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return nil, fmt.Errorf("list snapshots failed with status %d after %v: %s",
+			resp.StatusCode, time.Since(started).Round(time.Millisecond), strings.TrimSpace(string(body)))
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, c.httpClient.DescribeListFailure(ctx, "list snapshots",
+			fmt.Errorf("reading the response (%d bytes received): %w", len(body), err), started)
+	}
+
+	var parsed struct {
+		Snapshots []struct {
+			Snapshot string `json:"snapshot"`
+			State    string `json:"state"`
+			Start    int64  `json:"start_time_in_millis"`
+			Shards   struct {
+				Failed int `json:"failed"`
+			} `json:"shards"`
+		} `json:"snapshots"`
+		Remaining int `json:"remaining"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, fmt.Errorf("failed to parse snapshot list for %s (%d-byte response): %w", day, len(body), err)
+	}
+	if parsed.Remaining > 0 {
+		return nil, fmt.Errorf("snapshot list for %s was truncated by Elasticsearch (%d more not returned)", day, parsed.Remaining)
+	}
+
+	out := make([]SnapshotInfo, 0, len(parsed.Snapshots))
+	for _, snap := range parsed.Snapshots {
+		if snap.Snapshot == "" {
+			continue
+		}
+		out = append(out, SnapshotInfo{
+			Name:         snap.Snapshot,
+			State:        normalizeSnapshotState(snap.State),
+			StartEpoch:   snap.Start / 1000,
+			FailedShards: snap.Shards.Failed,
+		})
 	}
 	return out, nil
 }

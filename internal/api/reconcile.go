@@ -2,7 +2,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -15,7 +18,7 @@ import (
 // Reconciler cross-references controller metadata against the artifacts that
 // actually exist and reports the differences. It never deletes anything.
 type Reconciler interface {
-	Reconcile(ctx context.Context, instance *models.CamundaInstance) (*reconcile.Report, error)
+	Reconcile(ctx context.Context, instance *models.CamundaInstance, window *reconcile.Window) (*reconcile.Report, error)
 	LatestReport(camundaInstanceID string) (*reconcile.Report, error)
 }
 
@@ -101,10 +104,22 @@ func (h *Handlers) RunReconcileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), h.reconcileTimeout())
+	window, err := windowFromRequest(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
+		return
+	}
+
+	// The sweep must not die with the request. A browser tab closing, or an
+	// ingress with a shorter timeout than the sweep, cancels r.Context(), and a
+	// sweep tied to it records every source in flight as "context canceled" and
+	// stores that as the latest report. Detached, the sweep runs to its own
+	// deadline and stores a real result; a client that has gone simply does not
+	// read the response, and fetches the report afterwards.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), h.reconcileTimeout())
 	defer cancel()
 
-	report, err := h.reconciler.Reconcile(ctx, instance)
+	report, err := h.reconciler.Reconcile(ctx, instance, window)
 	if err != nil {
 		if errors.Is(err, reconcile.ErrSweepInProgress) {
 			writeError(w, http.StatusConflict, "sweep_in_progress",
@@ -123,4 +138,31 @@ func (h *Handlers) RunReconcileHandler(w http.ResponseWriter, r *http.Request) {
 // UI fetches this once and caches it, so reports carry only the codes.
 func (h *Handlers) ReasonCatalogHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, reconcile.Catalog())
+}
+
+// windowFromRequest reads the optional date range of a request: a JSON body
+// {"from":"YYYY-MM-DD","to":"YYYY-MM-DD"} on POST, or the same names as query
+// parameters. Neither means all time.
+func windowFromRequest(r *http.Request) (*reconcile.Window, error) {
+	from, to := r.URL.Query().Get("from"), r.URL.Query().Get("to")
+
+	if r.Body != nil && r.ContentLength != 0 {
+		var body struct {
+			From string `json:"from"`
+			To   string `json:"to"`
+		}
+		dec := json.NewDecoder(io.LimitReader(r.Body, 4096))
+		if err := dec.Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			return nil, fmt.Errorf("request body must be JSON like {\"from\":\"2026-11-01\",\"to\":\"2026-11-17\"}: %w", err)
+		}
+		if body.From != "" || body.To != "" {
+			from, to = body.From, body.To
+		}
+	}
+
+	window, err := reconcile.NewWindow(from, to)
+	if err != nil {
+		return nil, err
+	}
+	return window, nil
 }

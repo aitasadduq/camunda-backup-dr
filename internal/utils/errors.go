@@ -114,6 +114,12 @@ var (
 	// name a completely different, live backup.
 	ErrOrphanEndpointDrift = errors.New("component endpoints have changed since the last scan; re-scan before deleting")
 
+	// ErrOrphanOutsideWindow is returned when an orphan deletion names a backup
+	// whose ID falls outside the date range the last scan covered. A windowed
+	// scan says nothing about what lies outside it, so it cannot authorise a
+	// deletion there.
+	ErrOrphanOutsideWindow = errors.New("the last scan did not cover this backup's date; re-scan with a range that includes it")
+
 	// ErrOrphanReportStale is returned when the sweep an orphan deletion would
 	// act on is too old to be trusted as a description of what exists now.
 	ErrOrphanReportStale = errors.New("the last scan is too old to delete from; re-scan first")

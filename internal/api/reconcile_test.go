@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,10 +20,14 @@ type mockReconciler struct {
 	sweepErr    error
 	sweepCalls  int
 	latestCalls int
+	lastWindow  *reconcile.Window
+	ctxErr      error // the sweep's context error at the moment it ran
 }
 
-func (m *mockReconciler) Reconcile(ctx context.Context, instance *models.CamundaInstance) (*reconcile.Report, error) {
+func (m *mockReconciler) Reconcile(ctx context.Context, instance *models.CamundaInstance, window *reconcile.Window) (*reconcile.Report, error) {
 	m.sweepCalls++
+	m.lastWindow = window
+	m.ctxErr = ctx.Err()
 	if m.sweepErr != nil {
 		return nil, m.sweepErr
 	}
@@ -217,5 +222,118 @@ func TestReconcileRouteDoesNotShadowBackupDetails(t *testing.T) {
 
 	if w.Code == http.StatusMethodNotAllowed {
 		t.Error("backup details route was captured by the reconcile route")
+	}
+}
+
+func runReconcile(handlers *Handlers, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/api/camundas/prod/backups/reconcile", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	handlers.RunReconcileHandler(w, req)
+	return w
+}
+
+func TestRunReconcileHandlerPassesTheWindow(t *testing.T) {
+	handlers, rec := reconcileTestSetup(t)
+
+	if w := runReconcile(handlers, `{"from":"2026-11-01","to":"2026-11-17"}`); w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	if rec.lastWindow == nil || rec.lastWindow.From != "2026-11-01" || rec.lastWindow.To != "2026-11-17" {
+		t.Errorf("window = %+v, want 2026-11-01..2026-11-17", rec.lastWindow)
+	}
+
+	// No body, or an empty one, is all time.
+	for _, body := range []string{"", "{}"} {
+		rec.lastWindow = &reconcile.Window{}
+		if w := runReconcile(handlers, body); w.Code != http.StatusOK {
+			t.Fatalf("body %q: status = %d: %s", body, w.Code, w.Body.String())
+		}
+		if rec.lastWindow != nil {
+			t.Errorf("body %q: window = %+v, want all time", body, rec.lastWindow)
+		}
+	}
+}
+
+func TestRunReconcileHandlerRefusesABadWindow(t *testing.T) {
+	handlers, rec := reconcileTestSetup(t)
+	for _, body := range []string{
+		`{"from":"2026-11-01"}`,
+		`{"from":"2026-11-17","to":"2026-11-01"}`,
+		`{"from":"yesterday","to":"today"}`,
+		`{"from":"2020-01-01","to":"2026-11-01"}`,
+		`{not json`,
+	} {
+		w := runReconcile(handlers, body)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("body %s: status = %d, want 400", body, w.Code)
+		}
+	}
+	if rec.sweepCalls != 0 {
+		t.Errorf("a refused request still ran %d sweeps", rec.sweepCalls)
+	}
+}
+
+// A browser tab closing, or an ingress with a shorter timeout, cancels the
+// request's context. A sweep tied to it records every source in flight as
+// "context canceled" and stores that as the latest report.
+func TestRunReconcileHandlerSweepSurvivesTheRequestEnding(t *testing.T) {
+	handlers, rec := reconcileTestSetup(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the client has already gone
+	req := httptest.NewRequest(http.MethodPost, "/api/camundas/prod/backups/reconcile", nil).WithContext(ctx)
+	handlers.RunReconcileHandler(httptest.NewRecorder(), req)
+
+	if rec.sweepCalls != 1 {
+		t.Fatalf("sweep ran %d times, want 1", rec.sweepCalls)
+	}
+	if rec.ctxErr != nil {
+		t.Errorf("the sweep's context was already %v; it must not be cancelled with the request", rec.ctxErr)
+	}
+}
+
+func TestTrackedListsFilterByWindow(t *testing.T) {
+	handlers, cm, _, hist, _, ret, _ := newTestHandlers()
+	cm.instances = []models.CamundaInstance{{ID: "test-1", Name: "Test"}}
+	all := []*models.BackupHistory{
+		{BackupID: "20261109080000", CamundaInstanceID: "test-1"},
+		{BackupID: "20261111080000", CamundaInstanceID: "test-1"},
+		{BackupID: "20261120080000", CamundaInstanceID: "test-1"},
+	}
+	hist.history = all
+	ret.incomplete = all
+	ret.failed = all
+
+	tests := []struct {
+		name    string
+		path    string
+		handler func(http.ResponseWriter, *http.Request)
+	}{
+		{"history", "/api/camundas/test-1/backups", handlers.ListBackupHistoryHandler},
+		{"incomplete", "/api/camundas/test-1/backups/incomplete", handlers.ListIncompleteBackupsHandler},
+		{"failed", "/api/camundas/test-1/backups/failed", handlers.ListFailedBackupsHandler},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			get := func(query string) (int, []*models.BackupHistory) {
+				req := httptest.NewRequest(http.MethodGet, tt.path+query, nil)
+				w := httptest.NewRecorder()
+				tt.handler(w, req)
+				var out []*models.BackupHistory
+				_ = json.Unmarshal(w.Body.Bytes(), &out)
+				return w.Code, out
+			}
+
+			if code, got := get(""); code != http.StatusOK || len(got) != 3 {
+				t.Errorf("no range: status %d, %d backups; want 200 and 3", code, len(got))
+			}
+			code, got := get("?from=2026-11-10&to=2026-11-12")
+			if code != http.StatusOK || len(got) != 1 || got[0].BackupID != "20261111080000" {
+				t.Errorf("range: status %d, %v; want only 20261111080000", code, got)
+			}
+			if code, _ := get("?from=2026-11-10"); code != http.StatusBadRequest {
+				t.Errorf("half a range: status %d, want 400", code)
+			}
+		})
 	}
 }
