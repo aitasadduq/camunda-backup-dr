@@ -8,6 +8,15 @@ BUILD_DIR=build
 COVERAGE_DIR=build/coverage
 # Packages to test (excludes scripts/ which has pre-existing vet errors)
 TEST_PKGS=./internal/... ./pkg/... ./web/...
+# Version stamped into the binary: the nearest release tag without its leading
+# "v", plus commit and -dirty when not exactly on a tag. Override with
+# `make build VERSION=1.2.3`. Falls back to "dev" outside a git checkout.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//')
+ifeq ($(strip $(VERSION)),)
+VERSION := dev
+endif
+VERSION_PKG=github.com/aitasadduq/camunda-backup-dr/internal/config
+LDFLAGS=-X $(VERSION_PKG).ControllerVersion=$(VERSION)
 
 help:
 	@echo "Available targets:"
@@ -25,9 +34,9 @@ help:
 	@echo "  tailwind         - Rebuild bundled Tailwind CSS (requires tailwindcss CLI)"
 
 build:
-	@echo "Building $(BINARY_NAME)..."
+	@echo "Building $(BINARY_NAME) $(VERSION)..."
 	@mkdir -p $(BUILD_DIR)
-	@go build -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/server
+	@go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/server
 	@echo "Build complete: $(BUILD_DIR)/$(BINARY_NAME)"
 
 clean:

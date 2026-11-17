@@ -1,6 +1,8 @@
 image:
   repository: camunda-backup-controller
   pullPolicy: IfNotPresent
+  # Defaults to the release the chart was packaged for. Required when the chart
+  # is installed from a git checkout, e.g. --set image.tag=v1.2.0.
   tag: ""
 
 imagePullSecrets: []

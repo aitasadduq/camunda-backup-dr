@@ -11,6 +11,7 @@ This guide covers building, configuring, and deploying the Camunda Backup Contro
 - [Docker Deployment](#docker-deployment)
 - [Kubernetes Deployment](#kubernetes-deployment)
 - [Helm Chart](#helm-chart)
+- [Releasing](#releasing)
 - [Health Checks](#health-checks)
 - [Security Considerations](#security-considerations)
 - [Backup Data Persistence](#backup-data-persistence)
@@ -557,6 +558,67 @@ charts/backup-controller/
 - `persistence.enabled`, `persistence.size`, `persistence.storageClass` — PVC settings.
 - `resources.requests`, `resources.limits` — Pod resource configuration.
 - `probes.liveness`, `probes.readiness` — Health check tuning.
+
+---
+
+## Releasing
+
+A release is one action: **publish a GitHub release** whose tag looks like
+`v1.2.3` (or `v1.2.3-rc1`), created from `main`. Nothing in the repository is
+bumped beforehand — the tag is the only place the version is written.
+
+`.github/workflows/release.yaml` then:
+
+1. Refuses a tag that is not `vX.Y.Z[-suffix]`, before anything is pushed.
+2. Runs CI (build, tests, lint, Helm lint).
+3. Builds the image for `linux/amd64` and `linux/arm64` with the version stamped
+   into the binary, and pushes `aitasadduq/camunda-backup-controller:<tag>` and
+   `:latest` to Docker Hub.
+4. Runs the pushed image with `-version` and fails if it does not report the
+   release's version.
+5. Packages the Helm chart with `version: X.Y.Z` and `appVersion: vX.Y.Z` and
+   attaches `camunda-backup-controller-X.Y.Z.tgz` to the GitHub release.
+
+It needs the repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`.
+
+### Where the version shows up
+
+| Place | Value for tag `v1.2.3` |
+|---|---|
+| Image tag | `v1.2.3` |
+| `backup-controller -version`, the startup log line, `metadata.controller_version` on every backup | `1.2.3` |
+| Image label `org.opencontainers.image.version` | `1.2.3` |
+| Packaged Helm chart | `version: 1.2.3`, `appVersion: v1.2.3` (the default `image.tag`) |
+
+To check what a running or pulled image is:
+
+```bash
+docker run --rm aitasadduq/camunda-backup-controller:v1.2.3 -version
+```
+
+A binary that did not come from a release reports something else: `make build`
+stamps `git describe` output (for example `1.2.3-4-gda93e47-dirty`), and a plain
+`go build` or `go run` reports `dev`.
+
+### Deploying a release with Helm
+
+The chart attached to a release deploys that release's image by default:
+
+```bash
+helm upgrade --install backup-controller \
+  https://github.com/aitasadduq/camunda-backup-dr/releases/download/v1.2.3/camunda-backup-controller-1.2.3.tgz \
+  --set image.repository=aitasadduq/camunda-backup-controller
+```
+
+The chart in a git checkout (`deployments/helm/camunda-backup-controller`) was
+packaged for no release, so it has no image tag to default to and refuses to
+render without one:
+
+```bash
+helm upgrade --install backup-controller deployments/helm/camunda-backup-controller \
+  --set image.repository=aitasadduq/camunda-backup-controller \
+  --set image.tag=v1.2.3
+```
 
 ---
 

@@ -34,10 +34,21 @@ Common labels
 {{- define "camunda-backup-controller.labels" -}}
 helm.sh/chart: {{ include "camunda-backup-controller.chart" . }}
 {{ include "camunda-backup-controller.selectorLabels" . }}
-{{- if .Chart.AppVersion }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
-{{- end }}
+app.kubernetes.io/version: {{ include "camunda-backup-controller.imageTag" . | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{/*
+The image tag to deploy: image.tag when set, otherwise the release this chart
+was packaged for. A chart taken from a git checkout was packaged for none, and
+guessing (or falling back to "latest") would deploy an image nobody chose.
+*/}}
+{{- define "camunda-backup-controller.imageTag" -}}
+{{- $tag := .Values.image.tag | default .Chart.AppVersion -}}
+{{- if or (not $tag) (eq $tag "unreleased") -}}
+{{- fail "image.tag is required when installing this chart from a git checkout: pass --set image.tag=vX.Y.Z, or install the packaged chart attached to the GitHub release, which defaults to its own version" -}}
+{{- end -}}
+{{- $tag -}}
 {{- end }}
 
 {{/*

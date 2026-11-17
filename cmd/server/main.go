@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -26,6 +28,17 @@ import (
 )
 
 func main() {
+	// -version prints the build's version and exits before anything is
+	// configured, so a released image can be checked without S3 or a data
+	// directory: `docker run --rm <image> -version`. The release workflow does
+	// exactly that to confirm the tag was stamped into the binary it pushed.
+	showVersion := flag.Bool("version", false, "print the controller version and exit")
+	flag.Parse()
+	if *showVersion {
+		fmt.Println(config.ControllerVersion)
+		return
+	}
+
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
@@ -35,7 +48,7 @@ func main() {
 	// Initialize logger
 	logger := utils.NewLogger(cfg.LogLevel)
 
-	logger.Info("Starting Camunda Backup Controller...")
+	logger.Info("Starting Camunda Backup Controller %s...", config.ControllerVersion)
 	logger.Info("Configuration loaded successfully")
 	logger.Info("Data directory: %s", cfg.DataDir)
 	logger.Info("Log level: %s", cfg.LogLevel)

@@ -11,7 +11,13 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /backup-controller ./cmd/server
+# The release workflow passes the release tag without its leading "v". .git is
+# not in the build context, so the version cannot be derived here.
+ARG VERSION=dev
+
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-s -w -X github.com/aitasadduq/camunda-backup-dr/internal/config.ControllerVersion=${VERSION}" \
+    -o /backup-controller ./cmd/server
 
 # ---- Runtime stage ----
 FROM mirror.gcr.io/library/alpine:3.20

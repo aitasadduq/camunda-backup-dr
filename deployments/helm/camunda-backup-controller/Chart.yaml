@@ -2,5 +2,11 @@ apiVersion: v2
 name: camunda-backup-controller
 description: Camunda Backup & Disaster Recovery Controller
 type: application
-version: 0.2.0
-appVersion: "v1.1.0"
+# Placeholders, never bumped by hand. The release workflow packages this chart
+# with `helm package --version <X.Y.Z> --app-version <vX.Y.Z>` from the release
+# tag and attaches the result to the GitHub release; that packaged chart
+# defaults image.tag to its own release. Installed straight from a git
+# checkout, the chart has no release to default to, so image.tag must be set
+# (the templates fail with instructions otherwise).
+version: 0.0.0-dev
+appVersion: "unreleased"
