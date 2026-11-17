@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"errors"
 	"math/rand"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
@@ -19,6 +22,11 @@ type HTTPClientConfig struct {
 	MaxRetries    int           // Maximum number of retries
 	RetryDelay    time.Duration // Initial retry delay
 	MaxRetryDelay time.Duration // Maximum retry delay
+
+	// ListTimeout bounds one GET of a component's full backup listing. Zero
+	// means Timeout. Listing every backup in a large S3/OCI store is much slower
+	// than any other component call, so it gets its own budget.
+	ListTimeout time.Duration
 }
 
 // DefaultHTTPClientConfig returns a default HTTP client configuration
@@ -55,12 +63,29 @@ type RequestOptions struct {
 	URL     string
 	Headers map[string]string
 	Body    interface{}
+
+	// Timeout overrides the client's per-attempt timeout when positive.
+	Timeout time.Duration
+
+	// NoRetryOnTimeout returns at once when an attempt times out instead of
+	// retrying. For a request that is slow rather than flaky, every retry costs
+	// another full timeout and the sum outlasts the caller's own deadline.
+	NoRetryOnTimeout bool
 }
 
 // Do performs an HTTP request with retry logic and exponential backoff
 func (c *HTTPClient) Do(ctx context.Context, opts RequestOptions) (*http.Response, error) {
 	var lastErr error
 	delay := c.config.RetryDelay
+
+	client := c.client
+	if opts.Timeout > 0 && opts.Timeout != c.client.Timeout {
+		perRequest := *c.client
+		perRequest.Timeout = opts.Timeout
+		client = &perRequest
+	}
+	// Scheme and host only: paths and query strings can carry tokens.
+	target := opts.Method + " " + utils.RedactURL(opts.URL)
 
 	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
 		if attempt > 0 {
@@ -70,7 +95,7 @@ func (c *HTTPClient) Do(ctx context.Context, opts RequestOptions) (*http.Respons
 				jitter = time.Duration(rand.Int63n(int64(delay) / 2))
 			}
 			waitTime := delay + jitter
-			c.logger.Debug("Retrying request (attempt %d/%d) after %v (jitter: %v)", attempt, c.config.MaxRetries, waitTime, jitter)
+			c.logger.Warn("Retrying %s (retry %d/%d) in %v after: %v", target, attempt, c.config.MaxRetries, waitTime, lastErr)
 			
 			select {
 			case <-ctx.Done():
@@ -110,25 +135,34 @@ func (c *HTTPClient) Do(ctx context.Context, opts RequestOptions) (*http.Respons
 		}
 
 		// Execute request
-		resp, err := c.client.Do(req)
+		started := time.Now()
+		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
-			c.logger.Debug("Request failed (attempt %d/%d): %v", attempt+1, c.config.MaxRetries+1, err)
-			
+			c.logger.Debug("%s failed after %v (attempt %d/%d): %v", target, time.Since(started).Round(time.Millisecond), attempt+1, c.config.MaxRetries+1, err)
+
 			// Check if context was cancelled
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			
+
+			if opts.NoRetryOnTimeout && isTimeout(err) {
+				return nil, err
+			}
+
 			// Retry on network errors
 			continue
 		}
 
 		// Check if status code indicates retryable error
 		if shouldRetry(resp.StatusCode) {
+			// Keep the start of the body: a 500 with an empty reason is
+			// undiagnosable, and the component usually says what went wrong.
+			snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 			resp.Body.Close()
-			lastErr = fmt.Errorf("received retryable status code: %d", resp.StatusCode)
-			c.logger.Debug("Received retryable status code %d (attempt %d/%d)", resp.StatusCode, attempt+1, c.config.MaxRetries+1)
+			lastErr = fmt.Errorf("received retryable status code %d after %v: %s",
+				resp.StatusCode, time.Since(started).Round(time.Millisecond), strings.TrimSpace(string(snippet)))
+			c.logger.Debug("%s: %v (attempt %d/%d)", target, lastErr, attempt+1, c.config.MaxRetries+1)
 			continue
 		}
 
@@ -175,6 +209,13 @@ func (c *HTTPClient) Delete(ctx context.Context, url string, headers map[string]
 		URL:     url,
 		Headers: headers,
 	})
+}
+
+// isTimeout reports whether err is a per-request timeout (http.Client.Timeout
+// or a dial/read deadline), as opposed to the caller's context ending.
+func isTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 // shouldRetry determines if a status code should trigger a retry

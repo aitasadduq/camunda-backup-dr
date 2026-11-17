@@ -1939,6 +1939,29 @@ func TestDeleteOrphan_RefusesPartialReport(t *testing.T) {
 	}
 }
 
+// The refusal is only actionable if it says which source to fix.
+func TestDeleteOrphan_PartialReportNamesUnreachableSources(t *testing.T) {
+	env := newOrphanTestEnv(t)
+
+	art := env.complete(OrphanArtifacts{
+		BackupID:   "20260320080000",
+		Components: []string{types.ComponentOperate},
+	})
+	art.Complete = false
+	art.Unreachable = []string{types.ComponentZeebe}
+
+	err := env.mgr.DeleteOrphan(context.Background(), "inst-1", art)
+	if !errors.Is(err, utils.ErrOrphanReportPartial) {
+		t.Fatalf("expected ErrOrphanReportPartial, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "could not check: zeebe") {
+		t.Errorf("refusal should name the unreachable source, got: %v", err)
+	}
+	if got := env.recorded(); len(got) != 0 {
+		t.Errorf("expected nothing deleted from a partial scan, got %v", got)
+	}
+}
+
 // A deletion acts on a description of the world, and an old description is not
 // one: endpoints move and backups appear in between.
 func TestDeleteOrphan_RefusesStaleReport(t *testing.T) {

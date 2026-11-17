@@ -78,8 +78,13 @@ func (r *Reconciler) collect(ctx context.Context, instance *models.CamundaInstan
 		backupInFlight:   r.isBackupRunning(),
 	}
 
+	// Wall-clock, not r.now: this measures how long each source took to answer,
+	// which is what tells a slow source apart from a broken one in the logs.
+	collectStarted := time.Now()
+
 	var mu sync.Mutex
 	setSource := func(s SourceStatus) {
+		r.logSourceResult(instance.ID, s, time.Since(collectStarted))
 		mu.Lock()
 		defer mu.Unlock()
 		ev.sources[s.Name] = s
@@ -187,7 +192,62 @@ func (r *Reconciler) collect(ctx context.Context, instance *models.CamundaInstan
 	}
 
 	wg.Wait()
+	r.logSnapshotBreakdown(ev)
 	return ev
+}
+
+// logSourceResult records what one source answered and how long it took. The
+// report keeps only the outcome; the timing is what says whether raising a
+// timeout would help.
+func (r *Reconciler) logSourceResult(instanceID string, s SourceStatus, elapsed time.Duration) {
+	elapsed = elapsed.Round(time.Millisecond)
+	switch {
+	case s.Skipped:
+		r.logger.Debug("[reconcile] %s: %s not configured, skipped", instanceID, s.Name)
+	case s.Reachable:
+		r.logger.Info("[reconcile] %s: %s listed %d item(s) in %v", instanceID, s.Name, s.Count, elapsed)
+	default:
+		r.logger.Warn("[reconcile] %s: %s could not be checked (gave up after %v): %s",
+			instanceID, s.Name, elapsed, s.Error)
+	}
+}
+
+// snapshotBreakdownSamples caps how many unrecognised names one log line shows.
+const snapshotBreakdownSamples = 5
+
+// logSnapshotBreakdown says how the sweep read the snapshot repository: how
+// many names it took as the controller's, as a component's, and as another
+// tool's. Without this, a repository full of snapshots that match no known
+// convention looks, from the outside, like a sweep that found nothing.
+func (r *Reconciler) logSnapshotBreakdown(ev *evidence) {
+	if !ev.reachable(SourceElasticsearch) {
+		return
+	}
+
+	var controller, component int
+	var foreign []string
+	for _, snap := range ev.snapshots {
+		switch owner, _, _ := elasticsearch.ClassifySnapshot(snap.Name, ev.namePrefix); owner {
+		case elasticsearch.OwnerController:
+			controller++
+		case elasticsearch.OwnerComponent:
+			component++
+		default:
+			foreign = append(foreign, snap.Name)
+		}
+	}
+
+	r.logger.Info("[reconcile] %s: repository %q holds %d snapshot(s): %d named like this controller's (%q), %d component-owned (camunda_<component>_<id>_...), %d match neither",
+		ev.instance.ID, ev.repository, len(ev.snapshots), controller,
+		elasticsearch.BuildSnapshotName(ev.namePrefix, "<backupID>"), component, len(foreign))
+	if len(foreign) > 0 {
+		samples := foreign
+		if len(samples) > snapshotBreakdownSamples {
+			samples = samples[:snapshotBreakdownSamples]
+		}
+		r.logger.Info("[reconcile] %s: snapshots matching neither are left to their owner and never deleted, e.g. %s",
+			ev.instance.ID, strings.Join(samples, ", "))
+	}
 }
 
 // backupIDFromLogFile extracts a backup ID from a log file name. Log files are

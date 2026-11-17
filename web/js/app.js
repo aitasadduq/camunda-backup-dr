@@ -1590,7 +1590,9 @@ function renderBackupsTable(instanceId, backups, opts = {}) {
                             </td>
                             <td class="hidden lg:table-cell">${b.trigger_type ? `<span class="badge badge-${b.trigger_type.toLowerCase()}">${b.trigger_type}</span>` : '<span class="text-xs text-gray-400">—</span>'}</td>
                             <td class="hidden md:table-cell text-xs text-gray-500">
-                                ${b.backup_stats ? `<span class="text-green-600">${b.backup_stats.successful_components}</span>/<span class="text-red-600">${b.backup_stats.failed_components}</span>/<span>${b.backup_stats.total_components}</span>` : '—'}
+                                ${b.backup_stats
+                                    ? `<span class="text-green-600">${b.backup_stats.successful_components}</span>/<span class="text-red-600">${b.backup_stats.failed_components}</span>/<span>${b.backup_stats.total_components}</span>`
+                                    : (b._orphan?.present_in?.length ? escapeHtml(b._orphan.present_in.join(', ')) : '—')}
                             </td>
                             <td>
                                 <div class="flex items-center gap-1">
@@ -2754,11 +2756,18 @@ function renderReconcileHeader(report) {
         `;
     }).join('');
 
+    // The error is the first thing anyone diagnosing this needs, and a chip
+    // tooltip is easy to miss and unreachable on touch screens.
+    const failedSources = sources.filter(s => !s.reachable && !s.skipped);
     const partial = unreachable.length ? `
         <div class="reconcile-partial">
             <strong>This scan is incomplete.</strong>
             Could not check: ${escapeHtml(unreachable.join(', '))}.
-            Anything stored only there is neither confirmed present nor reported missing.
+            Anything stored only there is neither confirmed present nor reported missing,
+            and orphans cannot be deleted until a scan reaches every source.
+            <ul class="reconcile-partial-errors">
+                ${failedSources.map(s => `<li><strong>${escapeHtml(s.name)}:</strong> <code>${escapeHtml(s.error || 'no error recorded')}</code></li>`).join('')}
+            </ul>
         </div>
     ` : '';
 

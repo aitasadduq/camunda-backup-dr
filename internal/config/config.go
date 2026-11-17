@@ -49,6 +49,11 @@ type Config struct {
 	ReconcileGracePeriodMinutes int
 	ReconcileStaleAfterMinutes  int
 
+	// ComponentListTimeoutSeconds bounds one GET of a component's full backup
+	// listing. It is separate from the 30s request timeout because listing every
+	// backup in a large S3/OCI store is far slower than any other component call.
+	ComponentListTimeoutSeconds int
+
 	// Alert Configuration
 	AlertWebhookURL          string
 	AlertEnableBackupFailed  bool
@@ -127,6 +132,7 @@ func Load() (*Config, error) {
 		ReconcileTimeoutSeconds:     getEnvAsInt("RECONCILE_TIMEOUT_SECONDS", 120),
 		ReconcileGracePeriodMinutes: getEnvAsInt("RECONCILE_GRACE_PERIOD_MINUTES", 15),
 		ReconcileStaleAfterMinutes:  getEnvAsInt("RECONCILE_STALE_AFTER_MINUTES", 30),
+		ComponentListTimeoutSeconds: getEnvAsInt("COMPONENT_LIST_TIMEOUT_SECONDS", 90),
 
 		// Alert Configuration
 		AlertWebhookURL:           getEnv("ALERT_WEBHOOK_URL", ""),
@@ -185,6 +191,10 @@ func (c *Config) Validate() error {
 	}
 
 	if c.DefaultBackupMaxAttempts <= 0 {
+		return utils.ErrInvalidConfiguration
+	}
+
+	if c.ComponentListTimeoutSeconds <= 0 {
 		return utils.ErrInvalidConfiguration
 	}
 

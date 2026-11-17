@@ -10,6 +10,7 @@ This guide covers common issues, diagnostic steps, alert remediation, and freque
   - [Scheduler Issues](#scheduler-issues)
   - [API Errors](#api-errors)
   - [Circuit Breaker Issues](#circuit-breaker-issues)
+  - [Orphaned Backup Scans](#orphaned-backup-scans)
 - [Diagnostic Steps](#diagnostic-steps)
   - [Enable Debug Logging](#enable-debug-logging)
   - [Use Health Endpoints](#use-health-endpoints)
@@ -406,6 +407,60 @@ INFO  Circuit elasticsearch: HALF_OPEN → OPEN
 1. The circuit will remain in OPEN state for another reset timeout period (60s), then probe again.
 2. Fix the underlying service issue. The circuit will automatically recover once a probe call succeeds.
 3. The circuit allows only 1 probe call in HALF_OPEN (default `HalfOpenMaxCalls`). Additional requests during HALF_OPEN are rejected with: `circuit breaker is open: <service> (half-open probe limit reached)`.
+
+---
+
+### Orphaned Backup Scans
+
+Every scan logs one line per source with how long it took, the reason for any
+failure, a breakdown of the snapshot repository, and a closing summary. Filter
+the controller's log for `[reconcile] <instance-id>:`. The same per-source
+errors are listed in the "This scan is incomplete" banner on the Orphaned tab,
+and returned under `sources_checked.<source>.error` by
+`GET /api/camundas/{id}/backups/reconcile`.
+
+#### "This scan is incomplete" / a source chip is red
+
+**Symptoms:** `zeebe`, `operate` or another source shows ✗; deleting an orphan
+answers `409 report_partial` with "could not check: zeebe".
+
+The deletion refusal is deliberate: an orphan's artifacts in a source the scan
+could not list are unknown, and deleting the rest would strand them silently.
+The fix is to make the source listable. Read its error:
+
+| Error contains | Meaning | Fix |
+|---|---|---|
+| `listing timeout (COMPONENT_LIST_TIMEOUT_SECONDS)` | The component did not answer `GET /actuator/backups` in time. Listing time grows with the number of backups, so this is most likely for Zeebe with a large S3/OCI store. | Raise `COMPONENT_LIST_TIMEOUT_SECONDS`, and `RECONCILE_TIMEOUT_SECONDS` above it. The log line `could not be checked (gave up after …)` shows how long it waited. |
+| `scan's time budget (RECONCILE_TIMEOUT_SECONDS)` | The whole sweep ran out of time while this source was still answering. | Raise `RECONCILE_TIMEOUT_SECONDS`. |
+| `status 5xx` | The component itself failed. Retried before giving up (`Retrying GET … after: …` warnings). | Check the component's own logs at the time of the scan. |
+| `failed to parse backup list … starting: …` | The component answered in a shape the controller cannot decode. The start of the body is included. | Report it with that body excerpt. |
+
+To time the listing by hand from inside the cluster:
+
+```bash
+time curl -s -o /dev/null -w '%{http_code} %{size_download}\n' http://<zeebe-gateway>:9600/actuator/backups
+```
+
+#### Snapshots listed under "Other artifacts" (`A4_FOREIGN_SNAPSHOT`)
+
+A snapshot is attributed to this controller only when its name is exactly
+`<prefix>-<backupID>` (or the bare backup ID with no prefix), where `<prefix>`
+is `ELASTICSEARCH_SNAPSHOT_NAME_PREFIX_<ID>` / `DEFAULT_ELASTICSEARCH_SNAPSHOT_NAME_PREFIX`.
+Component snapshots (`camunda_<operate|tasklist|optimize>_<id>_…`) are
+attributed to their component. Anything else — for example
+`camunda_zeebe_records_backup_<id>` written by a separate job following
+Camunda's manual backup procedure — is reported for information only and is
+never offered for deletion. The scan logs how many snapshots fell into each
+group and up to five sample names:
+
+```
+[reconcile] umrah: repository "zeebe-umrah-oci" holds 570 snapshot(s): 0 named like this controller's ("<backupID>"), 1 component-owned (camunda_<component>_<id>_...), 569 match neither
+```
+
+If another job is still taking backups of the same cluster, its component
+backups (Operate, Tasklist, Zeebe) carry no marker of who took them and appear
+on the Orphaned tab. Check the backup IDs against that job's schedule before
+deleting any.
 
 ---
 

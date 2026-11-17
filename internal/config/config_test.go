@@ -85,6 +85,7 @@ func clearLoadEnvVars(t *testing.T) {
 		"DEFAULT_SCHEDULE", "DEFAULT_SUCCESS_RETENTION",
 		"DEFAULT_FAILURE_RETENTION",
 		"DEFAULT_BACKUP_POLL_INTERVAL", "DEFAULT_BACKUP_MAX_ATTEMPTS",
+		"COMPONENT_LIST_TIMEOUT_SECONDS",
 		"DEFAULT_ELASTICSEARCH_ENDPOINT", "DEFAULT_ELASTICSEARCH_USERNAME",
 		"DEFAULT_ELASTICSEARCH_SNAPSHOT_REPOSITORY", "DEFAULT_ELASTICSEARCH_SNAPSHOT_NAME_PREFIX",
 		"DEFAULT_S3_ENDPOINT", "DEFAULT_S3_ACCESSKEY", "DEFAULT_S3_SECRETKEY",
@@ -117,6 +118,11 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.DataDir != "/data" {
 		t.Errorf("DataDir = %q, want %q", cfg.DataDir, "/data")
+	}
+
+	// A full component listing gets its own, longer budget than other calls.
+	if cfg.ComponentListTimeoutSeconds != 90 {
+		t.Errorf("ComponentListTimeoutSeconds = %d, want 90", cfg.ComponentListTimeoutSeconds)
 	}
 
 	// Schedule & retention defaults
@@ -297,6 +303,7 @@ func validConfig() *Config {
 		DefaultBackupPollInterval: 5,
 		DefaultBackupMaxAttempts:  120,
 		BackupStuckTimeoutMinutes: 120,
+		ComponentListTimeoutSeconds: 90,
 	}
 }
 
@@ -304,6 +311,14 @@ func TestValidate(t *testing.T) {
 	t.Run("valid config passes", func(t *testing.T) {
 		if err := validConfig().Validate(); err != nil {
 			t.Errorf("Validate() unexpected error: %v", err)
+		}
+	})
+
+	t.Run("component list timeout must be positive", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.ComponentListTimeoutSeconds = 0
+		if err := cfg.Validate(); err != utils.ErrInvalidConfiguration {
+			t.Errorf("Validate() error = %v, want %v", err, utils.ErrInvalidConfiguration)
 		}
 	})
 

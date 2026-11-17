@@ -296,6 +296,7 @@ quietly if one is already running, and the endpoint answers `409`.
 |---|---|---|
 | `RECONCILE_ENABLED` | `true` | Post-backup sweeps. On-demand stays available when off. |
 | `RECONCILE_TIMEOUT_SECONDS` | `120` | Cap on one sweep. |
+| `COMPONENT_LIST_TIMEOUT_SECONDS` | `90` | Cap on one component's full backup listing. Not retried on timeout. Keep below `RECONCILE_TIMEOUT_SECONDS`. |
 | `RECONCILE_GRACE_PERIOD_MINUTES` | `15` | Backups younger than this are skipped. Must exceed the polling window. |
 | `RECONCILE_STALE_AFTER_MINUTES` | `30` | How long in-progress may last before it is called stuck. |
 

@@ -196,3 +196,31 @@ func TestNormalizeSnapshotState(t *testing.T) {
 		}
 	}
 }
+
+// The controller must claim exactly the names it writes. If the two drifted
+// apart it would either miss its own snapshots or claim another tool's.
+func TestBuildSnapshotNameRoundTripsThroughClassify(t *testing.T) {
+	for _, prefix := range []string{"", "prod", "hajj-camunda"} {
+		name := BuildSnapshotName(prefix, "20260713102006")
+		owner, id, _ := ClassifySnapshot(name, prefix)
+		if owner != OwnerController || id != "20260713102006" {
+			t.Errorf("prefix %q: %q classified as (%v, %q), want controller-owned 20260713102006", prefix, name, owner, id)
+		}
+	}
+}
+
+// Snapshots following Camunda's manual backup procedure belong to whatever job
+// runs that procedure, not to this controller. They must stay foreign so they
+// are reported for information and never offered for deletion.
+func TestClassifySnapshot_ZeebeRecordsSnapshotsFromAnotherToolStayForeign(t *testing.T) {
+	for _, prefix := range []string{"", "hajj"} {
+		for _, name := range []string{
+			"camunda_zeebe_records_backup_20260111154511",
+			"camunda_zeebe_records_backup_",
+		} {
+			if owner, _, _ := ClassifySnapshot(name, prefix); owner != OwnerForeign {
+				t.Errorf("prefix %q: %q classified as %v, want foreign", prefix, name, owner)
+			}
+		}
+	}
+}

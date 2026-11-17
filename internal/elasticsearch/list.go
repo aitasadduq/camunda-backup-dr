@@ -109,6 +109,19 @@ func (c *Client) ListSnapshots(ctx context.Context, repository string) ([]Snapsh
 	return out, nil
 }
 
+// BuildSnapshotName is the name the controller gives the snapshot it takes for
+// a backup: "<prefix>-<backupID>", or the bare backup ID with no prefix.
+//
+// It is the single definition of that convention. ClassifySnapshot recognises
+// controller snapshots by the same function, so the names the controller
+// writes and the names it claims as its own cannot drift apart.
+func BuildSnapshotName(namePrefix, backupID string) string {
+	if namePrefix == "" {
+		return backupID
+	}
+	return namePrefix + "-" + backupID
+}
+
 // ClassifySnapshot resolves a snapshot name to its owner and backup ID.
 //
 // Order matters. The component pattern is checked first because a component
@@ -120,13 +133,10 @@ func ClassifySnapshot(name, namePrefix string) (SnapshotOwner, string, string) {
 		return OwnerComponent, m[2], m[1]
 	}
 
-	candidate := name
-	if namePrefix != "" {
-		prefix := namePrefix + "-"
-		if !strings.HasPrefix(name, prefix) {
-			return OwnerForeign, "", ""
-		}
-		candidate = strings.TrimPrefix(name, prefix)
+	// The fixed part BuildSnapshotName puts in front of every backup ID.
+	candidate, ok := strings.CutPrefix(name, BuildSnapshotName(namePrefix, ""))
+	if !ok {
+		return OwnerForeign, "", ""
 	}
 
 	if camunda.IsBackupIDShaped(candidate) {

@@ -308,11 +308,7 @@ func (m *Manager) deleteESSnapshot(ctx context.Context, instance *models.Camunda
 	}
 	if snapshotName == "" {
 		namePrefix := m.cfg.GetElasticsearchSnapshotNamePrefix(instance.ID)
-		if namePrefix != "" {
-			snapshotName = fmt.Sprintf("%s-%s", namePrefix, backup.BackupID)
-		} else {
-			snapshotName = backup.BackupID
-		}
+		snapshotName = elasticsearch.BuildSnapshotName(namePrefix, backup.BackupID)
 	}
 
 	return m.deleteSnapshot(ctx, instance, repository, snapshotName, backup.BackupID)
@@ -559,6 +555,10 @@ type OrphanArtifacts struct {
 	// Complete says whether that sweep reached every source it needed. When it
 	// did not, nothing here can be treated as the full artifact set.
 	Complete bool
+
+	// Unreachable names the sources that sweep could not check. It only makes
+	// the report_partial refusal say what to fix; Complete is what decides.
+	Unreachable []string
 }
 
 // maxReportAge bounds how old a sweep may be and still authorise a deletion.
@@ -603,6 +603,10 @@ func (m *Manager) DeleteOrphan(ctx context.Context, camundaInstanceID string, ar
 	// would strand the rest silently. This is the unreachable-source guard the
 	// reconciler applies to its conclusions, applied to acting on them.
 	if !art.Complete {
+		if len(art.Unreachable) > 0 {
+			return fmt.Errorf("%w (%s; could not check: %s — make it reachable and rescan)",
+				utils.ErrOrphanReportPartial, art.BackupID, strings.Join(art.Unreachable, ", "))
+		}
 		return fmt.Errorf("%w (%s)", utils.ErrOrphanReportPartial, art.BackupID)
 	}
 
