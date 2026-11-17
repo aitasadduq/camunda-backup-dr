@@ -41,7 +41,11 @@ type evidence struct {
 
 	// componentBackups maps component name -> backup ID -> what it reported.
 	componentBackups map[string]map[string]camunda.ComponentBackupRecord
-	snapshots        []elasticsearch.SnapshotInfo
+	// snapshots carry Owner/BackupID/Component once classifySnapshots has run,
+	// which every reader triggers. Classification happens once per sweep, so
+	// the index, the deletable snapshot set and the log cannot disagree.
+	snapshots           []elasticsearch.SnapshotInfo
+	snapshotsClassified bool
 	logBackupIDs     map[string]bool
 	exporterPaused   bool
 	backupInFlight   bool
@@ -59,6 +63,50 @@ func (e *evidence) reachable(source string) bool {
 // naming is how this sweep attributes snapshot names to owners.
 func (e *evidence) naming() elasticsearch.SnapshotNaming {
 	return elasticsearch.SnapshotNaming{Prefix: e.namePrefix, ExternalPrefixes: e.externalPrefixes}
+}
+
+// classifySnapshots resolves every snapshot's owner and backup ID, once. Not
+// safe for concurrent use; collect calls it after its goroutines finish.
+func (e *evidence) classifySnapshots() {
+	if e.snapshotsClassified {
+		return
+	}
+	naming := e.naming()
+	for i := range e.snapshots {
+		snap := &e.snapshots[i]
+		snap.Owner, snap.BackupID, snap.Component = naming.Classify(snap.Name)
+	}
+	e.snapshotsClassified = true
+}
+
+// untrackedInFlight lists the backup IDs with no controller record that some
+// source still reports as being written: a component backup IN_PROGRESS, or a
+// snapshot IN_PROGRESS. Such a backup is someone's live backup (an external
+// job's, typically), not an orphan yet, and must never be offered for
+// deletion: Elasticsearch aborts an in-progress snapshot that is deleted. The
+// grace period alone cannot ensure this, because it assumes the backup ID's
+// timestamp is UTC and that every backup finishes within it.
+func (e *evidence) untrackedInFlight() map[string]bool {
+	e.classifySnapshots()
+	tracked := make(map[string]bool, len(e.records))
+	for _, rec := range e.records {
+		tracked[rec.BackupID] = true
+	}
+
+	inFlight := make(map[string]bool)
+	for _, byID := range e.componentBackups {
+		for id, rec := range byID {
+			if !tracked[id] && strings.EqualFold(rec.State, camunda.BackupStateInProgress) {
+				inFlight[id] = true
+			}
+		}
+	}
+	for _, snap := range e.snapshots {
+		if snap.BackupID != "" && !tracked[snap.BackupID] && snap.State == elasticsearch.SnapshotStateInProgress {
+			inFlight[snap.BackupID] = true
+		}
+	}
+	return inFlight
 }
 
 // componentEndpoints maps a component name to its configured backup endpoint.
@@ -202,6 +250,7 @@ func (r *Reconciler) collect(ctx context.Context, instance *models.CamundaInstan
 	}
 
 	wg.Wait()
+	ev.classifySnapshots()
 	r.logSnapshotBreakdown(ev)
 	return ev
 }
@@ -234,11 +283,10 @@ func (r *Reconciler) logSnapshotBreakdown(ev *evidence) {
 		return
 	}
 
-	naming := ev.naming()
 	var controller, component, external int
 	var foreign []string
 	for _, snap := range ev.snapshots {
-		switch owner, _, _ := naming.Classify(snap.Name); owner {
+		switch snap.Owner {
 		case elasticsearch.OwnerController:
 			controller++
 		case elasticsearch.OwnerComponent:

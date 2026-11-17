@@ -643,6 +643,10 @@ func (m *Manager) DeleteOrphan(ctx context.Context, camundaInstanceID string, ar
 		return err
 	}
 
+	if err := m.verifySnapshotsStillAttributable(instance, art); err != nil {
+		return err
+	}
+
 	errs := append(
 		m.deleteOrphanComponents(ctx, instance, art),
 		m.deleteOrphanSnapshots(ctx, instance, art)...,
@@ -839,6 +843,38 @@ func allControllerSnapshots(names []string, prefix string) bool {
 		}
 	}
 	return true
+}
+
+// verifySnapshotsStillAttributable refuses when a snapshot the sweep attributed
+// to this instance is no longer attributable under its current configuration.
+//
+// What makes a snapshot this instance's to delete is its naming: the
+// controller's name prefix, a component's convention, or an external job's
+// prefix the operator declared. The report is stored and stays usable for
+// maxReportAge, which outlives the restart that changes any of those. Without
+// this, withdrawing a declaration would still let the old report delete the
+// snapshots it no longer authorises. Unaddressable names are left to the
+// addressability check, which reports them more precisely.
+func (m *Manager) verifySnapshotsStillAttributable(instance *models.CamundaInstance, art OrphanArtifacts) error {
+	if len(art.SnapshotNames) == 0 || m.cfg == nil {
+		return nil
+	}
+	naming := elasticsearch.SnapshotNaming{
+		Prefix:           m.cfg.GetElasticsearchSnapshotNamePrefix(instance.ID),
+		ExternalPrefixes: m.cfg.GetElasticsearchExternalSnapshotPrefixes(instance.ID),
+	}
+	for _, name := range art.SnapshotNames {
+		if !isAddressableSnapshotName(name) {
+			continue
+		}
+		owner, backupID, _ := naming.Classify(name)
+		if owner == elasticsearch.OwnerForeign || backupID != art.BackupID {
+			return fmt.Errorf("%w (%s): snapshot %q is no longer attributed to this instance by its current snapshot naming settings "+
+				"(ELASTICSEARCH_SNAPSHOT_NAME_PREFIX_<ID>, ELASTICSEARCH_EXTERNAL_SNAPSHOT_PREFIXES_<ID>) — rescan",
+				utils.ErrOrphanReportStale, art.BackupID, name)
+		}
+	}
+	return nil
 }
 
 // verifyEndpointsUnchanged refuses when a component's backup endpoint has moved

@@ -3,7 +3,6 @@ package camunda
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -88,32 +87,20 @@ type wireBackupRecord struct {
 // ListBackups fetches every backup a component currently holds.
 //
 // It issues GET against the bare backup endpoint - the same URL the orchestrator
-// POSTs to when creating a backup, with no ID appended.
-//
-// The request gets ListTimeout rather than the general per-request timeout, and
-// a timeout is not retried: a listing that is slow, not flaky, would otherwise
-// burn several full timeouts and outlast the sweep's own deadline. Server errors
-// are still retried.
+// POSTs to when creating a backup, with no ID appended. It is a listing request
+// (see GetListing): it gets COMPONENT_LIST_TIMEOUT_SECONDS, and a request that
+// runs that out, or a gateway that times it out, is not retried.
 func (c *HTTPClient) ListBackups(ctx context.Context, endpoint string) ([]ComponentBackupRecord, error) {
 	if endpoint == "" {
 		return nil, fmt.Errorf("backup endpoint is required")
 	}
 
-	timeout := c.config.ListTimeout
-	if timeout <= 0 {
-		timeout = c.config.Timeout
-	}
 	target := utils.RedactURL(endpoint)
 	started := time.Now()
 
-	resp, err := c.Do(ctx, RequestOptions{
-		Method:           http.MethodGet,
-		URL:              strings.TrimRight(endpoint, "/"),
-		Timeout:          timeout,
-		NoRetryOnTimeout: true,
-	})
+	resp, err := c.GetListing(ctx, strings.TrimRight(endpoint, "/"), nil)
 	if err != nil {
-		return nil, describeListFailure(ctx, err, time.Since(started))
+		return nil, c.DescribeListFailure(ctx, "list backups", err, started)
 	}
 	defer resp.Body.Close()
 
@@ -134,8 +121,8 @@ func (c *HTTPClient) ListBackups(ctx context.Context, endpoint string) ([]Compon
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read backup list response after %v (%d bytes read): %w",
-			time.Since(started).Round(time.Millisecond), len(body), err)
+		return nil, c.DescribeListFailure(ctx, "list backups",
+			fmt.Errorf("reading the response (%d bytes received): %w", len(body), err), started)
 	}
 
 	records, err := parseBackupList(body)
@@ -147,21 +134,6 @@ func (c *HTTPClient) ListBackups(ctx context.Context, endpoint string) ([]Compon
 	c.logger.Debug("Backup listing at %s: status %d, %d bytes, %d backups in %v",
 		target, resp.StatusCode, len(body), len(records), time.Since(started).Round(time.Millisecond))
 	return records, nil
-}
-
-// describeListFailure says which limit ended a listing request, because the fix
-// differs: the per-request listing timeout is COMPONENT_LIST_TIMEOUT_SECONDS,
-// the sweep's whole budget is RECONCILE_TIMEOUT_SECONDS.
-func describeListFailure(ctx context.Context, err error, elapsed time.Duration) error {
-	elapsed = elapsed.Round(time.Millisecond)
-	switch {
-	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		return fmt.Errorf("failed to list backups: the scan's time budget (RECONCILE_TIMEOUT_SECONDS) ran out after %v: %w", elapsed, err)
-	case isTimeout(err):
-		return fmt.Errorf("failed to list backups: no response within the listing timeout (COMPONENT_LIST_TIMEOUT_SECONDS) after %v: %w", elapsed, err)
-	default:
-		return fmt.Errorf("failed to list backups after %v: %w", elapsed, err)
-	}
 }
 
 // snippet returns at most n bytes of body for an error message, on one line.

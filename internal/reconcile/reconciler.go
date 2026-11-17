@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -127,6 +128,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, instance *models.CamundaInst
 
 	ev := r.collect(ctx, instance)
 	findings := classify(ev, r.opts)
+	if inFlight := ev.untrackedInFlight(); len(inFlight) > 0 {
+		ids := make([]string, 0, len(inFlight))
+		for id := range inFlight {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		r.logger.Info("[reconcile] %s: %d untracked backup(s) still being written are left out of this report until they finish: %s",
+			instance.ID, len(ids), strings.Join(ids, ", "))
+	}
 
 	tracked := make(map[string]bool, len(ev.records))
 	for _, rec := range ev.records {
@@ -181,13 +191,13 @@ func observedSnapshots(ev *evidence) map[string][]string {
 		return nil
 	}
 
+	ev.classifySnapshots()
 	byBackup := make(map[string][]string)
 	for _, snap := range ev.snapshots {
-		owner, backupID, _ := ev.naming().Classify(snap.Name)
-		if backupID == "" || owner == elasticsearch.OwnerForeign {
+		if snap.BackupID == "" || snap.Owner == elasticsearch.OwnerForeign {
 			continue
 		}
-		byBackup[backupID] = append(byBackup[backupID], snap.Name)
+		byBackup[snap.BackupID] = append(byBackup[snap.BackupID], snap.Name)
 	}
 	return byBackup
 }

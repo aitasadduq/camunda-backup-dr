@@ -430,9 +430,11 @@ The fix is to make the source listable. Read its error:
 
 | Error contains | Meaning | Fix |
 |---|---|---|
-| `listing timeout (COMPONENT_LIST_TIMEOUT_SECONDS)` | The component did not answer `GET /actuator/backups` in time. Listing time grows with the number of backups, so this is most likely for Zeebe with a large S3/OCI store. | Raise `COMPONENT_LIST_TIMEOUT_SECONDS`, and `RECONCILE_TIMEOUT_SECONDS` above it. The log line `could not be checked (gave up after …)` shows how long it waited. |
-| `scan's time budget (RECONCILE_TIMEOUT_SECONDS)` | The whole sweep ran out of time while this source was still answering. | Raise `RECONCILE_TIMEOUT_SECONDS`. |
-| `status 5xx` | The component itself failed. Retried before giving up (`Retrying GET … after: …` warnings). | Check the component's own logs at the time of the scan. |
+| `listing timeout (COMPONENT_LIST_TIMEOUT_SECONDS)` | The component (or Elasticsearch, for the `elasticsearch` source) did not finish the listing in time, either before answering or while sending it. Listing time grows with the number of backups, so this is most likely for Zeebe with a large S3/OCI store. | Raise `COMPONENT_LIST_TIMEOUT_SECONDS`, and `RECONCILE_TIMEOUT_SECONDS` above it. The log line `could not be checked (gave up after …)` shows how long it waited. |
+| `before the … listing timeout, so the connection or TLS handshake failed` | The connection never opened (unroutable address, firewall, DNS, TLS). Retried before giving up. | Fix the network path or endpoint. Raising the listing timeout changes nothing. |
+| `scan's time budget (RECONCILE_TIMEOUT_SECONDS)` | The whole sweep ran out of time while this source was still answering. A `(previous attempt: …)` suffix says why it was being retried. | Raise `RECONCILE_TIMEOUT_SECONDS`, or fix what the previous attempt names. |
+| `status 504` or `status 408` | A gateway or ingress in front of the component timed the listing out. Not retried: it would time out the same way. | Raise that gateway's timeout above how long the listing takes (see the `time curl` command below), or call the component directly. |
+| `status 5xx` (other) | The component itself failed. Retried before giving up (`Retrying GET … after: …` warnings). | Check the component's own logs at the time of the scan. |
 | `failed to parse backup list … starting: …` | The component answered in a shape the controller cannot decode. The start of the body is included. | Report it with that body excerpt. |
 
 To time the listing by hand from inside the cluster:

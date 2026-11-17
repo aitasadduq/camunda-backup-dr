@@ -67,10 +67,14 @@ type RequestOptions struct {
 	// Timeout overrides the client's per-attempt timeout when positive.
 	Timeout time.Duration
 
-	// NoRetryOnTimeout returns at once when an attempt times out instead of
-	// retrying. For a request that is slow rather than flaky, every retry costs
-	// another full timeout and the sum outlasts the caller's own deadline.
-	NoRetryOnTimeout bool
+	// Listing marks a request for a complete, possibly very slow listing. A
+	// listing is slow rather than flaky, so retrying it only spends another full
+	// timeout and the sum outlasts the caller's own deadline. When set, an
+	// attempt that ran out its whole Timeout is not retried, and neither is a
+	// 408 or 504 (a gateway in front of the server timing out the same way).
+	// Connect and TLS-handshake timeouts end well before Timeout and are still
+	// retried.
+	Listing bool
 }
 
 // Do performs an HTTP request with retry logic and exponential backoff
@@ -99,7 +103,7 @@ func (c *HTTPClient) Do(ctx context.Context, opts RequestOptions) (*http.Respons
 			
 			select {
 			case <-ctx.Done():
-				return nil, ctx.Err()
+				return nil, withLastAttempt(ctx.Err(), lastErr)
 			case <-time.After(waitTime):
 				// Continue with retry
 			}
@@ -138,20 +142,29 @@ func (c *HTTPClient) Do(ctx context.Context, opts RequestOptions) (*http.Respons
 		started := time.Now()
 		resp, err := client.Do(req)
 		if err != nil {
-			lastErr = err
-			c.logger.Debug("%s failed after %v (attempt %d/%d): %v", target, time.Since(started).Round(time.Millisecond), attempt+1, c.config.MaxRetries+1, err)
+			elapsed := time.Since(started)
+			c.logger.Debug("%s failed after %v (attempt %d/%d): %v", target, elapsed.Round(time.Millisecond), attempt+1, c.config.MaxRetries+1, err)
 
-			// Check if context was cancelled
+			// Check if context was cancelled. The previous attempt's failure is
+			// kept: when the caller's deadline ends a retry loop, it is the only
+			// record of why the loop was retrying in the first place.
 			if ctx.Err() != nil {
-				return nil, ctx.Err()
+				return nil, withLastAttempt(ctx.Err(), lastErr)
 			}
+			lastErr = err
 
-			if opts.NoRetryOnTimeout && isTimeout(err) {
-				return nil, err
+			if opts.Listing && ranOutTimeout(err, elapsed, client.Timeout) {
+				return nil, fmt.Errorf("%w after %v: %v", ErrListTimeout, elapsed.Round(time.Millisecond), err)
 			}
 
 			// Retry on network errors
 			continue
+		}
+
+		// A gateway timing out a listing is as slow as the listing itself;
+		// hand the response to the caller instead of waiting for it again.
+		if opts.Listing && (resp.StatusCode == http.StatusGatewayTimeout || resp.StatusCode == http.StatusRequestTimeout) {
+			return resp, nil
 		}
 
 		// Check if status code indicates retryable error
@@ -211,11 +224,76 @@ func (c *HTTPClient) Delete(ctx context.Context, url string, headers map[string]
 	})
 }
 
-// isTimeout reports whether err is a per-request timeout (http.Client.Timeout
-// or a dial/read deadline), as opposed to the caller's context ending.
+// ErrListTimeout marks a listing that ran out its whole listing timeout.
+var ErrListTimeout = errors.New("no response within the listing timeout (COMPONENT_LIST_TIMEOUT_SECONDS)")
+
+// isTimeout reports whether err is a timeout of any kind: the whole-request
+// http.Client.Timeout, or a dial, TLS-handshake or read deadline.
 func isTimeout(err error) bool {
 	var netErr net.Error
 	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+// ranOutTimeout reports whether a timeout is the request's own Timeout running
+// out, rather than an earlier dial or TLS-handshake timeout. The transport's
+// dialer gives up after 30s and its handshake after 10s, so only a failure at
+// (nearly) the configured limit can be blamed on that limit.
+func ranOutTimeout(err error, elapsed, limit time.Duration) bool {
+	return isTimeout(err) && limit > 0 && elapsed >= limit*9/10
+}
+
+// withLastAttempt keeps the reason a retry loop was retrying when the caller's
+// context ends it. errors.Is still sees err.
+func withLastAttempt(err, last error) error {
+	if last == nil {
+		return err
+	}
+	return fmt.Errorf("%w (previous attempt: %v)", err, last)
+}
+
+// ListTimeout is the per-attempt limit for listing requests.
+func (c *HTTPClient) ListTimeout() time.Duration {
+	if c.config.ListTimeout > 0 {
+		return c.config.ListTimeout
+	}
+	return c.config.Timeout
+}
+
+// GetListing performs a GET for a complete, possibly very slow listing — a
+// component's backups or a snapshot repository. It uses ListTimeout and the
+// Listing retry rules. Errors from it, and from reading its body, should go
+// through DescribeListFailure so they name the limit that actually ran out.
+func (c *HTTPClient) GetListing(ctx context.Context, url string, headers map[string]string) (*http.Response, error) {
+	return c.Do(ctx, RequestOptions{
+		Method:  http.MethodGet,
+		URL:     url,
+		Headers: headers,
+		Timeout: c.ListTimeout(),
+		Listing: true,
+	})
+}
+
+// DescribeListFailure says which limit ended a listing, because the fix
+// differs: COMPONENT_LIST_TIMEOUT_SECONDS for one listing, RECONCILE_TIMEOUT_SECONDS
+// for the whole scan, and neither for a connection that never opened. what
+// names the listing ("list backups", "list snapshots"); started is when the
+// request began, so a timeout while reading the body is judged the same way.
+func (c *HTTPClient) DescribeListFailure(ctx context.Context, what string, err error, started time.Time) error {
+	elapsed := time.Since(started).Round(time.Millisecond)
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return fmt.Errorf("failed to %s: the scan's time budget (RECONCILE_TIMEOUT_SECONDS) ran out after %v: %w", what, elapsed, err)
+	case errors.Is(err, ErrListTimeout):
+		return fmt.Errorf("failed to %s: %w", what, err)
+	case ranOutTimeout(err, elapsed, c.ListTimeout()):
+		// Reading the body counts against the same limit.
+		return fmt.Errorf("failed to %s: %w after %v: %v", what, ErrListTimeout, elapsed, err)
+	case isTimeout(err):
+		return fmt.Errorf("failed to %s: timed out after %v, before the %v listing timeout, so the connection or TLS handshake failed rather than the listing being slow (COMPONENT_LIST_TIMEOUT_SECONDS does not govern this): %w",
+			what, elapsed, c.ListTimeout(), err)
+	default:
+		return fmt.Errorf("failed to %s after %v: %w", what, elapsed, err)
+	}
 }
 
 // shouldRetry determines if a status code should trigger a retry

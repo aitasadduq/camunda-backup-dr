@@ -129,3 +129,80 @@ func TestExternalSnapshotWithinGraceIsNotReported(t *testing.T) {
 		t.Errorf("expected nothing within the grace period, got %+v", issues)
 	}
 }
+
+// An untracked backup that some source still reports as being written is a
+// live backup, not an orphan. Reporting it would offer it for deletion, and
+// Elasticsearch aborts an in-progress snapshot that is deleted. The grace
+// period alone is not enough: this one is hours old.
+func TestUntrackedBackupStillBeingWrittenIsNotReported(t *testing.T) {
+	tests := []struct {
+		name string
+		ev   *evidence
+	}{
+		{
+			name: "external records snapshot in progress",
+			ev: newEvidence().
+				holds(types.ComponentOperate, oldBackupID, camunda.BackupStateCompleted).
+				snapshot("camunda_zeebe_records_backup_"+oldBackupID, elasticsearch.SnapshotStateInProgress).ev,
+		},
+		{
+			name: "component backup in progress",
+			ev: newEvidence().
+				holds(types.ComponentZeebe, oldBackupID, camunda.BackupStateInProgress).
+				snapshot("camunda_zeebe_records_backup_"+oldBackupID, elasticsearch.SnapshotStateSuccess).ev,
+		},
+		{
+			name: "component snapshot in progress",
+			ev: newEvidence().
+				snapshot("camunda_operate_"+oldBackupID+"_8.6.0_part_1_of_6", elasticsearch.SnapshotStateInProgress).
+				snapshot("camunda_zeebe_records_backup_"+oldBackupID, elasticsearch.SnapshotStateSuccess).ev,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.ev.externalPrefixes = []string{"camunda_zeebe_records_backup_"}
+			for _, f := range classify(tt.ev, DefaultOptions()) {
+				if f.BackupID == oldBackupID {
+					t.Errorf("a backup still being written was reported as %s", f.Reason)
+				}
+			}
+			if !tt.ev.untrackedInFlight()[oldBackupID] {
+				t.Error("expected the backup to be recognised as in flight")
+			}
+		})
+	}
+}
+
+// Once it finishes, the same backup is reported as usual.
+func TestUntrackedBackupIsReportedOnceFinished(t *testing.T) {
+	ev := newEvidence().
+		holds(types.ComponentZeebe, oldBackupID, camunda.BackupStateCompleted).
+		snapshot("camunda_zeebe_records_backup_"+oldBackupID, elasticsearch.SnapshotStateSuccess).ev
+	ev.externalPrefixes = []string{"camunda_zeebe_records_backup_"}
+
+	var reported bool
+	for _, f := range classify(ev, DefaultOptions()) {
+		reported = reported || (f.BackupID == oldBackupID && f.Reason == ReasonExternalBackup)
+	}
+	if !reported {
+		t.Error("a finished external backup must be reported")
+	}
+}
+
+// The index, the deletable snapshot set and the log all read one
+// classification, done once per sweep.
+func TestSnapshotsAreClassifiedOnce(t *testing.T) {
+	ev := newEvidence().snapshot("camunda_zeebe_records_backup_"+oldBackupID, elasticsearch.SnapshotStateSuccess).ev
+	ev.externalPrefixes = []string{"camunda_zeebe_records_backup_"}
+	ev.classifySnapshots()
+	if ev.snapshots[0].Owner != elasticsearch.OwnerExternal || ev.snapshots[0].BackupID != oldBackupID {
+		t.Fatalf("got %+v", ev.snapshots[0])
+	}
+
+	// A later change to the naming must not reclassify the same sweep.
+	ev.externalPrefixes = nil
+	ev.classifySnapshots()
+	if got := observedSnapshots(ev)[oldBackupID]; len(got) != 1 {
+		t.Errorf("observedSnapshots disagrees with the stored classification: %v", got)
+	}
+}

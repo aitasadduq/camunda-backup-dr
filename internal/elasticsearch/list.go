@@ -2,12 +2,14 @@ package elasticsearch
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/camunda"
 )
@@ -76,15 +78,26 @@ func (c *Client) ListSnapshots(ctx context.Context, repository string) ([]Snapsh
 		return nil, err
 	}
 
-	resp, err := c.httpClient.Get(ctx, fullURL, c.authHeaders())
+	// A listing request, like a component's: a large repository can take far
+	// longer than an ordinary call, and retrying a slow listing only spends the
+	// scan's budget again.
+	started := time.Now()
+	resp, err := c.httpClient.GetListing(ctx, fullURL, c.authHeaders())
 	if err != nil {
-		return nil, fmt.Errorf("failed to list snapshots: %w", err)
+		return nil, c.httpClient.DescribeListFailure(ctx, "list snapshots", err, started)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return nil, fmt.Errorf("list snapshots failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("list snapshots failed with status %d after %v: %s",
+			resp.StatusCode, time.Since(started).Round(time.Millisecond), strings.TrimSpace(string(body)))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, c.httpClient.DescribeListFailure(ctx, "list snapshots",
+			fmt.Errorf("reading the response (%d bytes received): %w", len(body), err), started)
 	}
 
 	// _cat returns every field as a string regardless of its underlying type.
@@ -94,9 +107,11 @@ func (c *Client) ListSnapshots(ctx context.Context, repository string) ([]Snapsh
 		StartEpoch   string `json:"start_epoch"`
 		FailedShards string `json:"failed_shards"`
 	}
-	if err := camunda.ReadJSONResponse(resp, &rows); err != nil {
-		return nil, fmt.Errorf("failed to parse snapshot list: %w", err)
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return nil, fmt.Errorf("failed to parse snapshot list (%d-byte response): %w", len(body), err)
 	}
+	c.logger.Debug("Snapshot listing of %q: %d bytes, %d snapshots in %v",
+		repository, len(body), len(rows), time.Since(started).Round(time.Millisecond))
 
 	out := make([]SnapshotInfo, 0, len(rows))
 	for _, row := range rows {

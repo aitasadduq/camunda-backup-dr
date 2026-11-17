@@ -98,7 +98,7 @@ func main() {
 		ListTimeout:   time.Duration(cfg.ComponentListTimeoutSeconds) * time.Second,
 	}
 	httpClient := camunda.NewHTTPClient(httpClientCfg, logger)
-	logger.Info("Component backup listings may take up to %ds each (COMPONENT_LIST_TIMEOUT_SECONDS); a scan may take up to %ds (RECONCILE_TIMEOUT_SECONDS)",
+	logger.Info("Listings (component backups, Elasticsearch snapshots) may take up to %ds each (COMPONENT_LIST_TIMEOUT_SECONDS); a scan may take up to %ds (RECONCILE_TIMEOUT_SECONDS)",
 		cfg.ComponentListTimeoutSeconds, cfg.ReconcileTimeoutSeconds)
 	if cfg.ComponentListTimeoutSeconds >= cfg.ReconcileTimeoutSeconds {
 		// The scan's deadline cuts the listing off first, so raising the listing

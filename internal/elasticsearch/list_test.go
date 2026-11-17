@@ -2,8 +2,10 @@ package elasticsearch
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -259,5 +261,33 @@ func TestSnapshotNamingControllerBeatsOverlappingExternalPrefix(t *testing.T) {
 	naming := SnapshotNaming{Prefix: "backup", ExternalPrefixes: []string{"backup-"}}
 	if owner, id, _ := naming.Classify("backup-20260111154511"); owner != OwnerController || id != "20260111154511" {
 		t.Errorf("got (%v, %q), want the controller's snapshot", owner, id)
+	}
+}
+
+// The repository listing is the source declared external snapshots depend on,
+// so it gets the listing timeout, not the general one, and is not retried
+// once it runs that out.
+func TestListSnapshotsIsAListingRequest(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		time.Sleep(300 * time.Millisecond)
+		_, _ = w.Write([]byte(catSnapshotsResponse))
+	}))
+	defer server.Close()
+
+	slowOK := camunda.NewHTTPClient(camunda.HTTPClientConfig{Timeout: 100 * time.Millisecond, ListTimeout: 2 * time.Second}, nil)
+	if _, err := NewClient(server.URL, "", "", slowOK, nil).ListSnapshots(context.Background(), "camunda-backup"); err != nil {
+		t.Fatalf("a listing within ListTimeout must succeed: %v", err)
+	}
+
+	calls.Store(0)
+	tooSlow := camunda.NewHTTPClient(camunda.HTTPClientConfig{Timeout: 5 * time.Second, ListTimeout: 50 * time.Millisecond, MaxRetries: 3, RetryDelay: time.Millisecond}, nil)
+	_, err := NewClient(server.URL, "", "", tooSlow, nil).ListSnapshots(context.Background(), "camunda-backup")
+	if !errors.Is(err, camunda.ErrListTimeout) {
+		t.Errorf("expected ErrListTimeout, got %v", err)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Errorf("a timed-out listing was attempted %d times, want 1", n)
 	}
 }

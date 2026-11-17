@@ -195,7 +195,7 @@ Orphaned backup detection. See [Orphaned Backup Detection](orphaned-backups.md).
 |----------|------|---------|-------------|
 | `RECONCILE_ENABLED` | bool | `true` | Run a sweep after each backup. On-demand sweeps stay available when disabled. |
 | `RECONCILE_TIMEOUT_SECONDS` | int | `120` | Maximum duration of a single sweep |
-| `COMPONENT_LIST_TIMEOUT_SECONDS` | int | `90` | Timeout for one GET of a component's full backup listing (`GET /actuator/backups`). Kept apart from the 30s timeout used for every other component call, because listing a large S3/OCI backup store is far slower. A listing that times out is not retried. Keep it below `RECONCILE_TIMEOUT_SECONDS`, or the sweep's deadline cuts the listing off first (the controller warns at startup). |
+| `COMPONENT_LIST_TIMEOUT_SECONDS` | int | `90` | Timeout for one complete listing during a scan: a component's backups (`GET /actuator/backups`) or the Elasticsearch snapshot repository (`_cat/snapshots`). Kept apart from the 30s timeout used for every other call, because these listings are far slower on a large store. A listing that runs this out, or that a gateway answers with 408/504, is not retried; connection and TLS-handshake timeouts and other 5xx responses still are. Keep it below `RECONCILE_TIMEOUT_SECONDS`, or the scan deadline cuts the listing off first (the controller warns at startup). |
 | `RECONCILE_GRACE_PERIOD_MINUTES` | int | `15` | Backups younger than this are excluded. Must exceed the backup polling window, or a sweep will report artifacts that are still being written. |
 | `RECONCILE_STALE_AFTER_MINUTES` | int | `30` | How long an artifact may stay in progress before it is reported as stuck |
 

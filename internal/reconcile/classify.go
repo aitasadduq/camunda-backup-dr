@@ -74,6 +74,10 @@ type evidenceIndex struct {
 	foreignSnapshots  []elasticsearch.SnapshotInfo
 	// allComponentIDs is every backup ID any component reported.
 	allComponentIDs map[string]bool
+	// untrackedInFlight are untracked backup IDs some source still reports as
+	// being written. No untracked rule reports them; see
+	// evidence.untrackedInFlight.
+	untrackedInFlight map[string]bool
 	// snapshotNames is every snapshot name in the repository. Membership is
 	// checked once per snapshot per component per record, so a linear scan here
 	// turns the sweep quadratic on a large repository.
@@ -94,13 +98,12 @@ func indexEvidence(ev *evidence) *evidenceIndex {
 		idx.recordsByID[rec.BackupID] = append(idx.recordsByID[rec.BackupID], rec)
 	}
 
-	naming := ev.naming()
+	ev.classifySnapshots()
+	idx.untrackedInFlight = ev.untrackedInFlight()
 	for _, snap := range ev.snapshots {
 		idx.snapshotNames[snap.Name] = struct{}{}
-		owner, backupID, _ := naming.Classify(snap.Name)
-		snap.Owner = owner
-		snap.BackupID = backupID
-		switch owner {
+		backupID := snap.BackupID
+		switch snap.Owner {
 		case elasticsearch.OwnerController:
 			idx.controllerSnapshots[backupID] = snap
 		case elasticsearch.OwnerComponent:
@@ -443,7 +446,7 @@ func classifyUntracked(ev *evidence, idx *evidenceIndex, opts Options) []Finding
 	// A1: a component holds a backup the controller never recorded.
 	for component, byID := range ev.componentBackups {
 		for backupID := range byID {
-			if len(idx.recordsByID[backupID]) > 0 || withinGrace(backupID, ev, opts) {
+			if !untrackedReportable(backupID, ev, idx, opts) {
 				continue
 			}
 			out = append(out, Finding{
@@ -461,7 +464,7 @@ func classifyUntracked(ev *evidence, idx *evidenceIndex, opts Options) []Finding
 
 	// A2: a controller-shaped snapshot with no record behind it.
 	for backupID, snap := range idx.controllerSnapshots {
-		if len(idx.recordsByID[backupID]) > 0 || withinGrace(backupID, ev, opts) {
+		if !untrackedReportable(backupID, ev, idx, opts) {
 			continue
 		}
 		out = append(out, Finding{
@@ -477,7 +480,7 @@ func classifyUntracked(ev *evidence, idx *evidenceIndex, opts Options) []Finding
 	// it joins that backup's component artifacts in one row and is deleted with
 	// them, rather than being stranded when those are removed.
 	for backupID, snaps := range idx.externalSnapshots {
-		if len(idx.recordsByID[backupID]) > 0 || withinGrace(backupID, ev, opts) {
+		if !untrackedReportable(backupID, ev, idx, opts) {
 			continue
 		}
 		for _, snap := range snaps {
@@ -493,7 +496,7 @@ func classifyUntracked(ev *evidence, idx *evidenceIndex, opts Options) []Finding
 
 	// A3: component snapshots whose owning component no longer knows about them.
 	for backupID, snaps := range idx.componentSnapshots {
-		if len(idx.recordsByID[backupID]) > 0 || withinGrace(backupID, ev, opts) {
+		if !untrackedReportable(backupID, ev, idx, opts) {
 			continue
 		}
 		if idx.allComponentIDs[backupID] {
@@ -549,6 +552,15 @@ func classifyUntracked(ev *evidence, idx *evidenceIndex, opts Options) []Finding
 	}
 
 	return out
+}
+
+// untrackedReportable reports whether an untracked artifact may be reported
+// (and so offered for deletion): it has no record, it is past the grace
+// period, and nothing says its backup is still being written.
+func untrackedReportable(backupID string, ev *evidence, idx *evidenceIndex, opts Options) bool {
+	return len(idx.recordsByID[backupID]) == 0 &&
+		!withinGrace(backupID, ev, opts) &&
+		!idx.untrackedInFlight[backupID]
 }
 
 // untrackedReason distinguishes retention residue from a genuinely external

@@ -103,9 +103,22 @@ ELASTICSEARCH_EXTERNAL_SNAPSHOT_PREFIXES_UMRAH_CAMUNDA=camunda_zeebe_records_bac
 - The prefix is matched literally — `camunda_zeebe_records_backup_` does not
   match `camunda_zeebe_records_backup-<id>` — and only with a backup ID after
   it, so a malformed `camunda_zeebe_records_backup_` stays foreign.
-- Backups younger than `RECONCILE_GRACE_PERIOD_MINUTES` are not reported, which
-  keeps a backup the job is still taking off the list. Retention never applies
-  to external backups: the controller has no record of them.
+- A backup the job is still taking is never listed: any untracked backup ID
+  that a component reports `IN_PROGRESS`, or whose snapshot is `IN_PROGRESS`,
+  is left out of the report until it finishes (Elasticsearch aborts an
+  in-progress snapshot that is deleted). Backups younger than
+  `RECONCILE_GRACE_PERIOD_MINUTES` are left out too, but that alone is not
+  relied on: it reads the backup ID as UTC, so a job stamping IDs in local time
+  behind UTC produces IDs that already look old.
+- The prefix must be followed by exactly 14 digits (`YYYYMMDDHHMMSS`). A job
+  using another ID format (for example epoch seconds) is not matched, and its
+  snapshots stay `A4_FOREIGN_SNAPSHOT`.
+- The declaration is re-checked when deleting. The report a deletion acts on
+  is stored and usable for an hour, so withdrawing the declaration and
+  restarting would otherwise still let that report delete the job's snapshots;
+  instead the deletion is refused as `report_stale` until a rescan.
+- Retention never applies to external backups: the controller has no record
+  of them.
 
 There is no global default. Declaring a prefix authorises the controller to
 delete snapshots it did not create, so it is stated per instance.
@@ -339,7 +352,7 @@ quietly if one is already running, and the endpoint answers `409`.
 |---|---|---|
 | `RECONCILE_ENABLED` | `true` | Post-backup sweeps. On-demand stays available when off. |
 | `RECONCILE_TIMEOUT_SECONDS` | `120` | Cap on one sweep. |
-| `COMPONENT_LIST_TIMEOUT_SECONDS` | `90` | Cap on one component's full backup listing. Not retried on timeout. Keep below `RECONCILE_TIMEOUT_SECONDS`. |
+| `COMPONENT_LIST_TIMEOUT_SECONDS` | `90` | Cap on one complete listing (a component's backups, or the snapshot repository). Not retried when it runs out or a gateway answers 408/504. Keep below `RECONCILE_TIMEOUT_SECONDS`. |
 | `RECONCILE_GRACE_PERIOD_MINUTES` | `15` | Backups younger than this are skipped. Must exceed the polling window. |
 | `RECONCILE_STALE_AFTER_MINUTES` | `30` | How long in-progress may last before it is called stuck. |
 

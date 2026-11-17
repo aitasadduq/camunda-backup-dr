@@ -49,9 +49,10 @@ type Config struct {
 	ReconcileGracePeriodMinutes int
 	ReconcileStaleAfterMinutes  int
 
-	// ComponentListTimeoutSeconds bounds one GET of a component's full backup
-	// listing. It is separate from the 30s request timeout because listing every
-	// backup in a large S3/OCI store is far slower than any other component call.
+	// ComponentListTimeoutSeconds bounds one complete listing: a component's
+	// backups (GET /actuator/backups) or the Elasticsearch snapshot repository.
+	// It is separate from the 30s request timeout because listing a large
+	// backup store or repository is far slower than any other call.
 	ComponentListTimeoutSeconds int
 
 	// Alert Configuration
