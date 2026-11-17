@@ -49,6 +49,12 @@ type Config struct {
 	ReconcileGracePeriodMinutes int
 	ReconcileStaleAfterMinutes  int
 
+	// ComponentListTimeoutSeconds bounds one complete listing: a component's
+	// backups (GET /actuator/backups) or the Elasticsearch snapshot repository.
+	// It is separate from the 30s request timeout because listing a large
+	// backup store or repository is far slower than any other call.
+	ComponentListTimeoutSeconds int
+
 	// Alert Configuration
 	AlertWebhookURL          string
 	AlertEnableBackupFailed  bool
@@ -127,6 +133,7 @@ func Load() (*Config, error) {
 		ReconcileTimeoutSeconds:     getEnvAsInt("RECONCILE_TIMEOUT_SECONDS", 120),
 		ReconcileGracePeriodMinutes: getEnvAsInt("RECONCILE_GRACE_PERIOD_MINUTES", 15),
 		ReconcileStaleAfterMinutes:  getEnvAsInt("RECONCILE_STALE_AFTER_MINUTES", 30),
+		ComponentListTimeoutSeconds: getEnvAsInt("COMPONENT_LIST_TIMEOUT_SECONDS", 90),
 
 		// Alert Configuration
 		AlertWebhookURL:           getEnv("ALERT_WEBHOOK_URL", ""),
@@ -185,6 +192,10 @@ func (c *Config) Validate() error {
 	}
 
 	if c.DefaultBackupMaxAttempts <= 0 {
+		return utils.ErrInvalidConfiguration
+	}
+
+	if c.ComponentListTimeoutSeconds <= 0 {
 		return utils.ErrInvalidConfiguration
 	}
 
@@ -281,6 +292,26 @@ func (c *Config) GetElasticsearchSnapshotNamePrefix(camundaInstanceID string) st
 		return prefix
 	}
 	return c.DefaultElasticsearchSnapshotNamePrefix
+}
+
+// GetElasticsearchExternalSnapshotPrefixes returns the snapshot name prefixes
+// of external backup jobs the operator has declared for an instance, from the
+// comma-separated ELASTICSEARCH_EXTERNAL_SNAPSHOT_PREFIXES_<INSTANCE_ID>.
+//
+// There is deliberately no global default. Declaring a prefix lets the
+// controller list and delete snapshots it did not create, so it is an explicit
+// per-instance statement about who owns what in that instance's repository.
+func (c *Config) GetElasticsearchExternalSnapshotPrefixes(camundaInstanceID string) []string {
+	raw := os.Getenv("ELASTICSEARCH_EXTERNAL_SNAPSHOT_PREFIXES_" + NormalizeForEnvVar(camundaInstanceID))
+	var out []string
+	for _, p := range strings.Split(raw, ",") {
+		// Only surrounding whitespace is trimmed: a trailing "_" or "-" is part
+		// of the prefix and must survive.
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // GetS3SecretKey retrieves S3 secret key for a specific Camunda instance.

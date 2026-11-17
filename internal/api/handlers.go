@@ -835,7 +835,9 @@ func (h *Handlers) DeleteBackupHandler(w http.ResponseWriter, r *http.Request) {
 	if err := h.deleteBackupEverywhere(ctx, instanceID, backupID, force, h.orphanIndexFor(instanceID)); err != nil {
 		status, code, message := deleteFailureResponse(err)
 		if status == http.StatusInternalServerError {
-			h.logger.Error("Failed to delete backup: %v", err)
+			h.logger.Error("Failed to delete backup %s for instance %s: %v", backupID, instanceID, err)
+		} else {
+			h.logger.Warn("Did not delete backup %s for instance %s (%s): %v", backupID, instanceID, code, err)
 		}
 		writeError(w, status, code, message)
 		return

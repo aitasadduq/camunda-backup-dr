@@ -1586,11 +1586,14 @@ function renderBackupsTable(instanceId, backups, opts = {}) {
                             <td class="hidden md:table-cell text-xs text-gray-500">${b.duration_seconds != null ? formatDuration(b.duration_seconds) : '—'}</td>
                             <td>
                                 <span class="badge badge-${b.status.toLowerCase()}">${b.status}</span>
+                                ${isExternalBackup(b._orphan) ? '<span class="text-xs text-gray-500 block" title="Taken by a declared external backup job">external job</span>' : ''}
                                 ${b._issue ? `<span class="issue-marker severity-${escapeHtml(b._issue.severity)}" title="${escapeHtml(reasonInfo(b._issue.primary_reason).label)}">!</span>` : ''}
                             </td>
                             <td class="hidden lg:table-cell">${b.trigger_type ? `<span class="badge badge-${b.trigger_type.toLowerCase()}">${b.trigger_type}</span>` : '<span class="text-xs text-gray-400">—</span>'}</td>
                             <td class="hidden md:table-cell text-xs text-gray-500">
-                                ${b.backup_stats ? `<span class="text-green-600">${b.backup_stats.successful_components}</span>/<span class="text-red-600">${b.backup_stats.failed_components}</span>/<span>${b.backup_stats.total_components}</span>` : '—'}
+                                ${b.backup_stats
+                                    ? `<span class="text-green-600">${b.backup_stats.successful_components}</span>/<span class="text-red-600">${b.backup_stats.failed_components}</span>/<span>${b.backup_stats.total_components}</span>`
+                                    : (b._orphan?.present_in?.length ? escapeHtml(b._orphan.present_in.join(', ')) : '—')}
                             </td>
                             <td>
                                 <div class="flex items-center gap-1">
@@ -2624,6 +2627,12 @@ async function fetchReconcileReport(instanceId, { force = false } = {}) {
     }
 }
 
+// A backup taken by an external job the operator declared for this instance
+// (ELASTICSEARCH_EXTERNAL_SNAPSHOT_PREFIXES_<ID>): untracked, but expected.
+function isExternalBackup(issue) {
+    return issue?.primary_reason === 'A6_EXTERNAL_BACKUP';
+}
+
 // Orphans have no history record, so a backup-shaped row is synthesised from the
 // finding. Only the backup ID and its timestamp are real; everything the history
 // record would have supplied is genuinely unknown and left null for the table to
@@ -2635,7 +2644,9 @@ function orphanToBackupRow(issue) {
         end_time: null,
         duration_seconds: null,
         status: 'ORPHANED',
-        trigger_type: null,
+        // A declared external job started it; nothing else about who started an
+        // orphan is known.
+        trigger_type: isExternalBackup(issue) ? 'EXTERNAL' : null,
         backup_stats: null,
         _orphan: issue,
     };
@@ -2754,11 +2765,18 @@ function renderReconcileHeader(report) {
         `;
     }).join('');
 
+    // The error is the first thing anyone diagnosing this needs, and a chip
+    // tooltip is easy to miss and unreachable on touch screens.
+    const failedSources = sources.filter(s => !s.reachable && !s.skipped);
     const partial = unreachable.length ? `
         <div class="reconcile-partial">
             <strong>This scan is incomplete.</strong>
             Could not check: ${escapeHtml(unreachable.join(', '))}.
-            Anything stored only there is neither confirmed present nor reported missing.
+            Anything stored only there is neither confirmed present nor reported missing,
+            and orphans cannot be deleted until a scan reaches every source.
+            <ul class="reconcile-partial-errors">
+                ${failedSources.map(s => `<li><strong>${escapeHtml(s.name)}:</strong> <code>${escapeHtml(s.error || 'no error recorded')}</code></li>`).join('')}
+            </ul>
         </div>
     ` : '';
 

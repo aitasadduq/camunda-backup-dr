@@ -35,23 +35,36 @@ func NewLogger(logLevel string) *Logger {
 	}
 }
 
-// Info logs an info message
+// Info logs an info message. Every level is a no-op on a nil *Logger, so
+// components built without one (as in most unit tests) need no guards.
 func (l *Logger) Info(format string, v ...interface{}) {
+	if l == nil {
+		return
+	}
 	l.infoLogger.Printf(format, v...)
 }
 
 // Warn logs a warning message
 func (l *Logger) Warn(format string, v ...interface{}) {
+	if l == nil {
+		return
+	}
 	l.warnLogger.Printf(format, v...)
 }
 
 // Error logs an error message
 func (l *Logger) Error(format string, v ...interface{}) {
+	if l == nil {
+		return
+	}
 	l.errorLogger.Printf(format, v...)
 }
 
 // Debug logs a debug message
 func (l *Logger) Debug(format string, v ...interface{}) {
+	if l == nil {
+		return
+	}
 	l.debugLogger.Printf(format, v...)
 }
 

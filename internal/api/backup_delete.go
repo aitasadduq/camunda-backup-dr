@@ -143,6 +143,10 @@ func (h *Handlers) BulkDeleteBackupsHandler(w http.ResponseWriter, r *http.Reque
 			// not in the logs. The single-delete handler logs these too.
 			if status == http.StatusInternalServerError {
 				h.logger.Error("Failed to delete backup %s in batch for instance %s: %v", backupID, id, err)
+			} else {
+				// A refusal is the controller working as designed, but an
+				// operator asking "why won't it delete" needs it in the logs.
+				h.logger.Warn("Did not delete backup %s in batch for instance %s (%s): %v", backupID, id, code, err)
 			}
 			resp.Failed = append(resp.Failed, bulkDeleteFailure{BackupID: backupID, Error: code, Message: message})
 			continue
@@ -202,12 +206,13 @@ func validateBulkDeleteIDs(requested []string) ([]string, string) {
 // and re-reading it per backup would let a concurrent sweep judge different
 // backups in one batch against different reports.
 type orphanIndex struct {
-	issues     map[string]reconcile.BackupIssue
-	repository string
-	endpoints  map[string]string
-	sweptAt    time.Time
-	complete   bool
-	err        error
+	issues      map[string]reconcile.BackupIssue
+	repository  string
+	endpoints   map[string]string
+	sweptAt     time.Time
+	complete    bool
+	unreachable []string
+	err         error
 }
 
 // orphanIndexFor loads the latest sweep for an instance. A failure to load it is
@@ -235,6 +240,7 @@ func (h *Handlers) orphanIndexFor(instanceID string) *orphanIndex {
 	idx.endpoints = report.ComponentEndpoints
 	idx.sweptAt = report.FinishedAt
 	idx.complete = report.AllSourcesReachable()
+	idx.unreachable = report.UnreachableSources()
 	for _, issue := range report.BackupIssues {
 		if !issue.Tracked {
 			idx.issues[issue.BackupID] = issue
@@ -332,6 +338,7 @@ func orphanArtifactsFor(orphans *orphanIndex, backupID string) (retention.Orphan
 		Endpoints:     orphans.endpoints,
 		SweptAt:       orphans.sweptAt,
 		Complete:      orphans.complete,
+		Unreachable:   orphans.unreachable,
 	}, nil
 }
 

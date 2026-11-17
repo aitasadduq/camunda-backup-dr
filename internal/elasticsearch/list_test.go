@@ -2,8 +2,10 @@ package elasticsearch
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -194,5 +196,98 @@ func TestNormalizeSnapshotState(t *testing.T) {
 		if got := normalizeSnapshotState(in); got != want {
 			t.Errorf("normalizeSnapshotState(%q) = %s, want %s", in, got, want)
 		}
+	}
+}
+
+// The controller must claim exactly the names it writes. If the two drifted
+// apart it would either miss its own snapshots or claim another tool's.
+func TestBuildSnapshotNameRoundTripsThroughClassify(t *testing.T) {
+	for _, prefix := range []string{"", "prod", "hajj-camunda"} {
+		name := BuildSnapshotName(prefix, "20260713102006")
+		owner, id, _ := ClassifySnapshot(name, prefix)
+		if owner != OwnerController || id != "20260713102006" {
+			t.Errorf("prefix %q: %q classified as (%v, %q), want controller-owned 20260713102006", prefix, name, owner, id)
+		}
+	}
+}
+
+// Snapshots following Camunda's manual backup procedure belong to whatever job
+// runs that procedure, not to this controller. Undeclared, they must stay
+// foreign: reported for information and never offered for deletion.
+func TestClassifySnapshot_ZeebeRecordsSnapshotsFromAnotherToolStayForeign(t *testing.T) {
+	for _, prefix := range []string{"", "hajj"} {
+		for _, name := range []string{
+			"camunda_zeebe_records_backup_20260111154511",
+			"camunda_zeebe_records_backup_",
+		} {
+			if owner, _, _ := ClassifySnapshot(name, prefix); owner != OwnerForeign {
+				t.Errorf("prefix %q: %q classified as %v, want foreign", prefix, name, owner)
+			}
+		}
+	}
+}
+
+func TestSnapshotNamingClassify(t *testing.T) {
+	naming := SnapshotNaming{Prefix: "hajj", ExternalPrefixes: []string{"camunda_zeebe_records_backup_", ""}}
+	tests := []struct {
+		name      string
+		snapshot  string
+		wantOwner SnapshotOwner
+		wantID    string
+	}{
+		{"declared external job", "camunda_zeebe_records_backup_20260111154511", OwnerExternal, "20260111154511"},
+		{"external prefix with no backup ID stays foreign", "camunda_zeebe_records_backup_", OwnerForeign, ""},
+		{"external prefix with a non-ID remainder stays foreign", "camunda_zeebe_records_backup_latest", OwnerForeign, ""},
+		{"external prefix is matched literally, no separator added", "camunda_zeebe_records_backup-20260111154511", OwnerForeign, ""},
+		{"controller's own name still wins", "hajj-20260111154511", OwnerController, "20260111154511"},
+		{"component snapshot still wins", "camunda_operate_20260111154511_8.6.0_part_1_of_6", OwnerComponent, "20260111154511"},
+		// An empty declared prefix would claim every bare backup ID.
+		{"empty external prefix is ignored", "20260111154511", OwnerForeign, ""},
+		{"undeclared naming is foreign", "nightly-slm-2026.01.11", OwnerForeign, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			owner, id, _ := naming.Classify(tt.snapshot)
+			if owner != tt.wantOwner || id != tt.wantID {
+				t.Errorf("Classify(%q) = (%v, %q), want (%v, %q)", tt.snapshot, owner, id, tt.wantOwner, tt.wantID)
+			}
+		})
+	}
+}
+
+// Declaring an external prefix must never take a snapshot away from the
+// controller, even when the two conventions overlap.
+func TestSnapshotNamingControllerBeatsOverlappingExternalPrefix(t *testing.T) {
+	naming := SnapshotNaming{Prefix: "backup", ExternalPrefixes: []string{"backup-"}}
+	if owner, id, _ := naming.Classify("backup-20260111154511"); owner != OwnerController || id != "20260111154511" {
+		t.Errorf("got (%v, %q), want the controller's snapshot", owner, id)
+	}
+}
+
+// The repository listing is the source declared external snapshots depend on,
+// so it gets the listing timeout, not the general one, and is not retried
+// once it runs that out.
+func TestListSnapshotsIsAListingRequest(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		time.Sleep(300 * time.Millisecond)
+		_, _ = w.Write([]byte(catSnapshotsResponse))
+	}))
+	defer server.Close()
+
+	slowOK := camunda.NewHTTPClient(camunda.HTTPClientConfig{Timeout: 100 * time.Millisecond, ListTimeout: 2 * time.Second}, nil)
+	if _, err := NewClient(server.URL, "", "", slowOK, nil).ListSnapshots(context.Background(), "camunda-backup"); err != nil {
+		t.Fatalf("a listing within ListTimeout must succeed: %v", err)
+	}
+
+	calls.Store(0)
+	tooSlow := camunda.NewHTTPClient(camunda.HTTPClientConfig{Timeout: 5 * time.Second, ListTimeout: 50 * time.Millisecond, MaxRetries: 3, RetryDelay: time.Millisecond}, nil)
+	_, err := NewClient(server.URL, "", "", tooSlow, nil).ListSnapshots(context.Background(), "camunda-backup")
+	if !errors.Is(err, camunda.ErrListTimeout) {
+		t.Errorf("expected ErrListTimeout, got %v", err)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Errorf("a timed-out listing was attempted %d times, want 1", n)
 	}
 }

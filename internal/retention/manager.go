@@ -308,11 +308,7 @@ func (m *Manager) deleteESSnapshot(ctx context.Context, instance *models.Camunda
 	}
 	if snapshotName == "" {
 		namePrefix := m.cfg.GetElasticsearchSnapshotNamePrefix(instance.ID)
-		if namePrefix != "" {
-			snapshotName = fmt.Sprintf("%s-%s", namePrefix, backup.BackupID)
-		} else {
-			snapshotName = backup.BackupID
-		}
+		snapshotName = elasticsearch.BuildSnapshotName(namePrefix, backup.BackupID)
 	}
 
 	return m.deleteSnapshot(ctx, instance, repository, snapshotName, backup.BackupID)
@@ -559,6 +555,10 @@ type OrphanArtifacts struct {
 	// Complete says whether that sweep reached every source it needed. When it
 	// did not, nothing here can be treated as the full artifact set.
 	Complete bool
+
+	// Unreachable names the sources that sweep could not check. It only makes
+	// the report_partial refusal say what to fix; Complete is what decides.
+	Unreachable []string
 }
 
 // maxReportAge bounds how old a sweep may be and still authorise a deletion.
@@ -603,6 +603,10 @@ func (m *Manager) DeleteOrphan(ctx context.Context, camundaInstanceID string, ar
 	// would strand the rest silently. This is the unreachable-source guard the
 	// reconciler applies to its conclusions, applied to acting on them.
 	if !art.Complete {
+		if len(art.Unreachable) > 0 {
+			return fmt.Errorf("%w (%s; could not check: %s — make it reachable and rescan)",
+				utils.ErrOrphanReportPartial, art.BackupID, strings.Join(art.Unreachable, ", "))
+		}
 		return fmt.Errorf("%w (%s)", utils.ErrOrphanReportPartial, art.BackupID)
 	}
 
@@ -636,6 +640,10 @@ func (m *Manager) DeleteOrphan(ctx context.Context, camundaInstanceID string, ar
 	}
 
 	if err := m.verifyEndpointsUnchanged(instance, art); err != nil {
+		return err
+	}
+
+	if err := m.verifySnapshotsStillAttributable(instance, art); err != nil {
 		return err
 	}
 
@@ -791,8 +799,9 @@ func (m *Manager) verifyOrphanOwnership(camundaInstanceID string, instance *mode
 // A shared snapshot repository is only ambiguous while the two instances write
 // indistinguishable names: with distinct, non-empty name prefixes the
 // controller-owned snapshots separate cleanly. Component-owned snapshot names
-// carry no instance identifier at all, so a shared repository stays ambiguous
-// for those whenever this deletion would touch one.
+// carry no instance identifier at all, and neither do a declared external job's
+// (the same job, or the same naming, may serve both instances), so a shared
+// repository stays ambiguous whenever this deletion would touch either.
 func (m *Manager) sharedSurface(instance, other *models.CamundaInstance, art OrphanArtifacts) string {
 	for _, component := range art.Components {
 		endpoint, known := componentEndpoint(instance, component)
@@ -817,21 +826,55 @@ func (m *Manager) sharedSurface(instance, other *models.CamundaInstance, art Orp
 
 	prefix := m.cfg.GetElasticsearchSnapshotNamePrefix(instance.ID)
 	otherPrefix := m.cfg.GetElasticsearchSnapshotNamePrefix(other.ID)
-	if prefix != "" && otherPrefix != "" && prefix != otherPrefix && !anyComponentSnapshot(art.SnapshotNames) {
+	if prefix != "" && otherPrefix != "" && prefix != otherPrefix && allControllerSnapshots(art.SnapshotNames, prefix) {
 		return ""
 	}
 	return "the Elasticsearch snapshot repository"
 }
 
-// anyComponentSnapshot reports whether any name is a component-owned snapshot.
-// Those carry no instance identifier, so a name prefix cannot separate them.
-func anyComponentSnapshot(names []string) bool {
+// allControllerSnapshots reports whether every name is one this controller
+// wrote under its own name prefix — the only kind a distinct prefix can tell
+// apart from another instance's. Component and external snapshots carry no
+// instance identifier.
+func allControllerSnapshots(names []string, prefix string) bool {
 	for _, name := range names {
-		if owner, _, _ := elasticsearch.ClassifySnapshot(name, ""); owner == elasticsearch.OwnerComponent {
-			return true
+		if owner, _, _ := elasticsearch.ClassifySnapshot(name, prefix); owner != elasticsearch.OwnerController {
+			return false
 		}
 	}
-	return false
+	return true
+}
+
+// verifySnapshotsStillAttributable refuses when a snapshot the sweep attributed
+// to this instance is no longer attributable under its current configuration.
+//
+// What makes a snapshot this instance's to delete is its naming: the
+// controller's name prefix, a component's convention, or an external job's
+// prefix the operator declared. The report is stored and stays usable for
+// maxReportAge, which outlives the restart that changes any of those. Without
+// this, withdrawing a declaration would still let the old report delete the
+// snapshots it no longer authorises. Unaddressable names are left to the
+// addressability check, which reports them more precisely.
+func (m *Manager) verifySnapshotsStillAttributable(instance *models.CamundaInstance, art OrphanArtifacts) error {
+	if len(art.SnapshotNames) == 0 || m.cfg == nil {
+		return nil
+	}
+	naming := elasticsearch.SnapshotNaming{
+		Prefix:           m.cfg.GetElasticsearchSnapshotNamePrefix(instance.ID),
+		ExternalPrefixes: m.cfg.GetElasticsearchExternalSnapshotPrefixes(instance.ID),
+	}
+	for _, name := range art.SnapshotNames {
+		if !isAddressableSnapshotName(name) {
+			continue
+		}
+		owner, backupID, _ := naming.Classify(name)
+		if owner == elasticsearch.OwnerForeign || backupID != art.BackupID {
+			return fmt.Errorf("%w (%s): snapshot %q is no longer attributed to this instance by its current snapshot naming settings "+
+				"(ELASTICSEARCH_SNAPSHOT_NAME_PREFIX_<ID>, ELASTICSEARCH_EXTERNAL_SNAPSHOT_PREFIXES_<ID>) — rescan",
+				utils.ErrOrphanReportStale, art.BackupID, name)
+		}
+	}
+	return nil
 }
 
 // verifyEndpointsUnchanged refuses when a component's backup endpoint has moved

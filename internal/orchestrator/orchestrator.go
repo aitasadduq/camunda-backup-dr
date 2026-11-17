@@ -545,10 +545,7 @@ func (o *Orchestrator) executeElasticsearchBackup(ctx context.Context, instance 
 
 	// Build snapshot name with optional prefix
 	namePrefix := o.cfg.GetElasticsearchSnapshotNamePrefix(instance.ID)
-	snapshotName := backupID
-	if namePrefix != "" {
-		snapshotName = fmt.Sprintf("%s-%s", namePrefix, backupID)
-	}
+	snapshotName := elasticsearch.BuildSnapshotName(namePrefix, backupID)
 
 	// Get credentials
 	password := o.cfg.GetElasticsearchPassword(instance.ID)
@@ -1054,10 +1051,8 @@ func (o *Orchestrator) createBackupHistory(req BackupRequest, execution *models.
 		if component == types.ComponentElasticsearch && o.cfg != nil {
 			info.SnapshotRepository = o.cfg.GetElasticsearchSnapshotRepository(
 				req.CamundaInstance.ID, req.CamundaInstance.ElasticsearchSnapshotRepository)
-			info.SnapshotName = execution.BackupID
-			if prefix := o.cfg.GetElasticsearchSnapshotNamePrefix(req.CamundaInstance.ID); prefix != "" {
-				info.SnapshotName = fmt.Sprintf("%s-%s", prefix, execution.BackupID)
-			}
+			info.SnapshotName = elasticsearch.BuildSnapshotName(
+				o.cfg.GetElasticsearchSnapshotNamePrefix(req.CamundaInstance.ID), execution.BackupID)
 		}
 
 		history.Components[component] = info

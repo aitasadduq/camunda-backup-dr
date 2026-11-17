@@ -95,8 +95,18 @@ func main() {
 		MaxRetries:    3,
 		RetryDelay:    time.Second,
 		MaxRetryDelay: 30 * time.Second,
+		ListTimeout:   time.Duration(cfg.ComponentListTimeoutSeconds) * time.Second,
 	}
 	httpClient := camunda.NewHTTPClient(httpClientCfg, logger)
+	logger.Info("Listings (component backups, Elasticsearch snapshots) may take up to %ds each (COMPONENT_LIST_TIMEOUT_SECONDS); a scan may take up to %ds (RECONCILE_TIMEOUT_SECONDS)",
+		cfg.ComponentListTimeoutSeconds, cfg.ReconcileTimeoutSeconds)
+	if cfg.ComponentListTimeoutSeconds >= cfg.ReconcileTimeoutSeconds {
+		// The scan's deadline cuts the listing off first, so raising the listing
+		// timeout alone changes nothing. Say so now rather than leave it to be
+		// discovered from a scan that keeps failing.
+		logger.Warn("COMPONENT_LIST_TIMEOUT_SECONDS (%d) is not below RECONCILE_TIMEOUT_SECONDS (%d): the scan deadline will end slow listings first; raise RECONCILE_TIMEOUT_SECONDS too",
+			cfg.ComponentListTimeoutSeconds, cfg.ReconcileTimeoutSeconds)
+	}
 
 	// Initialize backup orchestrator
 	pollInterval := time.Duration(cfg.DefaultBackupPollInterval) * time.Second

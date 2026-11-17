@@ -2,12 +2,14 @@ package elasticsearch
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/camunda"
 )
@@ -22,8 +24,13 @@ const (
 	// OwnerComponent is a snapshot Operate, Tasklist or Optimize created as part
 	// of its own backup.
 	OwnerComponent SnapshotOwner = "component"
-	// OwnerForeign is a snapshot matching neither convention: an SLM policy,
-	// another cluster, or a different backup tool sharing the repository.
+	// OwnerExternal is a snapshot written by another backup job that the
+	// operator has declared for this instance by its name prefix (for example
+	// "camunda_zeebe_records_backup_" from Camunda's manual procedure). The
+	// controller did not create it, but has been told it may manage it.
+	OwnerExternal SnapshotOwner = "external"
+	// OwnerForeign is a snapshot matching no convention: an SLM policy,
+	// another cluster, or a backup tool nobody has declared.
 	OwnerForeign SnapshotOwner = "foreign"
 )
 
@@ -32,7 +39,7 @@ type SnapshotInfo struct {
 	Name         string
 	State        SnapshotState
 	Owner        SnapshotOwner
-	BackupID     string // resolved for controller and component snapshots
+	BackupID     string // resolved for controller, component and external snapshots
 	Component    string // operate/tasklist/optimize, for component snapshots
 	StartEpoch   int64
 	FailedShards int
@@ -71,15 +78,26 @@ func (c *Client) ListSnapshots(ctx context.Context, repository string) ([]Snapsh
 		return nil, err
 	}
 
-	resp, err := c.httpClient.Get(ctx, fullURL, c.authHeaders())
+	// A listing request, like a component's: a large repository can take far
+	// longer than an ordinary call, and retrying a slow listing only spends the
+	// scan's budget again.
+	started := time.Now()
+	resp, err := c.httpClient.GetListing(ctx, fullURL, c.authHeaders())
 	if err != nil {
-		return nil, fmt.Errorf("failed to list snapshots: %w", err)
+		return nil, c.httpClient.DescribeListFailure(ctx, "list snapshots", err, started)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return nil, fmt.Errorf("list snapshots failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("list snapshots failed with status %d after %v: %s",
+			resp.StatusCode, time.Since(started).Round(time.Millisecond), strings.TrimSpace(string(body)))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, c.httpClient.DescribeListFailure(ctx, "list snapshots",
+			fmt.Errorf("reading the response (%d bytes received): %w", len(body), err), started)
 	}
 
 	// _cat returns every field as a string regardless of its underlying type.
@@ -89,9 +107,11 @@ func (c *Client) ListSnapshots(ctx context.Context, repository string) ([]Snapsh
 		StartEpoch   string `json:"start_epoch"`
 		FailedShards string `json:"failed_shards"`
 	}
-	if err := camunda.ReadJSONResponse(resp, &rows); err != nil {
-		return nil, fmt.Errorf("failed to parse snapshot list: %w", err)
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return nil, fmt.Errorf("failed to parse snapshot list (%d-byte response): %w", len(body), err)
 	}
+	c.logger.Debug("Snapshot listing of %q: %d bytes, %d snapshots in %v",
+		repository, len(body), len(rows), time.Since(started).Round(time.Millisecond))
 
 	out := make([]SnapshotInfo, 0, len(rows))
 	for _, row := range rows {
@@ -109,29 +129,66 @@ func (c *Client) ListSnapshots(ctx context.Context, repository string) ([]Snapsh
 	return out, nil
 }
 
-// ClassifySnapshot resolves a snapshot name to its owner and backup ID.
+// BuildSnapshotName is the name the controller gives the snapshot it takes for
+// a backup: "<prefix>-<backupID>", or the bare backup ID with no prefix.
+//
+// It is the single definition of that convention. ClassifySnapshot recognises
+// controller snapshots by the same function, so the names the controller
+// writes and the names it claims as its own cannot drift apart.
+func BuildSnapshotName(namePrefix, backupID string) string {
+	if namePrefix == "" {
+		return backupID
+	}
+	return namePrefix + "-" + backupID
+}
+
+// SnapshotNaming is everything that decides who owns a snapshot name for one
+// instance: the controller's own name prefix, and the prefixes of any external
+// backup jobs the operator has declared.
+type SnapshotNaming struct {
+	// Prefix is the controller's configured name prefix (see BuildSnapshotName).
+	Prefix string
+	// ExternalPrefixes are matched literally: a name is external only when it
+	// is exactly one of these followed by a backup-ID-shaped string. Nothing is
+	// inserted between them, so the prefix must include any separator.
+	ExternalPrefixes []string
+}
+
+// ClassifySnapshot resolves a snapshot name to its owner and backup ID, for an
+// instance with no external backup jobs declared.
+func ClassifySnapshot(name, namePrefix string) (SnapshotOwner, string, string) {
+	return SnapshotNaming{Prefix: namePrefix}.Classify(name)
+}
+
+// Classify resolves a snapshot name to its owner, backup ID and (for component
+// snapshots) component.
 //
 // Order matters. The component pattern is checked first because a component
-// snapshot name contains a backup ID and would otherwise be mistaken for a
-// foreign name; the controller pattern is checked second because with an empty
-// name prefix it accepts any bare digit string.
-func ClassifySnapshot(name, namePrefix string) (SnapshotOwner, string, string) {
+// snapshot name contains a backup ID and would otherwise be mistaken for
+// another kind. The controller's own convention is checked before external
+// prefixes, so declaring an external prefix can never take a snapshot away
+// from the controller that wrote it. External prefixes are matched exactly and
+// only with a backup-ID-shaped remainder, so "camunda_zeebe_records_backup_"
+// with nothing after it stays foreign.
+func (n SnapshotNaming) Classify(name string) (SnapshotOwner, string, string) {
 	if m := componentSnapshotPattern.FindStringSubmatch(name); m != nil {
 		return OwnerComponent, m[2], m[1]
 	}
 
-	candidate := name
-	if namePrefix != "" {
-		prefix := namePrefix + "-"
-		if !strings.HasPrefix(name, prefix) {
-			return OwnerForeign, "", ""
-		}
-		candidate = strings.TrimPrefix(name, prefix)
-	}
-
-	if camunda.IsBackupIDShaped(candidate) {
+	// The fixed part BuildSnapshotName puts in front of every backup ID.
+	if candidate, ok := strings.CutPrefix(name, BuildSnapshotName(n.Prefix, "")); ok && camunda.IsBackupIDShaped(candidate) {
 		return OwnerController, candidate, ""
 	}
+
+	for _, prefix := range n.ExternalPrefixes {
+		if prefix == "" {
+			continue // would claim every bare backup ID; never meaningful
+		}
+		if candidate, ok := strings.CutPrefix(name, prefix); ok && camunda.IsBackupIDShaped(candidate) {
+			return OwnerExternal, candidate, ""
+		}
+	}
+
 	return OwnerForeign, "", ""
 }
 

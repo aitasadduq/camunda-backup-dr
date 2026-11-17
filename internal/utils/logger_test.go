@@ -440,3 +440,12 @@ func TestContextLogger_EmptyContext_Info(t *testing.T) {
 		t.Errorf("empty context should produce no brackets, got: %q", out)
 	}
 }
+
+// Components built without a logger (most unit tests) must be able to log.
+func TestNilLoggerIsANoOp(t *testing.T) {
+	var l *Logger
+	l.Info("x")
+	l.Warn("x")
+	l.Error("x")
+	l.Debug("x")
+}

@@ -1624,6 +1624,9 @@ func newOrphanTestEnv(t *testing.T) *orphanTestEnv {
 	t.Helper()
 
 	env := &orphanTestEnv{status: http.StatusNoContent}
+	// Deletion re-checks that each reported snapshot name is still this
+	// instance's under its current naming. Most tests name "camunda-<id>".
+	t.Setenv("ELASTICSEARCH_SNAPSHOT_NAME_PREFIX_INST_1", "camunda")
 	record := func(w http.ResponseWriter, r *http.Request) {
 		env.mu.Lock()
 		if r.Method == http.MethodDelete {
@@ -1752,6 +1755,7 @@ func TestDeleteOrphan_DeletesOnlyWhatTheSweepFound(t *testing.T) {
 // configured name prefix makes the snapshot unaddressable by ID alone.
 func TestDeleteOrphan_UsesReportedSnapshotName(t *testing.T) {
 	env := newOrphanTestEnv(t)
+	t.Setenv("ELASTICSEARCH_SNAPSHOT_NAME_PREFIX_INST_1", "prod-prefix")
 
 	err := env.deleteOrphan(OrphanArtifacts{
 		BackupID:      "20260320080000",
@@ -1939,6 +1943,29 @@ func TestDeleteOrphan_RefusesPartialReport(t *testing.T) {
 	}
 }
 
+// The refusal is only actionable if it says which source to fix.
+func TestDeleteOrphan_PartialReportNamesUnreachableSources(t *testing.T) {
+	env := newOrphanTestEnv(t)
+
+	art := env.complete(OrphanArtifacts{
+		BackupID:   "20260320080000",
+		Components: []string{types.ComponentOperate},
+	})
+	art.Complete = false
+	art.Unreachable = []string{types.ComponentZeebe}
+
+	err := env.mgr.DeleteOrphan(context.Background(), "inst-1", art)
+	if !errors.Is(err, utils.ErrOrphanReportPartial) {
+		t.Fatalf("expected ErrOrphanReportPartial, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "could not check: zeebe") {
+		t.Errorf("refusal should name the unreachable source, got: %v", err)
+	}
+	if got := env.recorded(); len(got) != 0 {
+		t.Errorf("expected nothing deleted from a partial scan, got %v", got)
+	}
+}
+
 // A deletion acts on a description of the world, and an old description is not
 // one: endpoints move and backups appear in between.
 func TestDeleteOrphan_RefusesStaleReport(t *testing.T) {
@@ -2031,6 +2058,51 @@ func TestDeleteOrphan_RefusesWhenSnapshotRepositoryIsShared(t *testing.T) {
 	err := env.deleteOrphan(OrphanArtifacts{
 		BackupID:      "20260320080000",
 		SnapshotNames: []string{"20260320080000"},
+		Repository:    "camunda-backup",
+	})
+	if !errors.Is(err, utils.ErrOrphanOwnershipUnverified) {
+		t.Fatalf("expected ErrOrphanOwnershipUnverified, got %v", err)
+	}
+	if got := env.recorded(); len(got) != 0 {
+		t.Errorf("expected nothing deleted, got %v", got)
+	}
+}
+
+// Distinct name prefixes separate the controller's own snapshots in a shared
+// repository, so those may be deleted...
+func TestDeleteOrphan_AllowsControllerSnapshotsInSharedRepositoryWithDistinctPrefixes(t *testing.T) {
+	env := newOrphanTestEnv(t)
+	env.instances.instances["inst-2"] = &models.CamundaInstance{
+		ID:                    "inst-2",
+		ElasticsearchEndpoint: env.instance.ElasticsearchEndpoint,
+	}
+	t.Setenv("ELASTICSEARCH_SNAPSHOT_NAME_PREFIX_INST_1", "one")
+	t.Setenv("ELASTICSEARCH_SNAPSHOT_NAME_PREFIX_INST_2", "two")
+
+	if err := env.deleteOrphan(OrphanArtifacts{
+		BackupID:      "20260320080000",
+		SnapshotNames: []string{"one-20260320080000"},
+		Repository:    "camunda-backup",
+	}); err != nil {
+		t.Fatalf("expected the deletion to proceed, got %v", err)
+	}
+}
+
+// ...but a declared external job's snapshot names carry no instance at all,
+// so distinct controller prefixes prove nothing about who owns them.
+func TestDeleteOrphan_RefusesExternalSnapshotInSharedRepository(t *testing.T) {
+	env := newOrphanTestEnv(t)
+	env.instances.instances["inst-2"] = &models.CamundaInstance{
+		ID:                    "inst-2",
+		ElasticsearchEndpoint: env.instance.ElasticsearchEndpoint,
+	}
+	t.Setenv("ELASTICSEARCH_SNAPSHOT_NAME_PREFIX_INST_1", "one")
+	t.Setenv("ELASTICSEARCH_SNAPSHOT_NAME_PREFIX_INST_2", "two")
+	t.Setenv("ELASTICSEARCH_EXTERNAL_SNAPSHOT_PREFIXES_INST_1", "camunda_zeebe_records_backup_")
+
+	err := env.deleteOrphan(OrphanArtifacts{
+		BackupID:      "20260320080000",
+		SnapshotNames: []string{"camunda_zeebe_records_backup_20260320080000"},
 		Repository:    "camunda-backup",
 	})
 	if !errors.Is(err, utils.ErrOrphanOwnershipUnverified) {
@@ -2153,5 +2225,56 @@ func TestDeleteOrphan_AlertsOnSurvivingArtifacts(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 	if atomic.LoadInt32(&alerts) < 1 {
 		t.Error("expected a cleanup alert for surviving orphan artifacts")
+	}
+}
+
+// The report is stored and usable for an hour, which outlives the restart that
+// withdraws a declaration. Deletion must follow the declaration as it is now.
+func TestDeleteOrphan_RefusesSnapshotNoLongerDeclared(t *testing.T) {
+	env := newOrphanTestEnv(t)
+	// Declared when the scan ran, withdrawn since: the variable is unset now.
+
+	err := env.deleteOrphan(OrphanArtifacts{
+		BackupID:      "20260320080000",
+		Components:    []string{types.ComponentZeebe},
+		SnapshotNames: []string{"camunda_zeebe_records_backup_20260320080000"},
+		Repository:    "camunda-backup",
+	})
+	if !errors.Is(err, utils.ErrOrphanReportStale) {
+		t.Fatalf("expected ErrOrphanReportStale, got %v", err)
+	}
+	if got := env.recorded(); len(got) != 0 {
+		t.Errorf("expected nothing deleted, not even the Zeebe backup, got %v", got)
+	}
+}
+
+func TestDeleteOrphan_DeletesSnapshotStillDeclared(t *testing.T) {
+	env := newOrphanTestEnv(t)
+	t.Setenv("ELASTICSEARCH_EXTERNAL_SNAPSHOT_PREFIXES_INST_1", "camunda_zeebe_records_backup_")
+
+	if err := env.deleteOrphan(OrphanArtifacts{
+		BackupID:      "20260320080000",
+		SnapshotNames: []string{"camunda_zeebe_records_backup_20260320080000"},
+		Repository:    "camunda-backup",
+	}); err != nil {
+		t.Fatalf("DeleteOrphan: %v", err)
+	}
+	if got := env.recorded(); len(got) != 1 || got[0] != "/_snapshot/camunda-backup/camunda_zeebe_records_backup_20260320080000" {
+		t.Errorf("expected the declared snapshot to be deleted, got %v", got)
+	}
+}
+
+// A snapshot attributed to a different backup ID than the one being deleted is
+// not this backup's to remove, whatever the report says.
+func TestDeleteOrphan_RefusesSnapshotOfAnotherBackup(t *testing.T) {
+	env := newOrphanTestEnv(t)
+
+	err := env.deleteOrphan(OrphanArtifacts{
+		BackupID:      "20260320080000",
+		SnapshotNames: []string{"camunda-20260320090000"},
+		Repository:    "camunda-backup",
+	})
+	if !errors.Is(err, utils.ErrOrphanReportStale) {
+		t.Fatalf("expected ErrOrphanReportStale, got %v", err)
 	}
 }

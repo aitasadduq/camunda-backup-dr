@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -127,6 +128,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, instance *models.CamundaInst
 
 	ev := r.collect(ctx, instance)
 	findings := classify(ev, r.opts)
+	if inFlight := ev.untrackedInFlight(); len(inFlight) > 0 {
+		ids := make([]string, 0, len(inFlight))
+		for id := range inFlight {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		r.logger.Info("[reconcile] %s: %d untracked backup(s) still being written are left out of this report until they finish: %s",
+			instance.ID, len(ids), strings.Join(ids, ", "))
+	}
 
 	tracked := make(map[string]bool, len(ev.records))
 	for _, rec := range ev.records {
@@ -143,11 +153,22 @@ func (r *Reconciler) Reconcile(ctx context.Context, instance *models.CamundaInst
 	}
 
 	if unreachable := report.UnreachableSources(); len(unreachable) > 0 {
-		r.logger.Warn("[reconcile] Sweep for %s is partial; could not check: %s",
-			instance.ID, strings.Join(unreachable, ", "))
+		reasons := make([]string, 0, len(unreachable))
+		for _, name := range unreachable {
+			reasons = append(reasons, fmt.Sprintf("%s (%s)", name, report.SourcesChecked[name].Error))
+		}
+		r.logger.Warn("[reconcile] Sweep for %s is partial, so orphans cannot be deleted until a full scan succeeds; could not check: %s",
+			instance.ID, strings.Join(reasons, "; "))
 	}
-	r.logger.Info("[reconcile] Instance %s: %d findings across %d backups",
-		instance.ID, report.TotalFindings(), len(report.BackupIssues))
+	untracked := 0
+	for _, issue := range report.BackupIssues {
+		if !issue.Tracked {
+			untracked++
+		}
+	}
+	r.logger.Info("[reconcile] Instance %s: sweep finished in %v; %d findings across %d backups (%d untracked), %d repository-level",
+		instance.ID, report.FinishedAt.Sub(report.StartedAt).Round(time.Millisecond), report.TotalFindings(),
+		len(report.BackupIssues), untracked, len(report.RepositoryFindings))
 
 	if err := r.store(report); err != nil {
 		// The report is still valid and worth returning even if it could not be
@@ -170,13 +191,13 @@ func observedSnapshots(ev *evidence) map[string][]string {
 		return nil
 	}
 
+	ev.classifySnapshots()
 	byBackup := make(map[string][]string)
 	for _, snap := range ev.snapshots {
-		owner, backupID, _ := elasticsearch.ClassifySnapshot(snap.Name, ev.namePrefix)
-		if backupID == "" || owner == elasticsearch.OwnerForeign {
+		if snap.BackupID == "" || snap.Owner == elasticsearch.OwnerForeign {
 			continue
 		}
-		byBackup[backupID] = append(byBackup[backupID], snap.Name)
+		byBackup[snap.BackupID] = append(byBackup[snap.BackupID], snap.Name)
 	}
 	return byBackup
 }

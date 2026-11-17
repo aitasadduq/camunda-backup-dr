@@ -7,6 +7,9 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
+
+	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
 )
 
 // Backup states reported by the Camunda component backup APIs.
@@ -23,13 +26,17 @@ const (
 // The two families report different fields, so everything here is optional.
 // Zeebe fills PartitionID and CreatedAt; the web components fill SnapshotName
 // and StartTime.
+//
+// Failures is kept as raw JSON. Its shape is not verified across versions, and
+// one entry that is an object rather than a string would otherwise fail the
+// decode of the whole listing and make the component look unreachable.
 type ComponentBackupDetail struct {
-	SnapshotName string   `json:"snapshotName,omitempty"`
-	PartitionID  int      `json:"partitionId,omitempty"`
-	State        string   `json:"state,omitempty"`
-	CreatedAt    string   `json:"createdAt,omitempty"`
-	StartTime    string   `json:"startTime,omitempty"`
-	Failures     []string `json:"failures,omitempty"`
+	SnapshotName string          `json:"snapshotName,omitempty"`
+	PartitionID  int             `json:"partitionId,omitempty"`
+	State        string          `json:"state,omitempty"`
+	CreatedAt    string          `json:"createdAt,omitempty"`
+	StartTime    string          `json:"startTime,omitempty"`
+	Failures     json.RawMessage `json:"failures,omitempty"`
 }
 
 // ComponentBackupRecord is one backup as a Camunda component reports it.
@@ -73,22 +80,27 @@ type BackupLister interface {
 type wireBackupRecord struct {
 	BackupID      json.Number             `json:"backupId"`
 	State         string                  `json:"state"`
-	FailureReason *string                 `json:"failureReason"`
+	FailureReason json.RawMessage         `json:"failureReason"`
 	Details       []ComponentBackupDetail `json:"details"`
 }
 
 // ListBackups fetches every backup a component currently holds.
 //
 // It issues GET against the bare backup endpoint - the same URL the orchestrator
-// POSTs to when creating a backup, with no ID appended.
+// POSTs to when creating a backup, with no ID appended. It is a listing request
+// (see GetListing): it gets COMPONENT_LIST_TIMEOUT_SECONDS, and a request that
+// runs that out, or a gateway that times it out, is not retried.
 func (c *HTTPClient) ListBackups(ctx context.Context, endpoint string) ([]ComponentBackupRecord, error) {
 	if endpoint == "" {
 		return nil, fmt.Errorf("backup endpoint is required")
 	}
 
-	resp, err := c.Get(ctx, strings.TrimRight(endpoint, "/"), nil)
+	target := utils.RedactURL(endpoint)
+	started := time.Now()
+
+	resp, err := c.GetListing(ctx, strings.TrimRight(endpoint, "/"), nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list backups: %w", err)
+		return nil, c.DescribeListFailure(ctx, "list backups", err, started)
 	}
 	defer resp.Body.Close()
 
@@ -96,20 +108,41 @@ func (c *HTTPClient) ListBackups(ctx context.Context, endpoint string) ([]Compon
 	// rather than "this request failed". Treating it as an error would make every
 	// empty component look unreachable and suppress real findings.
 	if resp.StatusCode == http.StatusNotFound {
+		c.logger.Debug("Backup listing at %s answered 404 in %v; treating it as no backups",
+			target, time.Since(started).Round(time.Millisecond))
 		return nil, nil
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return nil, fmt.Errorf("list backups failed with status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("list backups failed with status %d after %v: %s",
+			resp.StatusCode, time.Since(started).Round(time.Millisecond), strings.TrimSpace(string(body)))
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read backup list response: %w", err)
+		return nil, c.DescribeListFailure(ctx, "list backups",
+			fmt.Errorf("reading the response (%d bytes received): %w", len(body), err), started)
 	}
 
-	return parseBackupList(body)
+	records, err := parseBackupList(body)
+	if err != nil {
+		// The decoder names the field and offset; the start of the body shows
+		// which shape the component actually sent.
+		return nil, fmt.Errorf("%w (%d-byte response, starting: %s)", err, len(body), snippet(body, 300))
+	}
+	c.logger.Debug("Backup listing at %s: status %d, %d bytes, %d backups in %v",
+		target, resp.StatusCode, len(body), len(records), time.Since(started).Round(time.Millisecond))
+	return records, nil
+}
+
+// snippet returns at most n bytes of body for an error message, on one line.
+func snippet(body []byte, n int) string {
+	s := strings.TrimSpace(string(body))
+	if len(s) > n {
+		s = s[:n] + "..."
+	}
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // parseBackupList decodes a component backup listing, tolerating both a bare
@@ -138,15 +171,26 @@ func parseBackupList(body []byte) ([]ComponentBackupRecord, error) {
 		if id == "" {
 			continue
 		}
-		rec := ComponentBackupRecord{
-			BackupID: id,
-			State:    w.State,
-			Details:  w.Details,
-		}
-		if w.FailureReason != nil {
-			rec.FailureReason = *w.FailureReason
-		}
-		out = append(out, rec)
+		out = append(out, ComponentBackupRecord{
+			BackupID:      id,
+			State:         w.State,
+			FailureReason: decodeFailureReason(w.FailureReason),
+			Details:       w.Details,
+		})
 	}
 	return out, nil
+}
+
+// decodeFailureReason reads failureReason as a string when it is one, and keeps
+// any other JSON value verbatim rather than failing the whole listing over it.
+func decodeFailureReason(raw json.RawMessage) string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	return trimmed
 }

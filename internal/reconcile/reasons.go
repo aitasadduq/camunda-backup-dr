@@ -52,6 +52,7 @@ const (
 	ReasonUntrackedAppESSnapshot   ReasonCode = "A3_UNTRACKED_APP_ES_SNAPSHOT"
 	ReasonForeignSnapshot          ReasonCode = "A4_FOREIGN_SNAPSHOT"
 	ReasonUntrackedLogFile         ReasonCode = "A5_UNTRACKED_LOG_FILE"
+	ReasonExternalBackup           ReasonCode = "A6_EXTERNAL_BACKUP"
 )
 
 // Group B - dangling: the controller has a record but the artifact is gone.
@@ -144,6 +145,14 @@ var reasonCatalog = map[ReasonCode]ReasonInfo{
 		Explanation: "The repository contains a snapshot that matches neither the controller's nor Camunda's naming convention.",
 		Impact:      "None for this controller. It may belong to an SLM policy, another cluster, or a different backup tool.",
 		Remediation: "No action. Confirm ownership before deleting anything in a shared repository.",
+	},
+	ReasonExternalBackup: {
+		Scope:       ScopeBackup,
+		Severity:    SeverityInfo,
+		Label:       "Backup taken by a declared external job",
+		Explanation: "Another backup job took this backup, identified by a snapshot name prefix declared for this instance in ELASTICSEARCH_EXTERNAL_SNAPSHOT_PREFIXES_<INSTANCE_ID>. The controller has no record of it, but has been told it may manage it.",
+		Impact:      "None while that job manages its own retention. If the job has stopped, nothing will ever remove these backups.",
+		Remediation: "Delete it from the controller once you are sure the job no longer needs it. If the job is still running, check its schedule before deleting.",
 	},
 	ReasonUntrackedLogFile: {
 		Scope:       ScopeRepository,
