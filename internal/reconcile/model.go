@@ -27,6 +27,10 @@ type SourceStatus struct {
 	Error     string `json:"error,omitempty"`
 	Count     int    `json:"count"`
 	Skipped   bool   `json:"skipped,omitempty"` // not configured for this instance
+	// Note says how a reachable source was read when that limits what its count
+	// means; for example that a repository was listed by day, so snapshots no
+	// prefix claims were not looked for.
+	Note string `json:"note,omitempty"`
 }
 
 // Finding is a single detected inconsistency.
@@ -89,6 +93,10 @@ type Report struct {
 	CamundaInstanceID string    `json:"camunda_instance_id"`
 	StartedAt         time.Time `json:"started_at"`
 	FinishedAt        time.Time `json:"finished_at"`
+	// Window is the range of backup IDs this sweep covered, or nil for all time.
+	// Everything outside it was not assessed: absent from the report does not
+	// mean absent from the sources, and an orphan outside it may not be deleted.
+	Window *Window `json:"window,omitempty"`
 	// SnapshotRepository and ComponentEndpoints let a client turn a finding's
 	// generic remediation into a command that can actually be run, instead of
 	// showing the operator a placeholder to fill in by hand.

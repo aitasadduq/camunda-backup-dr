@@ -3,8 +3,12 @@ package elasticsearch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -289,5 +293,152 @@ func TestListSnapshotsIsAListingRequest(t *testing.T) {
 	}
 	if n := calls.Load(); n != 1 {
 		t.Errorf("a timed-out listing was attempted %d times, want 1", n)
+	}
+}
+
+func TestListSnapshotsByDays(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.EscapedPath())
+		mu.Unlock()
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/camunda_zeebe_records_backup_20261111*"):
+			_, _ = w.Write([]byte(`{"snapshots":[
+				{"snapshot":"camunda_zeebe_records_backup_20261111080000","state":"IN_PROGRESS","start_time_in_millis":1763000000000,"shards":{"failed":0}}],
+				"total":1,"remaining":0}`))
+		case strings.HasSuffix(r.URL.Path, "/camunda_operate_20261111*"):
+			_, _ = w.Write([]byte(`{"snapshots":[
+				{"snapshot":"camunda_operate_20261111080000_8.6.0_part_1_of_2","state":"PARTIAL","start_time_in_millis":1763000001000,"shards":{"failed":2}}],
+				"total":1,"remaining":0}`))
+		default:
+			_, _ = w.Write([]byte(`{"snapshots":[],"total":0,"remaining":0}`))
+		}
+	}))
+	defer server.Close()
+
+	// A repeated prefix and an empty one are asked for once and never.
+	prefixes := SnapshotNamePrefixes(SnapshotNaming{Prefix: "hajj", ExternalPrefixes: []string{"camunda_zeebe_records_backup_", "", "camunda_operate_"}})
+	got, err := newListTestClient(server).ListSnapshotsByDays(context.Background(), "zeebe-hajj-oci", []string{"20261110", "20261111"}, prefixes)
+	if err != nil {
+		t.Fatalf("ListSnapshotsByDays: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %+v, want 2 snapshots", got)
+	}
+	byName := map[string]SnapshotInfo{}
+	for _, s := range got {
+		byName[s.Name] = s
+	}
+	if s := byName["camunda_zeebe_records_backup_20261111080000"]; s.State != SnapshotStateInProgress || s.StartEpoch != 1763000000 {
+		t.Errorf("state/start not decoded: %+v", s)
+	}
+	if s := byName["camunda_operate_20261111080000_8.6.0_part_1_of_2"]; s.State != SnapshotStatePartial || s.FailedShards != 2 {
+		t.Errorf("partial state/failed shards not decoded: %+v", s)
+	}
+
+	// One request per day and per prefix, each with a single literal pattern:
+	// 2 days x (controller's, operate, tasklist, optimize, zeebe records).
+	sort.Strings(paths)
+	if len(paths) != 10 {
+		t.Fatalf("expected 10 requests, got %d: %v", len(paths), paths)
+	}
+	want := map[string]bool{}
+	for _, day := range []string{"20261110", "20261111"} {
+		for _, p := range []string{"hajj-", "camunda_operate_", "camunda_tasklist_", "camunda_optimize_", "camunda_zeebe_records_backup_"} {
+			want["/_snapshot/zeebe-hajj-oci/"+p+day+"*"] = true
+		}
+	}
+	for _, p := range paths {
+		if !want[p] {
+			t.Errorf("unexpected request %q (a comma list, an escaped *, or a bare date pattern)", p)
+		}
+		delete(want, p)
+	}
+	for p := range want {
+		t.Errorf("request never made: %s", p)
+	}
+}
+
+// Several declared external jobs are each asked for on their own.
+func TestListSnapshotsByDaysChecksEveryExternalPrefix(t *testing.T) {
+	var mu sync.Mutex
+	asked := map[string]bool{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		asked[strings.TrimPrefix(r.URL.Path, "/_snapshot/repo/")] = true
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/_snapshot/repo/nightly-20261110*":
+			_, _ = w.Write([]byte(`{"snapshots":[{"snapshot":"nightly-20261110010000","state":"SUCCESS"}],"total":1,"remaining":0}`))
+		case "/_snapshot/repo/camunda_zeebe_records_backup_20261110*":
+			_, _ = w.Write([]byte(`{"snapshots":[{"snapshot":"camunda_zeebe_records_backup_20261110080000","state":"SUCCESS"}],"total":1,"remaining":0}`))
+		default:
+			_, _ = w.Write([]byte(`{"snapshots":[],"total":0,"remaining":0}`))
+		}
+	}))
+	defer server.Close()
+
+	prefixes := SnapshotNamePrefixes(SnapshotNaming{ExternalPrefixes: []string{"camunda_zeebe_records_backup_", "nightly-"}})
+	got, err := newListTestClient(server).ListSnapshotsByDays(context.Background(), "repo", []string{"20261110"}, prefixes)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("got %+v, %v; want a snapshot from each external job", got, err)
+	}
+	for _, want := range []string{"camunda_zeebe_records_backup_20261110*", "nightly-20261110*"} {
+		if !asked[want] {
+			t.Errorf("the prefix pattern %s was never asked for", want)
+		}
+	}
+}
+
+// After the first failed request the rest are not made.
+func TestListSnapshotsByDaysStopsAfterTheFirstFailure(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	days := make([]string, 100)
+	for i := range days {
+		days[i] = fmt.Sprintf("2026%02d%02d", i/28+1, i%28+1)
+	}
+	_, err := newListTestClient(server).ListSnapshotsByDays(context.Background(), "repo", days, []string{"a-", "b-", "c-"})
+	if err == nil || !strings.Contains(err.Error(), "of 300 requests") {
+		t.Errorf("expected an error saying how far it got, got %v", err)
+	}
+	if n := calls.Load(); n > 8 {
+		t.Errorf("%d of 300 requests were made after the first failure", n)
+	}
+}
+
+// A truncated answer would read as snapshots that do not exist.
+func TestListSnapshotsByDaysRefusesTruncatedAnswer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"snapshots":[{"snapshot":"hajj-20261110080000","state":"SUCCESS"}],"total":900,"remaining":899}`))
+	}))
+	defer server.Close()
+
+	_, err := newListTestClient(server).ListSnapshotsByDays(context.Background(), "repo", []string{"20261110"}, []string{"hajj-"})
+	if err == nil || !strings.Contains(err.Error(), "truncated") {
+		t.Errorf("expected a truncation error, got %v", err)
+	}
+}
+
+func TestListSnapshotsByDaysNamesTheFailedRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "20261111") {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte(`{"snapshots":[],"total":0,"remaining":0}`))
+	}))
+	defer server.Close()
+
+	_, err := newListTestClient(server).ListSnapshotsByDays(context.Background(), "repo", []string{"20261110", "20261111"}, []string{"x-"})
+	if err == nil || !strings.Contains(err.Error(), "x-20261111*") {
+		t.Errorf("expected the failed pattern to be named, got %v", err)
 	}
 }

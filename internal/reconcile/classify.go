@@ -520,7 +520,9 @@ func classifyUntracked(ev *evidence, idx *evidenceIndex, opts Options) []Finding
 
 	// A4: snapshots belonging to something else entirely. Reported once as a
 	// repository-level note, never as per-backup rows.
-	if len(idx.foreignSnapshots) > 0 {
+	// Not when the repository was listed by day: that listing holds only the
+	// snapshots a prefix claims, so "no one claims these" cannot be said of it.
+	if len(idx.foreignSnapshots) > 0 && !ev.snapshotsByDay {
 		names := make([]string, 0, len(idx.foreignSnapshots))
 		for _, s := range idx.foreignSnapshots {
 			names = append(names, s.Name)

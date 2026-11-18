@@ -1,7 +1,9 @@
 package config
 
 import (
+	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
@@ -85,7 +87,7 @@ func clearLoadEnvVars(t *testing.T) {
 		"DEFAULT_SCHEDULE", "DEFAULT_SUCCESS_RETENTION",
 		"DEFAULT_FAILURE_RETENTION",
 		"DEFAULT_BACKUP_POLL_INTERVAL", "DEFAULT_BACKUP_MAX_ATTEMPTS",
-		"COMPONENT_LIST_TIMEOUT_SECONDS",
+		"COMPONENT_LIST_TIMEOUT_SECONDS", "RECONCILE_WINDOW_DAYS",
 		"DEFAULT_ELASTICSEARCH_ENDPOINT", "DEFAULT_ELASTICSEARCH_USERNAME",
 		"DEFAULT_ELASTICSEARCH_SNAPSHOT_REPOSITORY", "DEFAULT_ELASTICSEARCH_SNAPSHOT_NAME_PREFIX",
 		"DEFAULT_S3_ENDPOINT", "DEFAULT_S3_ACCESSKEY", "DEFAULT_S3_SECRETKEY",
@@ -118,6 +120,10 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if cfg.DataDir != "/data" {
 		t.Errorf("DataDir = %q, want %q", cfg.DataDir, "/data")
+	}
+
+	if cfg.ReconcileWindowDays != 0 {
+		t.Errorf("ReconcileWindowDays = %d, want 0 (automatic sweeps cover all time unless asked)", cfg.ReconcileWindowDays)
 	}
 
 	// A full component listing gets its own, longer budget than other calls.
@@ -314,6 +320,26 @@ func TestValidate(t *testing.T) {
 		}
 	})
 
+	t.Run("reconcile window days must be 0 to 366", func(t *testing.T) {
+		for days, valid := range map[int]bool{0: true, 30: true, 366: true, -1: false, 367: false} {
+			cfg := validConfig()
+			cfg.ReconcileWindowDays = days
+			if err := cfg.Validate(); (err == nil) != valid {
+				t.Errorf("ReconcileWindowDays=%d: Validate() = %v, want valid=%v", days, err, valid)
+			}
+		}
+	})
+	t.Run("a bad window names the variable", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.ReconcileWindowDays = 400
+		err := cfg.Validate()
+		if !errors.Is(err, utils.ErrInvalidConfiguration) {
+			t.Fatalf("Validate() = %v, want ErrInvalidConfiguration", err)
+		}
+		if !strings.Contains(err.Error(), "RECONCILE_WINDOW_DAYS") || !strings.Contains(err.Error(), "400") {
+			t.Errorf("the error should say which setting and what value, got: %v", err)
+		}
+	})
 	t.Run("component list timeout must be positive", func(t *testing.T) {
 		cfg := validConfig()
 		cfg.ComponentListTimeoutSeconds = 0

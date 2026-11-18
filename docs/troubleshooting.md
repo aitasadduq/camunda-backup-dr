@@ -433,7 +433,10 @@ The fix is to make the source listable. Read its error:
 | `listing timeout (COMPONENT_LIST_TIMEOUT_SECONDS)` | The component (or Elasticsearch, for the `elasticsearch` source) did not finish the listing in time, either before answering or while sending it. Listing time grows with the number of backups, so this is most likely for Zeebe with a large S3/OCI store. | Raise `COMPONENT_LIST_TIMEOUT_SECONDS`, and `RECONCILE_TIMEOUT_SECONDS` above it. The log line `could not be checked (gave up after …)` shows how long it waited. |
 | `before the … listing timeout, so the connection or TLS handshake failed` | The connection never opened (unroutable address, firewall, DNS, TLS). Retried before giving up. | Fix the network path or endpoint. Raising the listing timeout changes nothing. |
 | `scan's time budget (RECONCILE_TIMEOUT_SECONDS)` | The whole sweep ran out of time while this source was still answering. A `(previous attempt: …)` suffix says why it was being retried. | Raise `RECONCILE_TIMEOUT_SECONDS`, or fix what the previous attempt names. |
-| `status 504` or `status 408` | A gateway or ingress in front of the component timed the listing out. Not retried: it would time out the same way. | Raise that gateway's timeout above how long the listing takes (see the `time curl` command below), or call the component directly. |
+| `status 504 … Request from gateway to broker timed out … timed out in PT15S` | Zeebe's own gateway gave up waiting for its broker to list every backup in the store (a 15-second limit, not one of the controller's). Not retried. | **Scan a date range** instead of all time: Zeebe is then listed one day at a time. Also prune old backups (the job taking them needs a retention rule), or raise Zeebe's gateway request timeout. |
+| `status 504` or `status 408` (anything else) | A gateway or ingress in front of the component timed the listing out. Not retried: it would time out the same way. | Raise that gateway's timeout above how long the listing takes (see the `time curl` command below), call the component directly, or scan a date range (Zeebe and Elasticsearch only). |
+| `scan a date range to list by day instead` | A full listing of Zeebe or Elasticsearch failed and the scan had no range, so there were no days to fall back to. | Pick a range above the backup tabs and refresh, or set `RECONCILE_WINDOW_DAYS` so automatic scans use one. Operate, Tasklist and Optimize have no per-day form. |
+| `listing by day failed on … after starting N of M` | A per-day listing failed on one day (or one day and prefix) and stopped there. | Read the error after it: it is that request's failure. Fix it, or choose a shorter range. |
 | `status 5xx` (other) | The component itself failed. Retried before giving up (`Retrying GET … after: …` warnings). | Check the component's own logs at the time of the scan. |
 | `failed to parse backup list … starting: …` | The component answered in a shape the controller cannot decode. The start of the body is included. | Report it with that body excerpt. |
 
@@ -442,6 +445,15 @@ To time the listing by hand from inside the cluster:
 ```bash
 time curl -s -o /dev/null -w '%{http_code} %{size_download}\n' http://<zeebe-gateway>:9600/actuator/backups
 ```
+
+#### Scanning a date range
+
+The **Backup dates** control above the tabs limits a scan to backups whose ID
+falls on those dates (see [Date ranges](orphaned-backups.md#date-ranges)). Use
+it when a source holds too many backups to list at once. Check the scan header
+afterwards: it says which dates were scanned, and warns when that does not
+cover what is selected. Backups outside the scanned dates are not assessed, and
+cannot be deleted from that scan (`outside_scan_window`).
 
 #### Snapshots listed under "Other artifacts" (`A4_FOREIGN_SNAPSHOT`)
 

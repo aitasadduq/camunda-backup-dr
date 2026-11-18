@@ -39,6 +39,11 @@ func main() {
 		return
 	}
 
+	// Cancelled first thing on shutdown. Sweeps are bound to it rather than to
+	// a request or to the background, so a shutdown never waits on one.
+	lifetimeCtx, cancelLifetime := context.WithCancel(context.Background())
+	defer cancelLifetime()
+
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
@@ -162,10 +167,10 @@ func main() {
 		// only for COMPLETED and FAILED backups, and an INCOMPLETE backup is
 		// exactly the case where a sweep matters most.
 		backupOrchestrator.SetReconcileFunc(func(instance *models.CamundaInstance) {
-			sweepCtx, cancel := context.WithTimeout(context.Background(),
+			sweepCtx, cancel := context.WithTimeout(lifetimeCtx,
 				time.Duration(cfg.ReconcileTimeoutSeconds)*time.Second)
 			defer cancel()
-			if _, err := reconciler.Reconcile(sweepCtx, instance); err != nil {
+			if _, err := reconciler.Reconcile(sweepCtx, instance, reconcile.LastDays(cfg.ReconcileWindowDays, time.Now())); err != nil {
 				if errors.Is(err, reconcile.ErrSweepInProgress) {
 					logger.Info("Skipping post-backup reconciliation for %s: a sweep is already running", instance.ID)
 					return
@@ -247,6 +252,7 @@ func main() {
 	)
 	server.SetSecretStore(secretStore)
 	server.SetReconciler(reconciler)
+	server.SetLifetimeContext(lifetimeCtx)
 
 	// Start HTTP server
 	if err := server.Start(); err != nil {
@@ -256,7 +262,7 @@ func main() {
 	logger.Info("HTTP server started on port %d", cfg.Port)
 
 	// Setup graceful shutdown
-	setupGracefulShutdown(logger, server, sched)
+	setupGracefulShutdown(logger, server, sched, cancelLifetime)
 
 	logger.Info("Camunda Backup Controller started successfully")
 
@@ -279,7 +285,7 @@ func (a *backupExecutorAdapter) ExecuteScheduledBackup(ctx context.Context, inst
 	return err
 }
 
-func setupGracefulShutdown(logger *utils.Logger, server *api.Server, sched *scheduler.Scheduler) {
+func setupGracefulShutdown(logger *utils.Logger, server *api.Server, sched *scheduler.Scheduler, cancelLifetime context.CancelFunc) {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
@@ -287,6 +293,11 @@ func setupGracefulShutdown(logger *utils.Logger, server *api.Server, sched *sche
 		sig := <-sigChan
 		logger.Info("Received signal: %v", sig)
 		logger.Info("Shutting down gracefully...")
+
+		// Sweeps first: a request waiting on one would hold the server's
+		// shutdown for as long as the sweep runs. A cancelled sweep stores
+		// nothing, so the last report survives.
+		cancelLifetime()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()

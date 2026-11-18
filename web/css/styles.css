@@ -709,3 +709,22 @@
     width: 100%;
     max-width: 32rem;
 }
+
+/* The date range above the backup tabs */
+.backup-range-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+}
+
+.backup-range-hint {
+    font-size: 0.75rem;
+    color: #6b7280;
+}
+
+.backup-range-error {
+    font-size: 0.75rem;
+    color: #b91c1c;
+}

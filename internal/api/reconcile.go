@@ -2,7 +2,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -15,7 +18,7 @@ import (
 // Reconciler cross-references controller metadata against the artifacts that
 // actually exist and reports the differences. It never deletes anything.
 type Reconciler interface {
-	Reconcile(ctx context.Context, instance *models.CamundaInstance) (*reconcile.Report, error)
+	Reconcile(ctx context.Context, instance *models.CamundaInstance, window *reconcile.Window) (*reconcile.Report, error)
 	LatestReport(camundaInstanceID string) (*reconcile.Report, error)
 }
 
@@ -32,6 +35,21 @@ func (h *Handlers) reconcileTimeout() time.Duration {
 		return time.Duration(h.cfg.ReconcileTimeoutSeconds) * time.Second
 	}
 	return defaultReconcileTimeout
+}
+
+// SetLifetimeContext registers the context that is cancelled when the server
+// shuts down. Work that outlives a request, such as a sweep, is bound to it.
+func (h *Handlers) SetLifetimeContext(ctx context.Context) {
+	h.lifetime = ctx
+}
+
+// lifetimeContext is the server's lifetime, or a background context when none
+// was registered.
+func (h *Handlers) lifetimeContext() context.Context {
+	if h.lifetime != nil {
+		return h.lifetime
+	}
+	return context.Background()
 }
 
 // SetReconciler registers the reconciler used by the reconcile endpoints.
@@ -101,10 +119,23 @@ func (h *Handlers) RunReconcileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), h.reconcileTimeout())
+	window, err := windowFromPost(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
+		return
+	}
+
+	// The sweep must not die with the request. A browser tab closing, or an
+	// ingress with a shorter timeout than the sweep, cancels r.Context(), and a
+	// sweep tied to it records every source in flight as "context canceled".
+	// It is tied to the server's lifetime instead: it runs to its own deadline
+	// and stores a real result whatever the client does, and is cancelled (and
+	// its partial result discarded) when the server shuts down, so a shutdown
+	// never waits on it.
+	ctx, cancel := context.WithTimeout(h.lifetimeContext(), h.reconcileTimeout())
 	defer cancel()
 
-	report, err := h.reconciler.Reconcile(ctx, instance)
+	report, err := h.reconciler.Reconcile(ctx, instance, window)
 	if err != nil {
 		if errors.Is(err, reconcile.ErrSweepInProgress) {
 			writeError(w, http.StatusConflict, "sweep_in_progress",
@@ -123,4 +154,43 @@ func (h *Handlers) RunReconcileHandler(w http.ResponseWriter, r *http.Request) {
 // UI fetches this once and caches it, so reports carry only the codes.
 func (h *Handlers) ReasonCatalogHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, reconcile.Catalog())
+}
+
+// windowFromQuery reads the optional date range from ?from=&to=. Neither means
+// all time. The list endpoints use it: a GET carries no body to read.
+func windowFromQuery(r *http.Request) (*reconcile.Window, error) {
+	return reconcile.NewWindow(r.URL.Query().Get("from"), r.URL.Query().Get("to"))
+}
+
+// windowFromPost reads the optional date range of a POST: the query parameters,
+// with a JSON body {"from":"YYYY-MM-DD","to":"YYYY-MM-DD"} overriding them field
+// by field. A body that sets only one field therefore keeps the other from the
+// query, and both must be present in the end, or neither for all time.
+func windowFromPost(r *http.Request) (*reconcile.Window, error) {
+	from, to := r.URL.Query().Get("from"), r.URL.Query().Get("to")
+
+	if r.Body != nil && r.ContentLength != 0 {
+		var body struct {
+			From string `json:"from"`
+			To   string `json:"to"`
+		}
+		dec := json.NewDecoder(io.LimitReader(r.Body, 4096))
+		if err := dec.Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			return nil, fmt.Errorf("request body must be JSON like {\"from\":\"2026-11-01\",\"to\":\"2026-11-17\"}: %w", err)
+		}
+		// Anything after the first object is a malformed request, not something
+		// to ignore: it may be a second range the caller meant.
+		var extra json.RawMessage
+		if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+			return nil, fmt.Errorf("request body must hold a single JSON object")
+		}
+		if body.From != "" {
+			from = body.From
+		}
+		if body.To != "" {
+			to = body.To
+		}
+	}
+
+	return reconcile.NewWindow(from, to)
 }

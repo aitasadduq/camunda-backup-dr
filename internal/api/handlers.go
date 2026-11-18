@@ -12,6 +12,7 @@ import (
 	"github.com/aitasadduq/camunda-backup-dr/internal/config"
 	"github.com/aitasadduq/camunda-backup-dr/internal/models"
 	"github.com/aitasadduq/camunda-backup-dr/internal/orchestrator"
+	"github.com/aitasadduq/camunda-backup-dr/internal/reconcile"
 	"github.com/aitasadduq/camunda-backup-dr/internal/retention"
 	"github.com/aitasadduq/camunda-backup-dr/internal/utils"
 	"github.com/aitasadduq/camunda-backup-dr/pkg/types"
@@ -77,6 +78,8 @@ type SecretStore interface {
 
 // Handlers contains HTTP request handlers
 type Handlers struct {
+	// lifetime is cancelled when the server shuts down; see SetLifetimeContext.
+	lifetime         context.Context
 	camundaManager   CamundaManager
 	orchestrator     BackupOrchestrator
 	historyProvider  BackupHistoryProvider
@@ -745,6 +748,12 @@ func (h *Handlers) ListBackupHistoryHandler(w http.ResponseWriter, r *http.Reque
 		status = types.BackupStatus(strings.ToUpper(statusFilter))
 	}
 
+	window, werr := windowFromQuery(r)
+	if werr != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", werr.Error())
+		return
+	}
+
 	history, err := h.historyProvider.ListBackupHistory(id, status)
 	if err != nil {
 		h.logger.Error("Failed to list backup history: %v", err)
@@ -752,7 +761,7 @@ func (h *Handlers) ListBackupHistoryHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	writeJSON(w, http.StatusOK, history)
+	writeJSON(w, http.StatusOK, filterByWindow(history, window))
 }
 
 // GetBackupDetailsHandler handles getting details of a specific backup
@@ -910,6 +919,12 @@ func (h *Handlers) ListIncompleteBackupsHandler(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	window, werr := windowFromQuery(r)
+	if werr != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", werr.Error())
+		return
+	}
+
 	incomplete, err := h.retentionManager.ListIncompleteBackups(id)
 	if err != nil {
 		h.logger.Error("Failed to list incomplete backups: %v", err)
@@ -917,7 +932,7 @@ func (h *Handlers) ListIncompleteBackupsHandler(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	writeJSON(w, http.StatusOK, incomplete)
+	writeJSON(w, http.StatusOK, filterByWindow(incomplete, window))
 }
 
 // ListFailedBackupsHandler handles listing failed backups for a Camunda instance
@@ -947,6 +962,12 @@ func (h *Handlers) ListFailedBackupsHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	window, werr := windowFromQuery(r)
+	if werr != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", werr.Error())
+		return
+	}
+
 	failed, err := h.retentionManager.ListFailedBackups(id)
 	if err != nil {
 		h.logger.Error("Failed to list failed backups: %v", err)
@@ -954,7 +975,7 @@ func (h *Handlers) ListFailedBackupsHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	writeJSON(w, http.StatusOK, failed)
+	writeJSON(w, http.StatusOK, filterByWindow(failed, window))
 }
 
 // GetBackupLogsHandler handles retrieving backup log file contents
@@ -1019,4 +1040,22 @@ func extractIDFromPath(path, prefix string) string {
 		id = remaining
 	}
 	return strings.ToLower(id)
+}
+
+// filterByWindow keeps the backups whose ID falls in the window. A nil window
+// keeps them all. The result is never nil, so it always encodes as a list.
+func filterByWindow(backups []*models.BackupHistory, window *reconcile.Window) []*models.BackupHistory {
+	if window == nil {
+		if backups == nil {
+			return []*models.BackupHistory{}
+		}
+		return backups
+	}
+	out := make([]*models.BackupHistory, 0, len(backups))
+	for _, b := range backups {
+		if window.Contains(b.BackupID) {
+			out = append(out, b)
+		}
+	}
+	return out
 }

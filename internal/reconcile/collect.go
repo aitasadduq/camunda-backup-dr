@@ -30,6 +30,10 @@ type evidence struct {
 	now        time.Time
 	repository string
 	namePrefix string
+	// window is the range of backup IDs this sweep covers; nil means all time.
+	// collect restricts every list in the evidence to it, so no later rule can
+	// draw a conclusion about a backup the sweep did not look at.
+	window *Window
 	// externalPrefixes are the declared external backup jobs' snapshot name
 	// prefixes. See elasticsearch.SnapshotNaming.
 	externalPrefixes []string
@@ -46,9 +50,14 @@ type evidence struct {
 	// the index, the deletable snapshot set and the log cannot disagree.
 	snapshots           []elasticsearch.SnapshotInfo
 	snapshotsClassified bool
-	logBackupIDs     map[string]bool
-	exporterPaused   bool
-	backupInFlight   bool
+	// snapshotsByDay says the repository was listed by name pattern, one date
+	// and prefix at a time, not in full. Such a listing holds only snapshots a
+	// prefix claims, so nothing may be concluded from what it lacks about the
+	// repository as a whole, such as the snapshots no one has claimed (A4).
+	snapshotsByDay bool
+	logBackupIDs   map[string]bool
+	exporterPaused bool
+	backupInFlight bool
 
 	sources map[string]SourceStatus
 }
@@ -123,8 +132,9 @@ func componentEndpoints(instance *models.CamundaInstance) map[string]string {
 // fails as a whole: an unreachable source is recorded as unreachable and the
 // sweep continues, because a partial report that says which parts are missing is
 // far more useful than no report.
-func (r *Reconciler) collect(ctx context.Context, instance *models.CamundaInstance) *evidence {
+func (r *Reconciler) collect(ctx context.Context, instance *models.CamundaInstance, window *Window) *evidence {
 	ev := &evidence{
+		window:           window,
 		instance:         instance,
 		now:              r.now(),
 		repository:       r.cfg.GetElasticsearchSnapshotRepository(instance.ID, instance.ElasticsearchSnapshotRepository),
@@ -180,7 +190,7 @@ func (r *Reconciler) collect(ctx context.Context, instance *models.CamundaInstan
 		wg.Add(1)
 		go func(component, ep string) {
 			defer wg.Done()
-			listed, err := r.backupLister.ListBackups(ctx, ep)
+			listed, err := r.listComponent(ctx, component, ep, window)
 			if err != nil {
 				setSource(SourceStatus{Name: component, Error: err.Error()})
 				return
@@ -203,15 +213,20 @@ func (r *Reconciler) collect(ctx context.Context, instance *models.CamundaInstan
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			snapshots, err := r.esFactory(instance).ListSnapshots(ctx, ev.repository)
+			snapshots, byDay, err := r.listSnapshots(ctx, ev, r.esFactory(instance))
 			if err != nil {
 				setSource(SourceStatus{Name: SourceElasticsearch, Error: err.Error()})
 				return
 			}
 			mu.Lock()
 			ev.snapshots = snapshots
+			ev.snapshotsByDay = byDay
 			mu.Unlock()
-			setSource(SourceStatus{Name: SourceElasticsearch, Reachable: true, Count: len(snapshots)})
+			status := SourceStatus{Name: SourceElasticsearch, Reachable: true, Count: len(snapshots)}
+			if byDay {
+				status.Note = byDayNote
+			}
+			setSource(status)
 		}()
 	}
 
@@ -250,9 +265,172 @@ func (r *Reconciler) collect(ctx context.Context, instance *models.CamundaInstan
 	}
 
 	wg.Wait()
-	ev.classifySnapshots()
+	ev.finalize()
 	r.logSnapshotBreakdown(ev)
 	return ev
+}
+
+// finalize turns what the sources returned into the evidence the rules read:
+// every snapshot gets its owner, then everything is restricted to the window.
+// The order matters, because the window places a snapshot by the backup ID that
+// classification resolves.
+func (e *evidence) finalize() {
+	e.classifySnapshots()
+	e.applyWindow()
+}
+
+// byDayNote is what the report says about a repository listed by day.
+const byDayNote = "listed by day: only snapshots named by a known prefix were looked for, so snapshots of other tools are not counted or reported"
+
+// esDayFirstMaxDays is the longest window for which the snapshot repository is
+// listed by day straight away. Up to this many days it is a handful of small
+// requests, cheaper and surer than a full listing of a large repository that
+// would then need to be cut off to leave time for a fallback.
+const esDayFirstMaxDays = 31
+
+// noWindowHint is appended to a listing failure that a date range could avoid.
+const noWindowHint = " (scan a date range to list by day instead: choose one in the UI, or set RECONCILE_WINDOW_DAYS for automatic scans)"
+
+// listComponent lists a component's backups. Zeebe is listed one day at a time
+// when the sweep has a window, because its full listing is the one that fails
+// on a large backup store; every other component answers a full listing, which
+// the window then filters. Operate, Tasklist and Optimize do not accept a
+// prefix, so they have no per-day form.
+func (r *Reconciler) listComponent(ctx context.Context, component, endpoint string, window *Window) ([]camunda.ComponentBackupRecord, error) {
+	if component == types.ComponentZeebe {
+		if daily, ok := r.backupLister.(camunda.DayBackupLister); ok {
+			if window != nil {
+				return daily.ListBackupsByDays(ctx, endpoint, window.Days())
+			}
+			listed, err := r.backupLister.ListBackups(ctx, endpoint)
+			if err != nil {
+				return nil, fmt.Errorf("%w%s", err, noWindowHint)
+			}
+			return listed, nil
+		}
+	}
+	return r.backupLister.ListBackups(ctx, endpoint)
+}
+
+// listSnapshots lists the snapshot repository. The second result says it was
+// listed by day (see evidence.snapshotsByDay).
+//
+// Without a window it is listed in full. With one:
+//   - up to esDayFirstMaxDays days, by day straight away: a few small requests,
+//     with no full listing to cut off;
+//   - for longer windows, in full first with two thirds of the scan's time, and
+//     by day if that fails.
+func (r *Reconciler) listSnapshots(ctx context.Context, ev *evidence, lister SnapshotLister) ([]elasticsearch.SnapshotInfo, bool, error) {
+	daily, canFallBack := lister.(elasticsearch.DaySnapshotLister)
+	if ev.window == nil || !canFallBack {
+		snaps, err := lister.ListSnapshots(ctx, ev.repository)
+		if err != nil && canFallBack {
+			err = fmt.Errorf("%w%s", err, noWindowHint)
+		}
+		return snaps, false, err
+	}
+
+	days := ev.window.Days()
+	prefixes := elasticsearch.SnapshotNamePrefixes(ev.naming())
+	if len(days) <= esDayFirstMaxDays {
+		snaps, err := daily.ListSnapshotsByDays(ctx, ev.repository, days, prefixes)
+		return snaps, true, err
+	}
+
+	firstCtx, cancel := firstAttemptContext(ctx)
+	snaps, err := lister.ListSnapshots(firstCtx, ev.repository)
+	cancel()
+	if err == nil {
+		return snaps, false, nil
+	}
+	if ctx.Err() != nil {
+		return nil, false, err
+	}
+
+	r.logger.Warn("[reconcile] %s: listing the whole snapshot repository failed (%v); listing %s by day instead",
+		ev.instance.ID, err, ev.window)
+	snaps, dayErr := daily.ListSnapshotsByDays(ctx, ev.repository, days, prefixes)
+	if dayErr != nil {
+		return nil, false, fmt.Errorf("%w; the listing by day also failed: %v", err, dayErr)
+	}
+	return snaps, true, nil
+}
+
+// firstAttemptContext gives the first, full-listing attempt at most two thirds
+// of what is left of the scan's budget, so a fallback can still run after it.
+func firstAttemptContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, time.Until(deadline)*2/3)
+}
+
+// applyWindow restricts the evidence to the window. Everything outside it
+// becomes "not assessed": no list holds it, so no rule can call it present,
+// missing or untracked. Snapshots whose names carry no backup ID cannot be
+// placed in a date and are kept; they are only ever reported at repository
+// level.
+func (e *evidence) applyWindow() {
+	w := e.window
+	if w == nil {
+		return
+	}
+	// Snapshots are placed by the backup ID classification resolved; finalize
+	// classifies before it gets here.
+
+	records := e.records[:0:0]
+	for _, rec := range e.records {
+		if w.Contains(rec.BackupID) {
+			records = append(records, rec)
+		}
+	}
+	e.records = records
+
+	for component, byID := range e.componentBackups {
+		kept := make(map[string]camunda.ComponentBackupRecord, len(byID))
+		for id, rec := range byID {
+			if w.Contains(id) {
+				kept[id] = rec
+			}
+		}
+		e.componentBackups[component] = kept
+	}
+
+	snaps := e.snapshots[:0:0]
+	for _, snap := range e.snapshots {
+		if snap.BackupID == "" || w.Contains(snap.BackupID) {
+			snaps = append(snaps, snap)
+		}
+	}
+	e.snapshots = snaps
+
+	for id := range e.logBackupIDs {
+		if !w.Contains(id) {
+			delete(e.logBackupIDs, id)
+		}
+	}
+
+	// The pointer names the latest backup overall. If that is outside the window
+	// the window holds no record of it, and "dangling" would be a false alarm.
+	if !w.Contains(e.latestPointer) {
+		e.latestPointer = ""
+	}
+
+	// A source's count is what the report says it found; with a window that is
+	// what lies inside it.
+	count := func(name string, n int) {
+		if s, ok := e.sources[name]; ok && s.Reachable {
+			s.Count = n
+			e.sources[name] = s
+		}
+	}
+	count(SourceControllerS3, len(e.records))
+	count(SourceElasticsearch, len(e.snapshots))
+	count(SourceLogs, len(e.logBackupIDs))
+	for component, byID := range e.componentBackups {
+		count(component, len(byID))
+	}
 }
 
 // logSourceResult records what one source answered and how long it took. The
@@ -280,6 +458,12 @@ const snapshotBreakdownSamples = 5
 // convention looks, from the outside, like a sweep that found nothing.
 func (r *Reconciler) logSnapshotBreakdown(ev *evidence) {
 	if !ev.reachable(SourceElasticsearch) {
+		return
+	}
+
+	if ev.snapshotsByDay {
+		r.logger.Info("[reconcile] %s: repository %q was listed by day for %s: %d snapshot(s) named by a known prefix; snapshots of other tools were not looked for",
+			ev.instance.ID, ev.repository, ev.window, len(ev.snapshots))
 		return
 	}
 

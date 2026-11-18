@@ -37,7 +37,7 @@ func TestReconcileRefusesConcurrentSweep(t *testing.T) {
 	}
 	defer r.sweepRunning.Store(false)
 
-	_, err := r.Reconcile(context.Background(), &models.CamundaInstance{ID: "prod"})
+	_, err := r.Reconcile(context.Background(), &models.CamundaInstance{ID: "prod"}, nil)
 	if !errors.Is(err, ErrSweepInProgress) {
 		t.Errorf("err = %v, want ErrSweepInProgress", err)
 	}
